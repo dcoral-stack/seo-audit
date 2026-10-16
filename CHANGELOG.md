@@ -8,7 +8,7 @@ Each release is tagged `vX.Y.Z` on the release commit (tagging lapsed between 0.
 `package.json`, `server.json` (x2) and `mcpb/manifest.json`, retitle `[Unreleased]` here, commit as
 `chore(release): X.Y.Z`, `git tag -a vX.Y.Z -m "X.Y.Z - <headline>"`, push the tag, `npm publish`.
 
-## [Unreleased]
+## [0.14.0] — 2026-10-16
 
 Fixes and features from the 0.13.1 code review and the first field test (issues #10-#37, except the Docker gateway item in #9). 107 → 111 checks.
 
