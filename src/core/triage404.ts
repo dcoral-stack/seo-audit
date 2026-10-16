@@ -59,7 +59,9 @@ export function triage404s(db: Database.Database, opts: TriageOptions = {}): Tri
   const minScore = opts.minScore ?? 0.6;
   const limit = opts.limit ?? 500;
 
-  const dead = db.prepare(`SELECT url_key, url, status_code FROM pages WHERE is_internal=1 AND status_code IN (404, 410) LIMIT ?`).all(limit) as { url_key: string; url: string; status_code: number }[];
+  // No LIMIT here: value signals are cheap, so every 404 is scored and the limit applies AFTER sorting
+  // by value. Truncating first dropped high-value 404s on GSC-seeded crawls with thousands of them.
+  const dead = db.prepare(`SELECT url_key, url, status_code FROM pages WHERE is_internal=1 AND status_code IN (404, 410)`).all() as { url_key: string; url: string; status_code: number }[];
   if (!dead.length) return [];
   const live = db.prepare(`SELECT url FROM pages WHERE status_code=200 AND indexable=1`).all() as { url: string }[];
 
@@ -75,12 +77,15 @@ export function triage404s(db: Database.Database, opts: TriageOptions = {}): Tri
   };
   const safe = <T>(f: () => T, d: T): T => { try { return f(); } catch { return d; } }; // tables absent on a crawl-only DB
 
-  return dead.map(d => {
+  const scored = dead.map(d => {
     const internalLinks = (q.links.get(d.url_key) as { n: number }).n;
     const inSitemap = safe(() => !!q.sitemap.get(d.url_key), false);
     const g = safe(() => q.gsc.get(d.url_key) as { c: number; i: number; last: string | null }, { c: 0, i: 0, last: null });
     const b = safe(() => q.bl.get(d.url_key) as { backlinks: number; referring_domains: number } | undefined, undefined);
-    const backlinks = b?.backlinks ?? 0, referringDomains = b?.referring_domains ?? 0;
+    return { d, internalLinks, inSitemap, g, backlinks: b?.backlinks ?? 0, referringDomains: b?.referring_domains ?? 0 };
+  }).sort((a, b) => (b.g.c - a.g.c) || (b.referringDomains - a.referringDomains) || (b.g.i - a.g.i) || (b.internalLinks - a.internalLinks)).slice(0, limit);
+
+  return scored.map(({ d, internalLinks, inSitemap, g, backlinks, referringDomains }) => {
 
     // Candidates: share a meaningful token; ranked by shared-token count, top 300 get edit distance.
     const counts = new Map<number, number>();

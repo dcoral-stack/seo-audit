@@ -258,6 +258,7 @@ The one-line version - full descriptions, inputs and example prompts for every t
 | `keyword_list` · `content_opportunities` | Cluster a keyword list (own / weak / absent) · the content marketer's report |
 | `recon_targets` · `save_recon_todo` · `recon_todos` | **Content recon:** why a page is losing (live SERP + AI Overview) → a tracked, annotatable to-do board |
 | `get_dashboard` · `serve_dashboard` · `export_report` | In-chat dashboard · the same in a local browser tab · shareable HTML |
+| `get_dashboard_data` | Internal: the dashboard widget fetches its data through this; not for direct use |
 | `composition_cookbook` | The data-surface map and recipes for bespoke analyses |
 | `data_storage` | Per-property disk usage and row counts, with confirm-gated pruning |
 | `normalize_url` · `data_location` · `list_properties` · `seo_audit_help` | Utilities and the help menu |

@@ -47,13 +47,13 @@ function classifyError(e: unknown): string {
   return (e as any)?.message ? String((e as any).message).slice(0, 120) : 'fetch failed';
 }
 
-async function follow(url: string, method: 'HEAD' | 'GET', o: Required<Pick<ExternalOptions, 'userAgent' | 'timeoutMs'>> & { dispatcher?: Dispatcher }): Promise<{ status: number; finalUrl: string; chain: ExternalHop[]; botWall: boolean }> {
+async function follow(url: string, method: 'HEAD' | 'GET', o: Required<Pick<ExternalOptions, 'userAgent' | 'timeoutMs'>> & { dispatcher?: Dispatcher }, ranged = true): Promise<{ status: number; finalUrl: string; chain: ExternalHop[]; botWall: boolean }> {
   const chain: ExternalHop[] = [];
   let current = url;
   for (let hop = 0; hop <= 6; hop++) {
     const res = await ufetch(current, {
       method, redirect: 'manual', dispatcher: o.dispatcher, signal: AbortSignal.timeout(o.timeoutMs),
-      headers: { 'user-agent': o.userAgent, accept: 'text/html,*/*;q=0.8', ...(method === 'GET' ? { range: 'bytes=0-0' } : {}) },
+      headers: { 'user-agent': o.userAgent, accept: 'text/html,*/*;q=0.8', ...(method === 'GET' && ranged ? { range: 'bytes=0-0' } : {}) },
     });
     try { await res.body?.cancel(); } catch { /* closed */ }
     const loc = res.headers.get('location');
@@ -77,12 +77,16 @@ export async function checkExternal(url: string, o: Required<Pick<ExternalOption
   // Many servers mishandle HEAD: retry once as a 1-byte ranged GET before believing a failure.
   if (!r || [400, 403, 404, 405, 501].includes(r.status) || r.status >= 500) {
     try { const g = await follow(url, 'GET', o); r = g; method = 'GET'; err = null; } catch (e) { if (!r) err = e; }
+    // 416: the server refused the byte range itself (empty or dynamic body), which says nothing
+    // about the page. Retry once as a plain GET; the body is cancelled unread, as always.
+    if (r && method === 'GET' && r.status === 416) { try { r = await follow(url, 'GET', o, false); } catch { /* keep the 416 result */ } }
   }
   if (!r) return { url, status: null, finalUrl: null, chain: [], verdict: 'broken', permanent: false, error: classifyError(err), method };
   const permanent = r.chain.some(h => h.status === 301 || h.status === 308);
   let verdict: ExternalVerdict;
   if (r.botWall || BOT_STATUSES.has(r.status)) verdict = 'unverifiable';
   else if (r.status >= 400) verdict = 'broken';
+  else if (r.status >= 300) return { url, status: r.status, finalUrl: r.finalUrl, chain: r.chain, verdict: 'broken', permanent, error: 'redirect without a Location header', method };
   else if (r.chain.length) verdict = 'redirected';
   else verdict = 'ok';
   return { url, status: r.status, finalUrl: r.finalUrl, chain: r.chain, verdict, permanent, error: null, method };

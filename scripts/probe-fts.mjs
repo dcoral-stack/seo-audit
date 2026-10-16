@@ -61,14 +61,34 @@ let err = '';
 try { q({ table: 'pages', filters: [{ column: 'url', op: 'match', value: 'x' }] }); } catch (e) { err = e.message; }
 check('match on an unindexed column explains where it works', err.includes('works on search_analytics.query'), err);
 
-// Deletes keep FTS in step (crawl wipe path).
-db.exec('DELETE FROM pages; DELETE FROM links;');
-check('deleting pages/links removes their FTS rows', db.prepare('SELECT COUNT(*) n FROM pages_fts').get().n === 0 && db.prepare('SELECT COUNT(*) n FROM links_fts').get().n === 0, '');
+// The crawl wipe clears FTS in the same transaction (no per-row delete triggers).
+const { CLEAR_CRAWL_FTS } = await import('../dist/core/fts.js');
+check('no per-row AFTER DELETE triggers on pages/links', db.prepare(`SELECT COUNT(*) n FROM sqlite_master WHERE type='trigger' AND name IN ('pages_fts_ad','links_fts_ad')`).get().n === 0, '');
+db.transaction(() => db.exec(`DELETE FROM pages; DELETE FROM links; ${CLEAR_CRAWL_FTS}`))();
+check('the crawl wipe statement clears their FTS rows', db.prepare('SELECT COUNT(*) n FROM pages_fts').get().n === 0 && db.prepare('SELECT COUNT(*) n FROM links_fts').get().n === 0, '');
 // Rolled-back write leaves FTS untouched (same transaction).
 try { db.transaction(() => { db.prepare(`INSERT INTO pages (crawl_id,url,url_key,status_code,title) VALUES ('c1','https://e.com/r','https://e.com/r',200,'rollback probe')`).run(); throw new Error('abort'); })(); } catch {}
 check('a rolled-back write leaves no FTS row behind', db.prepare(`SELECT COUNT(*) n FROM pages_fts WHERE pages_fts MATCH 'rollback'`).get().n === 0, '');
 
 w.close();
+
+// Large-DB path: the backfill runs in a worker thread (query_data starts it as a job).
+{
+  const { pendingBackfills, backfillInWorker } = await import('../dist/core/fts.js');
+  const site2 = 'https://big.example/';
+  const p2 = dbPathFor(dir, site2);
+  const w2 = new AuditDatabase(p2);
+  w2.db.prepare(`INSERT INTO search_analytics (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES ('2026-10-01','worker built query','u','u','','',1,10,0.1,3)`).run();
+  const before = pendingBackfills(w2.db, ['sa_query_fts']);
+  w2.close();
+  check('pendingBackfills reports an unbuilt index with a size estimate', before.length === 1 && before[0].rows >= 1, JSON.stringify(before));
+  await backfillInWorker(p2, ['sa_query_fts']);
+  const r = runQueryData(p2, { table: 'search_analytics', mode: 'rows', filters: [{ column: 'query', op: 'match', value: 'worker' }], columns: ['query'] }).structured;
+  check('worker backfill makes the index usable', r.rows?.length === 1, JSON.stringify(r));
+  const w3 = new AuditDatabase(p2); const after = pendingBackfills(w3.db, ['sa_query_fts']); w3.close();
+  check('and records it as built', after.length === 0, JSON.stringify(after));
+}
+
 rmSync(dir, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

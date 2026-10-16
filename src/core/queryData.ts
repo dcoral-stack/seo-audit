@@ -93,6 +93,7 @@ export function runQueryData(dbPath: string, input: QueryDataInput): QueryDataRe
   if (needed.size) {
     try {
       const w = new Database(dbPath, { fileMustExist: true });
+      w.pragma('busy_timeout = 10000'); // small inline backfill: wait out a running job's write lock
       try { ensureFtsSchema(w); for (const idx of needed) ensureFtsBackfilled(w, idx); } finally { w.close(); }
     } catch (e) {
       if (!/unable to open|no such file|SQLITE_CANTOPEN/i.test(String(e))) throw e; // missing DB falls through to the message below

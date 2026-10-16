@@ -8,12 +8,14 @@
  * - links_fts: anchor_text, rowid = links.id.
  *
  * Kept in step inside the writing transaction, so a killed job can't leave FTS out of step with the
- * data (cf. #34): triggers on pages and links; for search_analytics, GscSync calls addQueries() with
+ * data (cf. #34): insert triggers on pages and links (the crawl wipe clears the FTS tables in its own
+ * transaction, see CLEAR_CRAWL_FTS); for search_analytics, GscSync calls addQueries() with
  * each batch's distinct queries in the batch transaction (a per-row trigger cost ~50% more insert time). Databases created before this
  * get a one-time backfill on first use (ensureFtsBackfilled), never at open, so opening a 5 GB
  * property DB doesn't stall a tool call.
  */
 import type Database from 'better-sqlite3';
+import { Worker } from 'node:worker_threads';
 
 const TOKENIZE = `tokenize='unicode61 remove_diacritics 2'`;
 // Body text for pages_fts: headings + text of every chunk, from the body_chunks JSON column.
@@ -39,16 +41,15 @@ export function ensureFtsSchema(db: Database.Database): void {
     CREATE TRIGGER IF NOT EXISTS pages_fts_ai AFTER INSERT ON pages BEGIN
       INSERT INTO pages_fts(rowid, url_key, title, h1, body) VALUES (new.id, new.url_key, new.title, new.h1, ${BODY_SQL('new')});
     END;
-    CREATE TRIGGER IF NOT EXISTS pages_fts_ad AFTER DELETE ON pages BEGIN
-      DELETE FROM pages_fts WHERE rowid = old.id;
-    END;
+    -- No AFTER DELETE triggers: per-row FTS deletes turned the crawl's bulk wipe of pages/links into
+    -- millions of trigger runs and disabled SQLite's truncate optimisation. The only deleter (the
+    -- crawl wipe) clears pages_fts/links_fts in the same transaction instead (clearCrawlFts).
+    DROP TRIGGER IF EXISTS pages_fts_ad;
+    DROP TRIGGER IF EXISTS links_fts_ad;
 
     CREATE VIRTUAL TABLE IF NOT EXISTS links_fts USING fts5(anchor_text, ${TOKENIZE});
     CREATE TRIGGER IF NOT EXISTS links_fts_ai AFTER INSERT ON links WHEN new.anchor_text IS NOT NULL AND new.anchor_text <> '' BEGIN
       INSERT INTO links_fts(rowid, anchor_text) VALUES (new.id, new.anchor_text);
-    END;
-    CREATE TRIGGER IF NOT EXISTS links_fts_ad AFTER DELETE ON links BEGIN
-      DELETE FROM links_fts WHERE rowid = old.id;
     END;
   `);
 }
@@ -58,6 +59,37 @@ export function addQueries(db: Database.Database, queries: Iterable<string>): vo
   const ins = db.prepare(`INSERT OR IGNORE INTO sa_queries(query) VALUES (?)`);
   for (const q of queries) ins.run(q);
 }
+
+const BASE_TABLE: Record<FtsIndex, string> = { sa_query_fts: 'search_analytics', pages_fts: 'pages', links_fts: 'links' };
+/** Below this many base-table rows a backfill is near-instant and runs inline; above, in a worker job. */
+export const INLINE_BACKFILL_MAX_ROWS = 200_000;
+
+/** FTS indexes a query needs that aren't backfilled yet, with a cheap size estimate (max rowid). */
+export function pendingBackfills(db: Database.Database, indexes: Iterable<FtsIndex>): { index: FtsIndex; rows: number }[] {
+  const out: { index: FtsIndex; rows: number }[] = [];
+  for (const index of new Set(indexes)) {
+    let built = false;
+    try { built = !!db.prepare(`SELECT 1 FROM fts_meta WHERE name = ?`).get(index); } catch { /* pre-FTS DB: no fts_meta yet */ }
+    if (built) continue;
+    let rows = 0;
+    try { rows = (db.prepare(`SELECT COALESCE(MAX(rowid), 0) n FROM ${BASE_TABLE[index]}`).get() as { n: number }).n; } catch { /* table absent */ }
+    out.push({ index, rows });
+  }
+  return out;
+}
+
+/** Run the backfill for these indexes in a worker thread (large DBs). */
+export function backfillInWorker(dbFile: string, indexes: FtsIndex[]): Promise<{ indexes: FtsIndex[] }> {
+  return new Promise((resolve, reject) => {
+    const w = new Worker(new URL('./ftsWorker.js', import.meta.url), { workerData: { dbFile, indexes } });
+    w.once('message', (m: any) => (m.ok ? resolve({ indexes: m.indexes }) : reject(new Error(m.error))));
+    w.once('error', reject);
+    w.once('exit', code => { if (code !== 0) reject(new Error(`FTS worker exited with code ${code}`)); });
+  });
+}
+
+/** SQL clearing the crawl FTS indexes; run in the same transaction as the pages/links wipe. */
+export const CLEAR_CRAWL_FTS = 'DELETE FROM pages_fts; DELETE FROM links_fts;';
 
 export type FtsIndex = 'sa_query_fts' | 'pages_fts' | 'links_fts';
 

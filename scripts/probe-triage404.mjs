@@ -40,6 +40,8 @@ check('404 still linked internally → review (fix at source)', rows[dead.linked
 check('unrelated noise → ignore with no match', rows[dead.nothing]?.bucket === 'ignore' && rows[dead.nothing].bestMatch === null, JSON.stringify(rows[dead.nothing]));
 check('sorted by value: the lost page comes first', triage404s(db)[0].url === P(dead.lost), triage404s(db)[0].url);
 
+check('limit applies after ranking by value (the lost page survives limit:1)', triage404s(db, { limit: 1 })[0]?.url === P(dead.lost), JSON.stringify(triage404s(db, { limit: 1 }).map(r => r.url)));
+
 wrap.close();
 rmSync(dbPath, { force: true });
 console.log(`\n${pass} passed, ${fail} failed`);

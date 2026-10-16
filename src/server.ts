@@ -39,7 +39,9 @@ import { suggestPages } from './audit/opportunities.js';
 import { computeTopicGaps, type GapKeywordRow } from './audit/topicGaps.js';
 import { AuditDatabase } from './core/AuditDatabase.js';
 import { dbPathFor, sanitizeProperty } from './core/paths.js';
+import Database from 'better-sqlite3';
 import { runQueryData, QUERYABLE_TABLES, FILTER_OPS, METRIC_FNS, truncateCell } from './core/queryData.js';
+import { ftsIndexFor, pendingBackfills, backfillInWorker, INLINE_BACKFILL_MAX_ROWS, type FtsIndex } from './core/fts.js';
 import { storageSummary, pruneProperty, fmtBytes } from './core/dataStorage.js';
 import { scoreSitePassages } from './core/passageScore.js';
 import { findNearDuplicates } from './core/nearDuplicate.js';
@@ -234,6 +236,8 @@ A technical-SEO audit that fuses **Search Console + a site crawl + DataForSEO**,
 - **triage_404s** — crawled 404s bucketed redirect / review / ignore, with the closest live URL and a 301 map. _"Triage the 404s on example.com"_
 - **open_dashboard** — the property's browser dashboard link (finished syncs/crawls offer it automatically). _"Open the dashboard for example.com"_
 - **list_checks** — _"What does the audit check for?"_
+- **find_duplicates** — semantic near-duplicate pages from a local embedding model (no API cost); feeds \`near-duplicate-content\`. _"Find near-duplicate pages on example.com"_
+- **render_pages** — Response vs Render: a sampled set of pages in headless Chromium, showing content and links that only exist after JavaScript (needs the optional Playwright). _"Render the top pages on example.com"_
 
 ## 3. Fix (the moat)
 - **fix_finding** — paste-ready remediation from your own data: JSON-LD for missing/invalid schema, a 301 rule for broken links, iPR-ranked internal-link suggestions. _"Generate the fix for finding 12"_ or _"fix_finding check:missing-required-fields url:https://example.com/x"_
@@ -252,19 +256,24 @@ A technical-SEO audit that fuses **Search Console + a site crawl + DataForSEO**,
 - **domain_visibility** — monthly ranking-keyword distribution + ETV trend for ANY domain/subdomain (Semrush-style organic overview). _"Show visibility over time for competitor.com"_
 - **top_pages** — a domain's top organic pages by estimated traffic. _"Top pages on competitor.com"_
 - **ranked_keywords** — keywords a domain / subdomain / URL / subfolder ranks for (+ difficulty, intent, SERP features). _"What does competitor.com/blog/ rank for?"_ · \`scope:url|folder\` · \`aioOnly:true\` = keywords where the target is cited in AI Overviews
+- **youtube_discovery / news_discovery** — the YouTube videos and recent news ranking for a keyword (live SERPs). _"What news is there on direct drive wheelbases this month?"_
+- **market_sizing** — total demand and share of voice for you plus up to four competitors, per topic cluster. _"Size the market: example.com vs rival1.com and rival2.com"_
 - **topic_gaps** — what related topics should this site cover to be expert in its space: competitor keyword footprints minus everything you already rank or have a page for, clustered into ranked topics with volumes, the owning competitor and your nearest existing page. _"What topics should example.com cover? Compare against rival.com"_
 
 ## 5. Templates & opportunities
 - **list_templates** — cluster pages into templates (one fix → N pages) with a representative exemplar. _"List page templates for example.com"_
 - **suggest_pages** — new-page ideas grounded in real GSC demand, minus what you already cover. _"Suggest new pages for example.com"_
+- **content_opportunities** — the content marketer's report from stored data: write next, refresh now, rewrite snippets, strengthen. _"Content opportunities for example.com"_
+- **keyword_list** — cluster a keyword list (or your top GSC queries) by the page Google ranks for it: own / weak / absent, no paid calls. _"Cluster these keywords for example.com: [...]"_
 - **resolve_entities** — map pages to Wikidata entities → unlocks entity-internal-link-gap (judgement). _"Resolve entities for example.com"_
 
 ## 6. Reports & dashboard
 - **get_dashboard** — interactive dashboard (renders in chat). _"Show the dashboard for example.com"_
+- **serve_dashboard / open_dashboard** — the same dashboard in a local browser tab (live data, CSV downloads). _"Open the dashboard for example.com"_
 - **export_report** — self-contained shareable HTML to send a client. _"Export the report for example.com"_
 
 ## 7. Utilities
-- **data_location** — where DBs are stored (set with a path). · **normalize_url** — the join key for a URL.
+- **data_location** — where DBs are stored (set with a path). · **normalize_url** — the join key for a URL. · **composition_cookbook** — the data-surface map and multi-source recipes. · **seo_audit_help** — this page.
 - **data_storage** — per-property disk usage + row counts; prune (vacuum / clear-crawl-history / delete-property / repair, destructive ones and repair need \`confirm:true\`); \`check:true\` runs an integrity check. _"How much disk is my audit data using?"_
 
 _Tip: first time on a property → \`refresh_property\` then \`run_audit\`._
@@ -591,6 +600,21 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       },
     },
     async ({ siteUrl, table, mode, groupBy, metrics, filters, orderBy, orderDir, limit, offset, columns }) => {
+      // A match filter on a large DB whose FTS index isn't built yet: build it in a worker job rather
+      // than stalling this call (and the whole stdio loop) on a multi-million-row backfill.
+      const wanted = (filters ?? []).filter(f => f.op === 'match').map(f => ftsIndexFor(table, f.column)).filter((x): x is FtsIndex => !!x);
+      if (wanted.length) {
+        const dbFile = dbPathFor(dataDir(), siteUrl);
+        let pending: { index: FtsIndex; rows: number }[] = [];
+        try { const ro = new Database(dbFile, { readonly: true, fileMustExist: true }); try { pending = pendingBackfills(ro, wanted); } finally { ro.close(); } } catch { /* no DB: runQueryData reports it */ }
+        const big = pending.filter(p => p.rows > INLINE_BACKFILL_MAX_ROWS);
+        if (big.length) {
+          const running = jobs.list().find(j => j.type === 'fts-index' && j.state === 'running');
+          const jobId = running?.id ?? jobs.start('fts-index', () => backfillInWorker(dbFile, pending.map(p => p.index)));
+          return jobStarted({ jobId, status: 'running', siteUrl, building: pending.map(p => p.index) },
+            `Building the full-text index for ${pending.map(p => p.index).join(', ')} (one-time, ~${big.reduce((a, p) => a + p.rows, 0).toLocaleString('en-US')} rows, in the background). Poll check_sync_status, then re-run this query. Meanwhile op "like" works, just slower.`);
+        }
+      }
       const r = runQueryData(dbPathFor(dataDir(), siteUrl), {
         table, mode, groupBy, metrics, filters, orderBy, orderDir, limit, offset, columns,
       } as Parameters<typeof runQueryData>[1]);
@@ -622,6 +646,12 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
   );
 
+  // sync_gsc's start reply: the range the job will actually fetch (#33), or that there's nothing to.
+  const syncReply = (siteUrl: string, jobId: string, planned: { startDate: string; endDate: string; incremental: boolean; noop?: boolean }, requestedStart: string, full: boolean): string => {
+    if (planned.noop) return `Sync started for ${siteUrl} (job ${jobId}): nothing to fetch, the stored data already covers ${requestedStart} → ${planned.endDate}. Poll check_sync_status.`;
+    const how = planned.incremental ? ` (incremental: the last stored days are re-pulled and replaced; requested window started ${requestedStart})` : full ? ' (full re-pull)' : '';
+    return `Sync started for ${siteUrl} (job ${jobId}): fetching ${planned.startDate} → ${planned.endDate}${how}. Poll check_sync_status.`;
+  };
   // ── Async-job helpers ─────────────────────────────────────────────────────
   // A job-starting tool returns the same JSON in the text reply as in structuredContent, so a
   // client that reads only text content can still take the jobId without regexing prose (#27).
@@ -945,14 +975,10 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       _meta: { ui: { resourceUri: SYNC_PROGRESS_URI } },
     },
     async ({ siteUrl, gsc: doGsc, crawl, inspect, ranks, segments, full, location, startDate, endDate, maxPages, inspectLimit }) => {
-      const jobId = jobs.start('refresh', async (update, signal) => {
-        const r = await refresh.run(siteUrl, { gsc: doGsc, crawl, inspect, ranks, segments, full, location, startDate, endDate, maxPages, inspectLimit }, update, signal);
-        // Property is now populated — spin up the browser dashboard and hand back its URL so the
-        // finished job (polled via check_sync_status) carries a one-click link, no extra tool call.
-        await autoServeDashboard();
-        const dashboardUrl = dashboardServerUrl();
-        return dashboardUrl ? { ...(r as Record<string, unknown>), dashboardUrl, dashboard: `${dashboardUrl}/dashboard?siteUrl=${encodeURIComponent(siteUrl)}` } : r;
-      });
+      // Property is now populated: the shared helper starts the browser dashboard and puts its link
+      // on the finished job (polled via check_sync_status), and skips that if the job was cancelled.
+      const jobId = jobs.start('refresh', withDashboard(siteUrl, (update, signal) =>
+        refresh.run(siteUrl, { gsc: doGsc, crawl, inspect, ranks, segments, full, location, startDate, endDate, maxPages, inspectLimit }, update, signal)));
       return jobStarted({ jobId, status: 'running', siteUrl }, `Refresh started for ${siteUrl} (job ${jobId}). Poll check_sync_status.`);
     },
   );
@@ -987,7 +1013,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       // computed by the same rule as the job; a shape change can still widen it, and the finished
       // job reports the range used.
       return jobStarted({ jobId, status: 'running', siteUrl, startDate: planned.startDate, endDate: planned.endDate, incremental: planned.incremental, requestedStartDate: options.startDate, ...(options.dimensions ? { dimensions: options.dimensions } : {}), ...(searchType ? { searchType } : {}) },
-        `Sync started for ${siteUrl} (job ${jobId}): fetching ${planned.startDate} → ${planned.endDate}${planned.incremental ? ` (incremental: the last stored days are re-pulled and replaced; requested window started ${options.startDate})` : full ? ' (full re-pull)' : ''}. Poll check_sync_status.`);
+        syncReply(siteUrl, jobId, planned, options.startDate, !!full));
     },
   );
 
@@ -2456,8 +2482,9 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   );
 
   // #38: one obvious verb for "show me the dashboard": starts the local server if needed and hands
-  // back the property's link; where a port can't be bound (Docker gateway, SAC_AUTOSERVE=0) it
-  // points at the in-chat get_dashboard instead.
+  // back the property's link. An explicit request, like serve_dashboard, so SAC_AUTOSERVE=0 (which
+  // only stops AUTOMATIC starts) doesn't apply; where a port can't be bound (e.g. the Docker gateway)
+  // it points at the in-chat get_dashboard instead.
   server.registerTool(
     'open_dashboard',
     {

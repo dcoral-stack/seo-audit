@@ -18,14 +18,14 @@ Fixes and features from the 0.13.1 code review and the first field test (issues 
 - **Dashboards offered on completion** (#38, part 2): sync, crawl and inspect jobs start the local dashboard server when they finish and carry the link in their result, as `refresh_property` already did; the completed job's status text says the dashboard is updated and gives the link (or points at `get_dashboard` where no port can be served). New **`open_dashboard {siteUrl}`** tool.
 - **`duplicate-article-entities`** check (#28): more than one Article entity on one URL, e.g. an SEO plugin's graph plus a theme-embedded Article.
 - **`image-empty-alt-content`** judgement check (#21): `alt=""` images inside the main content, which are often content images whose alt was never written.
-- New columns: `pages.images_empty_alt` / `images_empty_alt_content` (#21, #23), `links.href_form` - absolute / protocol-relative / root-relative / relative as written (#26). New tables: `redirect_sources` (every crawled URL that redirected), `probes`, `page_resources`, `resource_assets` and `external_link_status`, all queryable via `query_data`.
+- New columns: `pages.images_empty_alt` / `images_empty_alt_content` (#21, #23), `links.href_form` - absolute / protocol-relative / root-relative / relative as written (#26). New tables: `redirect_sources` (every crawled URL that redirected, with every hop of its chain), `probes`, `page_resources`, `resource_assets` and `external_link_status`, all queryable via `query_data`.
 
 ### Fixed
 - **`backlinks-to-404` raised false crit findings** (#32): it used the status stored at backlink-pull time. It now takes status from the latest crawl first, judges a redirected URL by where it lands, and only falls back to the pull status (labelled with its age) when the crawl never reached the URL. The crawler seeds the top 200 backlinked URLs and records every redirect source, even when the target page was already crawled.
 - **`article-no-author`** fired when one of several Article nodes lacked an author, and didn't follow an `author` given as an `@id` reference (#28). It now fires only when no Article node names an author. Article checks also no longer skip `BlogPosting`-only pages, which a `LIKE '%Article%'` prefilter silently excluded.
 - **Sitemap discovery missed children of an undeclared `sitemap_index.xml`** (#25): the conventional locations are now probed on every crawl, not only when robots.txt lists none; the crawl result names undeclared sitemaps.
 - **`data_storage.lastCrawl` counted crawls that never completed** (#20, #29): it's now the last completed crawl, and an incomplete latest run is listed separately.
-- **Incremental GSC sync now replaces the lag days** (#22): the last 4 stored days are re-pulled and replaced inside the first batch's transaction, so a partial final day, or rows Google later drops, are corrected.
+- **Incremental GSC sync now replaces the lag days** (#22): the last 4 stored days are re-pulled into a staging table and swapped in with one bounded transaction (only the re-pulled window, only after every page arrived, never on an empty response), so a partial final day, or rows Google later drops, are corrected and a failed or historical sync loses nothing.
 - **Job tools** (#19, #27, #33): job-starting tools return their JSON in the text reply too; `check_sync_status` / `check_crawl_status` are one handler whose text includes a failed job's reason and latest progress; failures are logged to stderr; `sync_gsc`'s start reply shows the range it will actually fetch (the incremental start), not the requested 90-day default.
 - **`og:image`, URL-valued `og:` / `twitter:` tags and `rel=amphtml` now honour `<base href>`** (#12), completing the 0.13.1 fix.
 - **Missing meta description stored as NULL** rather than 0, so it's distinguishable from an empty one (#24).
@@ -33,6 +33,7 @@ Fixes and features from the 0.13.1 code review and the first field test (issues 
 
 ### Notes
 - Re-crawl to populate the new columns and `redirect_sources`; existing rows keep working (new columns are NULL until then).
+- The outbound-link pass runs after the crawl is marked completed, so a long pass never leaves a finished crawl looking unfinished. On large databases the first full-text `match` builds its index as a background job instead of stalling the call.
 - Crawls now also check outbound links by default, which adds time on the first crawl of a link-heavy site; later crawls reuse the 7-day cache.
 - New regression probes: `probe:jobs`, `probe:crawl-local` (end-to-end crawl against a local fixture server), `probe:checks-v2`, `probe:integrity`, `probe:probeurls`, `probe:triage404`, `probe:fts`, `probe:external`.
 

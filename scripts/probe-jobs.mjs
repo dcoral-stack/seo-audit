@@ -64,6 +64,35 @@ const site = 'https://example.com/';
   check('day inside the window but absent from the re-pull is removed', !rows.some(r => r.date === '2026-10-05'), JSON.stringify(rows));
 }
 
+// ── Review findings: the lag-day replace is bounded and atomic ──────────────────────────────
+{
+  const site2 = 'https://atomic.example/';
+  const row = (date, query, clicks) => ({ keys: [date, query, `${site2}p`], clicks, impressions: clicks * 10, ctr: 0.1, position: 3 });
+  const seed = [row('2026-10-05', 'a', 5), row('2026-10-08', 'a', 8), row('2026-10-09', 'later', 9), row('2026-10-10', 'later', 10)];
+  const stored = () => { const d = new AuditDatabase(dbPathFor(dir, site2)); try { return d.db.prepare(`SELECT date, query, clicks FROM search_analytics ORDER BY date`).all(); } finally { d.close(); } };
+  await new GscSync({ fetchSearchAnalytics: async (_s, _o, _sig, onBatch) => onBatch({ rows: seed }) }, dir)
+    .run(site2, { startDate: '2026-10-01', endDate: '2026-10-16', fullResync: true }, () => {}, new AbortController().signal);
+
+  // Historical pull ending before the stored max: rows after endDate must survive.
+  await new GscSync({ fetchSearchAnalytics: async (_s, opts, _sig, onBatch) => onBatch({ rows: [row('2026-10-07', 'a', 7)] }) }, dir)
+    .run(site2, { startDate: '2026-10-01', endDate: '2026-10-08' }, () => {}, new AbortController().signal);
+  const afterHist = stored();
+  check('sync ending before stored data keeps rows after its endDate', afterHist.some(r => r.date === '2026-10-09') && afterHist.some(r => r.date === '2026-10-10'), JSON.stringify(afterHist));
+
+  // Failure on page 2: nothing in the lag window is lost.
+  const before = JSON.stringify(stored());
+  let threw = false;
+  try {
+    await new GscSync({ fetchSearchAnalytics: async (_s, _o, _sig, onBatch) => { await onBatch({ rows: [row('2026-10-07', 'x', 1)] }); throw new Error('429 on page 2'); } }, dir)
+      .run(site2, { startDate: '2026-10-01', endDate: '2026-10-16' }, () => {}, new AbortController().signal);
+  } catch { threw = true; }
+  check('a failure on a later page leaves the stored lag days untouched', threw && JSON.stringify(stored()) === before, JSON.stringify(stored()));
+
+  // Empty response: stored days are not wiped.
+  await new GscSync({ fetchSearchAnalytics: async () => {} }, dir).run(site2, { startDate: '2026-10-01', endDate: '2026-10-16' }, () => {}, new AbortController().signal);
+  check('an empty response never wipes stored days', JSON.stringify(stored()) === before, JSON.stringify(stored()));
+}
+
 rmSync(dir, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

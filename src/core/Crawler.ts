@@ -9,6 +9,7 @@ import { finalizeLinkGraph } from './linkGraph.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { snapshotCrawl } from '../audit/drift.js';
 import { checkExternalLinks, type ExternalSummary } from './externalLinks.js';
+import { CLEAR_CRAWL_FTS } from './fts.js';
 
 // Robust HTML detection from a Content-Type header: take the MIME type before any
 // parameters (charset, boundary), normalised — text/html and XHTML count as HTML.
@@ -286,7 +287,8 @@ export class Crawler {
     let wipedPrior = false;
     const ensureWiped = (): void => {
       if (wipedPrior) return;
-      db.db.exec('DELETE FROM links; DELETE FROM pages; DELETE FROM redirect_sources; DELETE FROM page_resources;');
+      // One transaction, so the FTS indexes are cleared exactly when the rows they index are (#35).
+      db.db.transaction(() => db.db.exec(`DELETE FROM links; DELETE FROM pages; DELETE FROM redirect_sources; DELETE FROM page_resources; ${CLEAR_CRAWL_FTS}`))();
       wipedPrior = true;
     };
 
@@ -625,15 +627,6 @@ export class Crawler {
       db.db.transaction(() => { db.db.exec('DELETE FROM resource_assets'); for (const r of rows) ins.run(...r); })();
     }
 
-    // Post-crawl (#36): status of every distinct outbound link target — cached, host-throttled,
-    // HEAD with a ranged-GET fallback. On by default; checkExternal:false skips it.
-    let external: ExternalSummary | undefined;
-    if (opts.checkExternal !== false && !signal.aborted && wipedPrior) {
-      try {
-        external = await checkExternalLinks(db.db, { userAgent: ua, dispatcher, signal, update: p => update({ crawlId, ...p }), cacheDays: opts.externalCacheDays });
-      } catch (e) { console.error(`[crawl ${crawlId}] external link check skipped:`, e instanceof Error ? e.message : String(e)); }
-    }
-
     // Post-crawl: in-degree (orphans), internal PageRank (iPR) + body-only click depth.
     finalizeLinkGraph(db.db, crawlId, urlKey(seed, keyOpts));
 
@@ -683,6 +676,17 @@ export class Crawler {
         console.error(`[crawl ${crawlId}] snapshot failed (change-detection will report this crawl as missing):`, e);
       }
     }
+    // Post-crawl (#36): status of every distinct outbound link target — cached, host-throttled,
+    // HEAD with a ranged-GET fallback. On by default; checkExternal:false skips it. Runs AFTER the
+    // crawl is marked completed and snapshotted: it can take minutes, and dying here must not leave a
+    // finished crawl looking like a dead 'running' one.
+    let external: ExternalSummary | undefined;
+    if (opts.checkExternal !== false && !signal.aborted && wipedPrior) {
+      try {
+        external = await checkExternalLinks(db.db, { userAgent: ua, dispatcher, signal, update: p => update({ crawlId, ...p }), cacheDays: opts.externalCacheDays });
+      } catch (e) { console.error(`[crawl ${crawlId}] external link check skipped:`, e instanceof Error ? e.message : String(e)); }
+    }
+
     return { crawlId, siteUrl, crawled, failed, skipped, ...(sitemaps ? { sitemaps } : {}), ...(external ? { external } : {}) };
     } catch (err) {
       try {

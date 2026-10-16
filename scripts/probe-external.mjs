@@ -22,6 +22,8 @@ const ext = http.createServer((req, res) => {
   if (p === '/product-removed') { res.writeHead(301, { location: `${X}/` }); return res.end(); }
   if (p === '/head-hater') { if (req.method === 'HEAD') { res.writeHead(405); return res.end(); } res.writeHead(206, { 'content-range': 'bytes 0-0/10' }); return res.end('x'); }
   if (p === '/bot') { res.writeHead(403, { server: 'cloudflare' }); return res.end(); }
+  if (p === '/range-hater') { if (req.method === 'HEAD') { res.writeHead(405); return res.end(); } if (req.headers.range) { res.writeHead(416); return res.end(); } res.writeHead(200); return res.end('x'); }
+  if (p === '/no-location') { res.writeHead(302); return res.end(); }
   if (p === '/hang') return; // never answers
   res.writeHead(500); res.end();
 });
@@ -40,7 +42,7 @@ db.prepare(`INSERT INTO crawl_metadata (crawl_id, base_url, base_domain, status)
 db.prepare(`INSERT INTO pages (crawl_id,url,url_key,status_code,indexable,external_links) VALUES ('c1',?,?,200,1,9)`).run(`${S}/a`, `${S}/a`);
 db.prepare(`INSERT INTO pages (crawl_id,url,url_key,status_code,indexable,external_links) VALUES ('c1',?,?,200,1,1)`).run(`${S}/b`, `${S}/b`);
 const link = db.prepare(`INSERT INTO links (crawl_id,source_url,source_key,target_url,target_key,anchor_text,is_internal) VALUES ('c1',?,?,?,?,?,0)`);
-const targets = ['/ok', '/gone', '/moved', '/product-removed', '/head-hater', '/bot', '/hang'].map(p => X + p);
+const targets = ['/ok', '/gone', '/moved', '/product-removed', '/head-hater', '/bot', '/hang', '/range-hater', '/no-location'].map(p => X + p);
 for (const t of targets) link.run(`${S}/a`, `${S}/a`, t, t, `anchor ${t.split('/').pop()}`);
 link.run(`${S}/b`, `${S}/b`, `${X}/gone`, `${X}/gone`, 'same dead link');
 link.run(`${S}/a`, `${S}/a`, REFUSED, REFUSED, 'refused host');
@@ -49,7 +51,9 @@ try {
   const t0 = Date.now();
   const sum = await checkExternalLinks(db, { userAgent: 'probe', perHostDelayMs: 100, timeoutMs: 1500 });
   const st = Object.fromEntries(db.prepare(`SELECT url, verdict, status, error, method, permanent FROM external_link_status`).all().map(r => [r.url.replace(X, '').replace(`http://127.0.0.3:${closed}`, ''), r]));
-  check('distinct targets checked once each', sum.targets === 8 && sum.checked === 8, JSON.stringify(sum));
+  check('distinct targets checked once each', sum.targets === 10 && sum.checked === 10, JSON.stringify(sum));
+  check('416 on the ranged GET → plain GET → ok', st['/range-hater']?.verdict === 'ok', JSON.stringify(st['/range-hater']));
+  check('3xx without Location → broken, not ok', st['/no-location']?.verdict === 'broken' && st['/no-location'].error.includes('Location'), JSON.stringify(st['/no-location']));
   check('200 → ok', st['/ok']?.verdict === 'ok', JSON.stringify(st['/ok']));
   check('404 → broken', st['/gone']?.verdict === 'broken' && st['/gone'].status === 404, JSON.stringify(st['/gone']));
   check('301 deep link → redirected, permanent', st['/moved']?.verdict === 'redirected' && st['/moved'].permanent === 1, JSON.stringify(st['/moved']));
@@ -61,11 +65,11 @@ try {
   check('one host is paced, not hammered', extHits.length >= 7 && Date.now() - t0 >= 600, `${extHits.length} hits in ${Date.now() - t0}ms`);
 
   const again = await checkExternalLinks(db, { userAgent: 'probe', perHostDelayMs: 0, timeoutMs: 1500 });
-  check('re-run inside the cache window re-checks nothing', again.checked === 0 && again.cached === 8, JSON.stringify(again));
+  check('re-run inside the cache window re-checks nothing', again.checked === 0 && again.cached === 10, JSON.stringify(again));
 
   const ctx = { db, gscMaxDate: null };
   const broken = Object.fromEntries(CHECKS.find(c => c.id === 'external-broken').run(ctx).map(f => [f.urlKey.replace(S, ''), f.evidence]));
-  check('external-broken: per linking page, counts dead links (not bot walls)', broken['/a']?.broken === 3 && broken['/b']?.broken === 1 && !JSON.stringify(broken).includes('/bot'), JSON.stringify(broken));
+  check('external-broken: per linking page, counts dead links (not bot walls)', broken['/a']?.broken === 4 && broken['/b']?.broken === 1 && !JSON.stringify(broken).includes('/bot'), JSON.stringify(broken));
   check('external-broken evidence carries status/error and anchor', broken['/a'].examples.some(e => e.status === 404 && e.anchor === 'anchor gone') && broken['/a'].examples.some(e => e.status === 'timeout'), JSON.stringify(broken['/a']));
   const red = CHECKS.find(c => c.id === 'external-redirected').run(ctx);
   check('external-redirected flags the homepage redirect as likely removed', red.length === 1 && red[0].evidence.redirected === 2 && red[0].evidence.toHomepage === 1, JSON.stringify(red));
