@@ -65,6 +65,8 @@ export interface CrawlResult {
   crawled: number;
   failed: number;
   skipped: number;
+  /** Sitemaps found: declared in robots.txt, plus conventional locations robots.txt didn't declare (#25). */
+  sitemaps?: { declared: string[]; undeclared: string[]; fetched: number; urls: number };
 }
 
 const DEFAULT_UA = 'Mozilla/5.0 (compatible; seo-audit-console/0.1; +https://github.com/houtini-ai/seo-audit-console)';
@@ -343,9 +345,11 @@ export class Crawler {
     // alone misses them (e.g. one site: 367 sitemap URLs, only ~100 reachable via links).
     // Also stores the sitemap for crawl↔sitemap reconciliation. Off-host/junk/asset URLs filtered;
     // bounded by maxPages.
+    let sitemaps: CrawlResult['sitemaps'];
     if (!signal.aborted) {
       try {
         const sm = await fetchSitemapUrls(origin, ua, keyOpts);
+        sitemaps = { declared: sm.sources, undeclared: sm.undeclared, fetched: sm.sitemapsFetched, urls: sm.urls.length };
         const smInsert = db.db.prepare(`INSERT INTO sitemap_urls (url_key, url, lastmod, fetched_at) VALUES (?,?,?,datetime('now')) ON CONFLICT(url_key) DO NOTHING`);
         db.db.transaction(() => { db.db.exec('DELETE FROM sitemap_urls'); for (const u of sm.urls) smInsert.run(u.urlKey, u.url, u.lastmod); })();
         for (const u of sm.urls) {
@@ -608,11 +612,11 @@ export class Crawler {
         console.error(`[crawl ${crawlId}] snapshot failed (change-detection will report this crawl as missing):`, e);
       }
     }
-    return { crawlId, siteUrl, crawled, failed, skipped };
+    return { crawlId, siteUrl, crawled, failed, skipped, ...(sitemaps ? { sitemaps } : {}) };
     } catch (err) {
       try {
-        db.db.prepare(`UPDATE crawl_metadata SET status='failed', error=?, finished_at=datetime('now') WHERE crawl_id=? AND status='running'`)
-          .run(err instanceof Error ? err.message : String(err), crawlId);
+        db.db.prepare(`UPDATE crawl_metadata SET status='failed', error=?, finished_at=? WHERE crawl_id=? AND status='running'`)
+          .run(err instanceof Error ? err.message : String(err), new Date().toISOString(), crawlId);
       } catch { /* best-effort */ }
       throw err;
     } finally {

@@ -3,7 +3,8 @@ import { urlKey, type UrlKeyOptions } from './url-key.js';
 
 /**
  * Sitemap discovery + parse for reconciliation against the crawl. Finds sitemaps via robots.txt
- * `Sitemap:` directives (falling back to /sitemap.xml), follows <sitemapindex> children, handles
+ * `Sitemap:` directives AND the conventional locations (/sitemap_index.xml, /sitemap.xml,
+ * /wp-sitemap.xml), follows <sitemapindex> children recursively, handles
  * gzipped sitemaps, and returns the listed URLs normalised to url_key. Bounded (count + timeout)
  * so a giant sitemap set can't stall a crawl.
  */
@@ -32,7 +33,19 @@ async function fetchText(url: string, ua: string): Promise<string | null> {
   } catch { return null; }
 }
 
-export interface SitemapResult { urls: { urlKey: string; url: string; lastmod: string | null }[]; sitemapsFetched: number; sources: string[] }
+export interface SitemapResult {
+  urls: { urlKey: string; url: string; lastmod: string | null }[];
+  sitemapsFetched: number;
+  /** Sitemaps declared in robots.txt. */
+  sources: string[];
+  /** Conventional locations that existed but robots.txt didn't declare (e.g. a Yoast sitemap_index.xml). */
+  undeclared: string[];
+}
+
+// Probed on every crawl, not only when robots.txt is silent (#25): robots.txt often lists just a
+// couple of child sitemaps (post-sitemap.xml, page-sitemap.xml) while the index also carries
+// category/tag/author sitemaps, which made indexable-not-in-sitemap over-report.
+const CONVENTIONAL = ['/sitemap_index.xml', '/sitemap.xml', '/wp-sitemap.xml'];
 
 export async function fetchSitemapUrls(
   origin: string, ua: string, keyOpts: UrlKeyOptions, opts: { maxSitemaps?: number; maxUrls?: number } = {},
@@ -44,10 +57,15 @@ export async function fetchSitemapUrls(
   const sources: string[] = [];
   const robots = await fetchText(new URL('/robots.txt', origin).toString(), ua);
   if (robots) for (const m of robots.matchAll(/^\s*sitemap:\s*(\S+)/gim)) sources.push(m[1].trim());
-  if (!sources.length) sources.push(new URL('/sitemap.xml', origin).toString());
+  const conventional = CONVENTIONAL.map(p => new URL(p, origin).toString());
+  const undeclared: string[] = [];
 
   const out = new Map<string, { url: string; lastmod: string | null }>(); // urlKey → entry (dedup)
-  const queue = [...new Set(sources)];
+  // Declared sitemaps first, then the conventional locations; `seen` stops an index's children
+  // (which usually include the declared ones) from being fetched twice.
+  const queue = [...new Set([...sources, ...conventional])];
+  const seen = new Set<string>(queue);
+  const declared = new Set(sources);
   let fetched = 0;
   const URL_BLOCK = /<url>([\s\S]*?)<\/url>/gi;
   const LOC_ONE = /<loc>\s*([^<\s]+?)\s*<\/loc>/i;
@@ -59,10 +77,15 @@ export async function fetchSitemapUrls(
     const sm = queue.shift()!;
     const txt = await fetchText(sm, ua);
     fetched++;
-    if (!txt) continue;
+    // A catch-all route can answer 200 with HTML for /sitemap.xml: only count real sitemap XML.
+    if (!txt || !/<(urlset|sitemapindex)[\s>]/i.test(txt)) continue;
+    if (!declared.has(sm) && conventional.includes(sm)) undeclared.push(sm);
     if (/<sitemapindex[\s>]/i.test(txt)) {
       for (const m of txt.matchAll(LOC)) {
-        if (queue.length + fetched < maxSitemaps) queue.push(decodeXmlEntities(m[1])); // child sitemap
+        const child = decodeXmlEntities(m[1]);
+        if (seen.has(child)) continue;
+        seen.add(child);
+        if (queue.length + fetched < maxSitemaps) queue.push(child); // child sitemap (recursive: an index may list indexes)
       }
       continue;
     }
@@ -83,5 +106,5 @@ export async function fetchSitemapUrls(
       }
     }
   }
-  return { urls: [...out].map(([k, v]) => ({ urlKey: k, url: v.url, lastmod: v.lastmod })), sitemapsFetched: fetched, sources };
+  return { urls: [...out].map(([k, v]) => ({ urlKey: k, url: v.url, lastmod: v.lastmod })), sitemapsFetched: fetched, sources, undeclared };
 }
