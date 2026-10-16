@@ -10,6 +10,7 @@
 import { createHash } from 'node:crypto';
 import * as cheerio from 'cheerio';
 import { isInternalHost } from './extract.js';
+import { CHROME_HEADERS, looksBotBlocked, type FetchedAs } from './userAgents.js';
 
 export interface ProbeHop { url: string; status: number; location: string | null }
 export interface ProbeResult {
@@ -27,24 +28,26 @@ export interface ProbeResult {
   contentHash: string | null;       // sha1 of the whitespace-collapsed body text: equal hash = same page
   cache: { cfCacheStatus: string | null; xCache: string | null; age: string | null; cacheControl: string | null };
   ms: number;
+  fetchedAs: FetchedAs;             // which user agent produced this result
+  blockedAsBot?: boolean;           // the crawler's UA was bot-blocked; this result is the Chrome retry
   error?: string;
 }
 
-export interface ProbeOptions { followRedirects?: boolean; userAgent?: string; concurrency?: number; budgetMs?: number }
+export interface ProbeOptions { followRedirects?: boolean; userAgent?: string; concurrency?: number; budgetMs?: number; chromeFallback?: boolean }
 
-const emptyResult = (url: string): ProbeResult => ({ url, status: null, redirectChain: [], finalUrl: null, finalStatus: null, contentType: null, title: null, canonical: null, metaRobots: null, xRobotsTag: null, contentHash: null, cache: { cfCacheStatus: null, xCache: null, age: null, cacheControl: null }, ms: 0 });
+const emptyResult = (url: string): ProbeResult => ({ url, status: null, redirectChain: [], finalUrl: null, finalStatus: null, contentType: null, title: null, canonical: null, metaRobots: null, xRobotsTag: null, contentHash: null, cache: { cfCacheStatus: null, xCache: null, age: null, cacheControl: null }, ms: 0, fetchedAs: 'bot' });
 
 const UA = 'Mozilla/5.0 (compatible; seo-audit-console probe; +https://github.com/houtini-ai/seo-audit)';
 const MAX_BODY = 2_000_000;
 
-async function probeOne(url: string, o: Required<ProbeOptions>, deadline: number): Promise<ProbeResult> {
+async function probeOne(url: string, o: Required<ProbeOptions>, deadline: number, chrome = false): Promise<ProbeResult & { botBlocked?: boolean }> {
   const t0 = Date.now();
-  const out = emptyResult(url);
+  const out: ProbeResult & { botBlocked?: boolean } = { ...emptyResult(url), fetchedAs: chrome ? 'chrome' : 'bot' };
   let current = url;
   try {
     for (let hop = 0; hop <= 10; hop++) {
       const left = Math.max(1000, Math.min(10000, deadline - Date.now()));
-      const res = await fetch(current, { redirect: 'manual', headers: { 'user-agent': o.userAgent, accept: 'text/html,*/*;q=0.8' }, signal: AbortSignal.timeout(left) });
+      const res = await fetch(current, { redirect: 'manual', headers: chrome ? CHROME_HEADERS : { 'user-agent': o.userAgent, accept: 'text/html,*/*;q=0.8' }, signal: AbortSignal.timeout(left) });
       if (out.status == null) out.status = res.status;
       const loc = res.headers.get('location');
       if (res.status >= 300 && res.status < 400 && loc) {
@@ -56,6 +59,7 @@ async function probeOne(url: string, o: Required<ProbeOptions>, deadline: number
       }
       out.finalUrl = current;
       out.finalStatus = res.status;
+      if (!chrome && looksBotBlocked(res.status, n => res.headers.get(n))) out.botBlocked = true;
       out.contentType = res.headers.get('content-type');
       out.xRobotsTag = res.headers.get('x-robots-tag');
       out.cache = { cfCacheStatus: res.headers.get('cf-cache-status'), xCache: res.headers.get('x-cache'), age: res.headers.get('age'), cacheControl: res.headers.get('cache-control') };
@@ -88,7 +92,7 @@ async function probeOne(url: string, o: Required<ProbeOptions>, deadline: number
 
 /** Probe up to 50 URLs on the property's host(s) within a time budget; unprobed URLs are marked. */
 export async function probeUrls(urls: { url: string; variantType?: string }[], baseHost: string, opts: ProbeOptions = {}): Promise<ProbeResult[]> {
-  const o: Required<ProbeOptions> = { followRedirects: opts.followRedirects ?? true, userAgent: opts.userAgent ?? UA, concurrency: opts.concurrency ?? 4, budgetMs: opts.budgetMs ?? 45000 };
+  const o: Required<ProbeOptions> = { followRedirects: opts.followRedirects ?? true, userAgent: opts.userAgent ?? UA, concurrency: opts.concurrency ?? 4, budgetMs: opts.budgetMs ?? 45000, chromeFallback: opts.chromeFallback ?? !opts.userAgent };
   for (const u of urls) {
     let h: URL;
     try { h = new URL(u.url); } catch { throw new Error(`Not a URL: ${u.url}`); }
@@ -106,7 +110,12 @@ export async function probeUrls(urls: { url: string; variantType?: string }[], b
         results[i] = { ...emptyResult(u.url), ...(u.variantType ? { variantType: u.variantType } : {}), error: 'not probed: time budget reached (probe fewer URLs per call)' };
         continue;
       }
-      results[i] = { ...(await probeOne(u.url, o, deadline)), ...(u.variantType ? { variantType: u.variantType } : {}) };
+      let r = await probeOne(u.url, o, deadline);
+      // Bot-blocked under our own UA: one retry as Chrome, flagged so the reader knows (and so a
+      // site that walls crawlers is visible as such).
+      if (r.botBlocked && o.chromeFallback && Date.now() < deadline - 1000) r = { ...(await probeOne(u.url, o, deadline, true)), blockedAsBot: true };
+      delete r.botBlocked;
+      results[i] = { ...r, ...(u.variantType ? { variantType: u.variantType } : {}) };
     }
   }));
   return results;

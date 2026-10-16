@@ -10,6 +10,7 @@ import { fetchSitemapUrls } from './sitemap.js';
 import { snapshotCrawl } from '../audit/drift.js';
 import { checkExternalLinks, type ExternalSummary } from './externalLinks.js';
 import { CLEAR_CRAWL_FTS } from './fts.js';
+import { BOT_UA, CHROME_HEADERS, looksBotBlocked, type FetchedAs } from './userAgents.js';
 
 // Robust HTML detection from a Content-Type header: take the MIME type before any
 // parameters (charset, boundary), normalised — text/html and XHTML count as HTML.
@@ -62,6 +63,7 @@ export interface CrawlOptions {
   headResources?: boolean;    // header-only pass over css/js/font subresources → resource_assets (#37)
   checkExternal?: boolean;    // check outbound link targets after the crawl (default true) (#36)
   externalCacheDays?: number; // reuse external results younger than this (default 7)
+  chromeFallback?: boolean;   // retry bot-blocked requests once as Chrome (default true; off when userAgent is set)
 }
 
 export interface CrawlResult {
@@ -74,9 +76,12 @@ export interface CrawlResult {
   sitemaps?: { declared: string[]; undeclared: string[]; fetched: number; urls: number };
   /** Outbound link status pass (#36). */
   external?: ExternalSummary;
+  /** Bot blocking seen on the site's own pages: requests blocked for the crawler UA, how many got
+   *  through as Chrome, and whether the crawl switched to Chrome for the rest. */
+  blocking?: { blockedAsBot: number; okAsChrome: number; switchedToChrome: boolean };
 }
 
-const DEFAULT_UA = 'Mozilla/5.0 (compatible; seo-audit-console/0.1; +https://github.com/houtini-ai/seo-audit-console)';
+const DEFAULT_UA = BOT_UA;
 const FETCH_TIMEOUT_MS = 20000;
 const MAX_TRANSIENT_RETRIES = 6; // 429/503 backoff attempts before recording the status
 const MAX_NET_RETRIES = 4;       // network-error (timeout/reset) retries — separate budget so a slow URL can't stall a worker for minutes
@@ -109,7 +114,11 @@ interface FetchOutcome {
   bytes: number | null;
   timeMs: number;
   throttled: boolean; // saw a 429/503 (after retries) — signal for adaptive pacing
+  fetchedAs: FetchedAs; // which user agent produced this response
 }
+
+/** Per-crawl bot-block bookkeeping: whether the Chrome fallback is allowed, and how it's going. */
+export interface UaState { fallback: boolean; preferChrome: boolean; streak: number; blockedAsBot: number; okAsChrome: number }
 
 // Per-crawl connection pool: HTTP/2 when the origin supports it (one multiplexed connection
 // instead of N TCP handshakes), keep-alive reuse, bounded per-origin connections. Compression
@@ -118,7 +127,10 @@ interface FetchOutcome {
 const makeDispatcher = (connections: number): Agent =>
   new Agent({ allowH2: true, connections, keepAliveTimeout: 30_000, keepAliveMaxTimeout: 60_000 });
 
-async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, gate: ThrottleGate, signal: AbortSignal, maxHops = 5): Promise<FetchOutcome> {
+async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, gate: ThrottleGate, signal: AbortSignal, maxHops = 5, uaState?: UaState): Promise<FetchOutcome> {
+  // Starts as the crawler's own UA unless this crawl already switched to Chrome (see below).
+  let asChrome = !!uaState?.preferChrome;
+  let retriedAsChrome = false;
   const redirects: RedirectHop[] = [];
   let current = url;
   let hops = 0;
@@ -143,8 +155,7 @@ async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, ga
         dispatcher,
         // pages change between crawls — ask upstream caches/CDNs for the current copy
         headers: {
-          'user-agent': ua,
-          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          ...(asChrome ? CHROME_HEADERS : { 'user-agent': ua, accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }),
           'accept-encoding': 'gzip, deflate, br',
           'cache-control': 'no-cache',
           pragma: 'no-cache',
@@ -193,6 +204,20 @@ async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, ga
       hops++;
       continue;
     }
+    // Bot block (403 / 999 / WAF challenge) under our own UA: retry this URL once as Chrome. After
+    // three pages in a row get through only as Chrome, the rest of the crawl goes out as Chrome so a
+    // site that blocks crawlers doesn't cost two requests per page. Counts feed the crawl result.
+    if (uaState?.fallback && !asChrome && looksBotBlocked(res.status, n => res.headers.get(n))) {
+      try { await res.body?.cancel(); } catch { /* no body */ }
+      uaState.blockedAsBot++;
+      asChrome = true;
+      retriedAsChrome = true;
+      continue;
+    }
+    if (uaState && retriedAsChrome) {
+      if (res.status < 400) { uaState.okAsChrome++; if (++uaState.streak >= 3) uaState.preferChrome = true; }
+      else uaState.streak = 0; // blocked for Chrome too: switching identity doesn't help here
+    } else if (uaState && !asChrome) uaState.streak = 0;
     const contentType = res.headers.get('content-type') ?? '';
     const isHtml = isHtmlContentType(contentType);
     // Read the body only for HTML; for any non-HTML response (image/PDF/asset) abort the transfer
@@ -233,6 +258,7 @@ async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, ga
       bytes: body ? Buffer.byteLength(body) : (Number(h('content-length')) || null),
       timeMs: Date.now() - start,
       throttled: transientRetries > 0 || netRetries > 0,
+      fetchedAs: asChrome ? 'chrome' : 'bot',
     };
   }
 }
@@ -257,6 +283,8 @@ export class Crawler {
     const concurrency = Math.max(1, Math.min(opts.maxConcurrency ?? 8, 24));
     const delayMs = opts.delayMs ?? 250;
     const ua = opts.userAgent ?? DEFAULT_UA;
+    // Chrome fallback on bot blocks, unless the user chose a user agent explicitly.
+    const uaState: UaState = { fallback: !opts.userAgent && opts.chromeFallback !== false, preferChrome: false, streak: 0, blockedAsBot: 0, okAsChrome: 0 };
     const excludeRes = (opts.excludePatterns ?? []).flatMap(p => { try { return [new RegExp(p, 'i')]; } catch { return []; } });
 
     const seed = siteUrl.startsWith('sc-domain:') ? `https://${siteUrl.slice('sc-domain:'.length)}/` : siteUrl;
@@ -300,7 +328,7 @@ export class Crawler {
          is_internal, indexable, indexable_reason, noindex, title, title_length, meta_description, meta_description_length,
          h1, h1_count, word_count, lang, charset, canonical_url, canonical_key, robots, x_robots_tag, viewport,
          json_ld, og_tags, hreflang, redirects, internal_links, external_links,
-         image_count, images_without_alt, images_empty_alt, images_empty_alt_content, images_missing_dimensions, canonical_count, canonical_relative,
+         image_count, images_without_alt, images_empty_alt, images_empty_alt_content, fetched_as, images_missing_dimensions, canonical_count, canonical_relative,
          h2_count, heading_skips, rel_next, rel_prev, rel_amphtml, mixed_content_count, twitter_tags,
          has_microdata, has_rdfa, has_favicon, has_analytics, body_chunks, security_headers,
          a11y_links_no_name, a11y_buttons_no_name, a11y_inputs_no_label, a11y_viewport_zoom_disabled, a11y_positive_tabindex, a11y_duplicate_ids)
@@ -309,7 +337,7 @@ export class Crawler {
          @is_internal,@indexable,@indexable_reason,@noindex,@title,@title_length,@meta_description,@meta_description_length,
          @h1,@h1_count,@word_count,@lang,@charset,@canonical_url,@canonical_key,@robots,@x_robots_tag,@viewport,
          @json_ld,@og_tags,@hreflang,@redirects,@internal_links,@external_links,
-         @image_count,@images_without_alt,@images_empty_alt,@images_empty_alt_content,@images_missing_dimensions,@canonical_count,@canonical_relative,
+         @image_count,@images_without_alt,@images_empty_alt,@images_empty_alt_content,@fetched_as,@images_missing_dimensions,@canonical_count,@canonical_relative,
          @h2_count,@heading_skips,@rel_next,@rel_prev,@rel_amphtml,@mixed_content_count,@twitter_tags,
          @has_microdata,@has_rdfa,@has_favicon,@has_analytics,@body_chunks,@security_headers,
          @a11y_links_no_name,@a11y_buttons_no_name,@a11y_inputs_no_label,@a11y_viewport_zoom_disabled,@a11y_positive_tabindex,@a11y_duplicate_ids)
@@ -434,7 +462,7 @@ export class Crawler {
         skipped++; return;
       }
       try {
-        const r = await fetchWithRedirects(item.url, ua, dispatcher, gate, signal);
+        const r = await fetchWithRedirects(item.url, ua, dispatcher, gate, signal, 5, uaState);
         // Self-tune the delay from the throttle signal.
         if (r.throttled) dynamicDelay = Math.min(Math.round(dynamicDelay * 1.5) + 200, 5000);
         else if (dynamicDelay > delayMs) dynamicDelay = Math.max(delayMs, Math.round(dynamicDelay * 0.9));
@@ -486,6 +514,7 @@ export class Crawler {
           internal_links: ex?.internalLinks ?? 0, external_links: ex?.externalLinks ?? 0,
           image_count: ex?.imageCount ?? 0, images_without_alt: ex?.imagesWithoutAlt ?? 0,
           images_empty_alt: ex ? ex.imagesEmptyAlt : null, images_empty_alt_content: ex ? ex.imagesEmptyAltContent : null,
+          fetched_as: r.fetchedAs,
           images_missing_dimensions: ex?.imagesMissingDimensions ?? 0,
           canonical_count: ex?.canonicalCount ?? 0, canonical_relative: ex?.canonicalRelative ? 1 : 0,
           h2_count: ex?.h2Count ?? 0, heading_skips: ex?.headingSkips ?? 0,
@@ -683,11 +712,12 @@ export class Crawler {
     let external: ExternalSummary | undefined;
     if (opts.checkExternal !== false && !signal.aborted && wipedPrior) {
       try {
-        external = await checkExternalLinks(db.db, { userAgent: ua, dispatcher, signal, update: p => update({ crawlId, ...p }), cacheDays: opts.externalCacheDays });
+        external = await checkExternalLinks(db.db, { userAgent: ua, chromeFallback: uaState.fallback, dispatcher, signal, update: p => update({ crawlId, ...p }), cacheDays: opts.externalCacheDays });
       } catch (e) { console.error(`[crawl ${crawlId}] external link check skipped:`, e instanceof Error ? e.message : String(e)); }
     }
 
-    return { crawlId, siteUrl, crawled, failed, skipped, ...(sitemaps ? { sitemaps } : {}), ...(external ? { external } : {}) };
+    const blocking = uaState.blockedAsBot ? { blockedAsBot: uaState.blockedAsBot, okAsChrome: uaState.okAsChrome, switchedToChrome: uaState.preferChrome } : undefined;
+    return { crawlId, siteUrl, crawled, failed, skipped, ...(sitemaps ? { sitemaps } : {}), ...(external ? { external } : {}), ...(blocking ? { blocking } : {}) };
     } catch (err) {
       try {
         db.db.prepare(`UPDATE crawl_metadata SET status='failed', error=?, finished_at=? WHERE crawl_id=? AND status='running'`)

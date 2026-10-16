@@ -680,7 +680,9 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     if (!detail || job.state !== 'completed' || !DATA_JOBS.has(job.type)) return head + prog;
     const link = (job.result as { dashboard?: string } | undefined)?.dashboard;
     const siteUrl = (job.result as { siteUrl?: string } | undefined)?.siteUrl;
-    return head + prog + (link
+    const blk = (job.result as { blocking?: { blockedAsBot: number; okAsChrome: number; switchedToChrome: boolean } } | undefined)?.blocking;
+    const blockLine = blk ? `\n\n🛡 ${blk.blockedAsBot} request(s) were bot-blocked for the crawler's user agent; ${blk.okAsChrome} got through as Chrome${blk.switchedToChrome ? ' and the rest of the crawl ran as Chrome' : ''}. The site's bot protection is challenging non-browser clients: check it isn't also blocking crawlers you want (pages.fetched_as shows which pages).` : '';
+    return head + prog + blockLine + (link
       ? `\n\n📊 The dashboard is updated with this data: ${link} (open it in your browser).`
       : `\n\n📊 The data is in. See it with get_dashboard${siteUrl ? ` for ${siteUrl}` : ''} (in chat), open_dashboard (browser tab) or export_report.`);
   };
@@ -1058,11 +1060,12 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         headResources: z.boolean().optional().describe('Also run a header-only pass over the CSS/JS/font subresources pages load (status, size, cache-control) into resource_assets. Off by default; bodies are never downloaded.'),
         checkExternal: z.boolean().optional().describe('Check every distinct outbound link target after the crawl (default true). false skips it.'),
         externalCacheDays: z.number().int().min(0).max(90).optional().describe('Reuse outbound-link results younger than this many days (default 7; 0 re-checks everything).'),
+        chromeFallback: z.boolean().optional().describe('When a request is bot-blocked (403, 999, a WAF challenge) under the crawler\'s own user agent, retry it once as desktop Chrome; after 3 pages in a row need it, the rest of the crawl goes out as Chrome. Default true; always off when userAgent is set.'),
       },
     },
-    async ({ siteUrl, maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources, checkExternal, externalCacheDays }) => {
+    async ({ siteUrl, maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources, checkExternal, externalCacheDays, chromeFallback }) => {
       const jobId = jobs.start('crawl', withDashboard(siteUrl, (update, signal) =>
-        crawler.run(siteUrl, { maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources, checkExternal, externalCacheDays }, update, signal),
+        crawler.run(siteUrl, { maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources, checkExternal, externalCacheDays, chromeFallback }, update, signal),
       ));
       return jobStarted({ jobId, status: 'running', siteUrl }, `Crawl started for ${siteUrl} (job ${jobId}). Poll check_crawl_status.`);
     },
@@ -1079,9 +1082,10 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         variantsOf: z.array(z.string()).max(6).optional().describe('Generate and judge URL variants of each of these URLs'),
         followRedirects: z.boolean().optional().describe('Default true; false reports only the first response'),
         persist: z.boolean().optional(),
+        chromeFallback: z.boolean().optional().describe('Retry a bot-blocked URL once as desktop Chrome (default true)'),
       },
     },
-    async ({ siteUrl, urls, variantsOf, followRedirects, persist }) => {
+    async ({ siteUrl, urls, variantsOf, followRedirects, persist, chromeFallback }) => {
       const seed = siteUrl.startsWith('sc-domain:') ? `https://${siteUrl.slice('sc-domain:'.length)}/` : siteUrl;
       const baseHost = new URL(seed).hostname;
       const variantSets = (variantsOf ?? []).map(u => ({ of: u, list: urlVariants(u) }));
@@ -1091,7 +1095,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       ];
       if (!targets.length) throw new Error('Pass urls and/or variantsOf.');
       if (targets.length > 50) throw new Error(`That is ${targets.length} URLs (each variantsOf URL expands to ~8); the limit is 50 per call.`);
-      const results = await probeUrls(targets, baseHost, { followRedirects });
+      const results = await probeUrls(targets, baseHost, { followRedirects, chromeFallback });
       const verdicts = variantSets.map(v => {
         const set = results.filter((_r, i) => targets[i].variantOf === v.of);
         const judged = judgeVariants(set);
@@ -1107,7 +1111,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         } finally { db.close(); }
       }
       const cell = (s: string | null | undefined, n = 60): string => (s ?? '—').replace(/\|/g, '\\|').slice(0, n);
-      const rowsMd = results.map(r => `| ${cell(r.url, 80)}${r.variantType ? ` (${r.variantType})` : ''} | ${r.status ?? '—'} | ${r.redirectChain.length ? r.redirectChain.map(h => h.status).join('→') + ' → ' + cell(r.finalUrl, 60) : '—'} | ${r.finalStatus ?? '—'} | ${cell(r.canonical)} | ${r.contentHash ?? '—'} | ${r.cache.cfCacheStatus ?? r.cache.xCache ?? '—'} | ${r.error ? cell(r.error, 50) : ''} |`);
+      const rowsMd = results.map(r => `| ${cell(r.url, 80)}${r.variantType ? ` (${r.variantType})` : ''} | ${r.status ?? '—'} | ${r.redirectChain.length ? r.redirectChain.map(h => h.status).join('→') + ' → ' + cell(r.finalUrl, 60) : '—'} | ${r.finalStatus ?? '—'} | ${cell(r.canonical)} | ${r.contentHash ?? '—'} | ${r.cache.cfCacheStatus ?? r.cache.xCache ?? '—'} | ${r.error ? cell(r.error, 50) : ''}${r.blockedAsBot ? ' blocked for the crawler UA; result fetched as Chrome' : ''} |`);
       const verdictMd = verdicts.map(v => `\n**${v.url}**: ${v.normalisesAll ? 'normalises every variant with a single redirect' : 'does NOT normalise every variant'}\n${v.variants.map(j => `- ${j.variantType}: ${j.verdict} (${j.detail})`).join('\n')}`).join('\n');
       const text = `Probed ${results.length} URL(s)${persist ? ' (saved to probes)' : ''}.\n\n| URL | Status | Redirects | Final | Canonical | Content hash | Cache | Error |\n|---|---|---|---|---|---|---|---|\n${rowsMd.join('\n')}${verdictMd ? '\n' + verdictMd : ''}`;
       return { content: [{ type: 'text', text: text.slice(0, 38000) }], structuredContent: { results, ...(verdicts.length ? { variants: verdicts } : {}) } };
