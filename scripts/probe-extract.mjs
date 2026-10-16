@@ -77,6 +77,51 @@ const keyOpts = { hostForm: 'https://www.example.com' };
   check('no base: hreflang resolved against page URL', hrefs(noBase)[0] === 'https://example.com/areas/england/en-gb/areas/england/', hrefs(noBase)[0]);
 }
 
+// ── og:image / twitter:image / amphtml honour <base href> (#12) ─────────────
+{
+  const page = 'https://example.com/areas/england/';
+  const html = `<!doctype html><html><head><base href="https://example.com/">
+    <meta property="og:image" content="img/hero.png"><meta property="og:title" content="img/not-a-url">
+    <meta name="twitter:image" content="img/tw.png"><link rel="amphtml" href="amp/areas/england/">
+  </head><body></body></html>`;
+  const ex = extractPage(html, page, 'example.com', keyOpts, null);
+  const og = JSON.parse(ex.ogTags), tw = JSON.parse(ex.twitterTags);
+  check('og:image resolved against <base href>', og['og:image'] === 'https://example.com/img/hero.png', og['og:image']);
+  check('non-URL og:title left as written', og['og:title'] === 'img/not-a-url', og['og:title']);
+  check('twitter:image resolved against <base href>', tw['twitter:image'] === 'https://example.com/img/tw.png', tw['twitter:image']);
+  check('rel=amphtml resolved against <base href>', ex.relAmphtml === 'https://example.com/amp/areas/england/', ex.relAmphtml);
+}
+
+// ── empty alt counted separately; content vs chrome (#21, #23) ──────────────
+{
+  const html = `<!doctype html><html><head><title>t</title></head><body>
+    <header><img src="logo.png" alt=""></header>
+    <main><figure class="wp-block-image"><img src="shot.png" alt=""></figure><p><img src="x.png" alt=" "></p><img src="ok.png" alt="described"><img src="none.png"></main>
+    <footer><img src="badge.png" alt=""></footer></body></html>`;
+  const ex = extractPage(html, 'https://example.com/p', 'example.com', keyOpts, null);
+  check('missing alt attribute still counted alone', ex.imagesWithoutAlt === 1, ex.imagesWithoutAlt);
+  check('empty alt counted (incl. whitespace-only)', ex.imagesEmptyAlt === 4, ex.imagesEmptyAlt);
+  check('empty alt inside main content counted', ex.imagesEmptyAltContent === 2, ex.imagesEmptyAltContent);
+}
+
+// ── meta description length: NULL when absent, 0 when empty (#24) ───────────
+{
+  const none = extractPage('<html><head><title>t</title></head><body></body></html>', 'https://example.com/a', 'example.com', keyOpts, null);
+  const empty = extractPage('<html><head><meta name="description" content=""></head><body></body></html>', 'https://example.com/b', 'example.com', keyOpts, null);
+  const some = extractPage('<html><head><meta name="description" content="Hello world"></head><body></body></html>', 'https://example.com/c', 'example.com', keyOpts, null);
+  check('missing meta description → length null', none.metaDescriptionLength === null, none.metaDescriptionLength);
+  check('empty meta description → length 0', empty.metaDescriptionLength === 0, empty.metaDescriptionLength);
+  check('present meta description → its length', some.metaDescriptionLength === 11, some.metaDescriptionLength);
+}
+
+// ── link href form as written (#26) ─────────────────────────────────────────
+{
+  const html = `<html><body><a href="https://example.com/a">a</a><a href="//example.com/b">b</a><a href="/c">c</a><a href="d/">d</a><a href="../e">e</a></body></html>`;
+  const ex = extractPage(html, 'https://example.com/x/', 'example.com', keyOpts, null);
+  const forms = ex.links.map(l => l.hrefForm).join(',');
+  check('href forms classified', forms === 'absolute,protocol-relative,root-relative,relative,relative', forms);
+}
+
 // ── checks over a seeded DB ─────────────────────────────────────────────────
 const dbPath = path.join(tmpdir(), `sac-extract-${process.pid}.db`);
 rmSync(dbPath, { force: true });

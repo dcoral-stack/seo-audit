@@ -47,7 +47,7 @@ export interface QueryDataResult {
  *  json_ld, evidence…) stay out unless explicitly requested. */
 const DEFAULT_ROW_COLUMNS: Record<QueryTable, string[]> = {
   pages: ['url', 'status_code', 'indexable', 'title', 'h1', 'word_count', 'ipr', 'click_depth', 'inlink_count', 'canonical_key'],
-  links: ['source_key', 'target_key', 'anchor_text', 'is_internal', 'placement', 'rel'],
+  links: ['source_key', 'target_key', 'anchor_text', 'is_internal', 'placement', 'rel', 'href_form'],
   search_analytics: ['date', 'query', 'page_key', 'clicks', 'impressions', 'ctr', 'position'],
   url_inspection: ['url_key', 'verdict', 'coverage_state', 'google_canonical', 'user_canonical', 'last_crawl_time'],
   sitemap_urls: ['url', 'lastmod'],

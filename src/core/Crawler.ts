@@ -290,7 +290,7 @@ export class Crawler {
          is_internal, indexable, indexable_reason, noindex, title, title_length, meta_description, meta_description_length,
          h1, h1_count, word_count, lang, charset, canonical_url, canonical_key, robots, x_robots_tag, viewport,
          json_ld, og_tags, hreflang, redirects, internal_links, external_links,
-         image_count, images_without_alt, images_missing_dimensions, canonical_count, canonical_relative,
+         image_count, images_without_alt, images_empty_alt, images_empty_alt_content, images_missing_dimensions, canonical_count, canonical_relative,
          h2_count, heading_skips, rel_next, rel_prev, rel_amphtml, mixed_content_count, twitter_tags,
          has_microdata, has_rdfa, has_favicon, has_analytics, body_chunks, security_headers,
          a11y_links_no_name, a11y_buttons_no_name, a11y_inputs_no_label, a11y_viewport_zoom_disabled, a11y_positive_tabindex, a11y_duplicate_ids)
@@ -299,7 +299,7 @@ export class Crawler {
          @is_internal,@indexable,@indexable_reason,@noindex,@title,@title_length,@meta_description,@meta_description_length,
          @h1,@h1_count,@word_count,@lang,@charset,@canonical_url,@canonical_key,@robots,@x_robots_tag,@viewport,
          @json_ld,@og_tags,@hreflang,@redirects,@internal_links,@external_links,
-         @image_count,@images_without_alt,@images_missing_dimensions,@canonical_count,@canonical_relative,
+         @image_count,@images_without_alt,@images_empty_alt,@images_empty_alt_content,@images_missing_dimensions,@canonical_count,@canonical_relative,
          @h2_count,@heading_skips,@rel_next,@rel_prev,@rel_amphtml,@mixed_content_count,@twitter_tags,
          @has_microdata,@has_rdfa,@has_favicon,@has_analytics,@body_chunks,@security_headers,
          @a11y_links_no_name,@a11y_buttons_no_name,@a11y_inputs_no_label,@a11y_viewport_zoom_disabled,@a11y_positive_tabindex,@a11y_duplicate_ids)
@@ -313,8 +313,8 @@ export class Crawler {
        ON CONFLICT(url_key) DO NOTHING`,
     );
     const linkInsert = db.db.prepare(
-      `INSERT INTO links (crawl_id, source_url, source_key, target_url, target_key, anchor_text, is_internal, placement, rel)
-       VALUES (@crawl_id,@source_url,@source_key,@target_url,@target_key,@anchor_text,@is_internal,@placement,@rel)`,
+      `INSERT INTO links (crawl_id, source_url, source_key, target_url, target_key, anchor_text, is_internal, placement, rel, href_form)
+       VALUES (@crawl_id,@source_url,@source_key,@target_url,@target_key,@anchor_text,@is_internal,@placement,@rel,@href_form)`,
     );
     const errorInsert = db.db.prepare(
       `INSERT INTO errors (crawl_id, url, error_type, error_message) VALUES (?, ?, ?, ?)`,
@@ -429,7 +429,7 @@ export class Crawler {
           bytes: r.bytes, response_time_ms: r.timeMs, depth: item.depth,
           is_internal: 1, indexable, indexable_reason: reason, noindex: ex?.noindex ? 1 : 0,
           title: ex?.title ?? null, title_length: ex?.titleLength ?? 0,
-          meta_description: ex?.metaDescription ?? null, meta_description_length: ex?.metaDescriptionLength ?? 0,
+          meta_description: ex?.metaDescription ?? null, meta_description_length: ex ? ex.metaDescriptionLength : null,
           h1: ex?.h1 ?? null, h1_count: ex?.h1Count ?? 0, word_count: ex?.wordCount ?? 0,
           lang: ex?.lang ?? null,
           charset: ex?.charset ?? r.contentType.match(/charset=([\w-]+)/i)?.[1] ?? null, // meta, else Content-Type header
@@ -439,6 +439,7 @@ export class Crawler {
           redirects: r.redirects.length ? JSON.stringify(r.redirects) : null,
           internal_links: ex?.internalLinks ?? 0, external_links: ex?.externalLinks ?? 0,
           image_count: ex?.imageCount ?? 0, images_without_alt: ex?.imagesWithoutAlt ?? 0,
+          images_empty_alt: ex ? ex.imagesEmptyAlt : null, images_empty_alt_content: ex ? ex.imagesEmptyAltContent : null,
           images_missing_dimensions: ex?.imagesMissingDimensions ?? 0,
           canonical_count: ex?.canonicalCount ?? 0, canonical_relative: ex?.canonicalRelative ? 1 : 0,
           h2_count: ex?.h2Count ?? 0, heading_skips: ex?.headingSkips ?? 0,
@@ -463,7 +464,7 @@ export class Crawler {
             linkBuf.push({
               crawl_id: crawlId, source_url: r.finalUrl, source_key: finalKey,
               target_url: l.targetUrl, target_key: l.targetKey, anchor_text: l.anchor,
-              is_internal: l.isInternal ? 1 : 0, placement: l.placement, rel: l.rel,
+              is_internal: l.isInternal ? 1 : 0, placement: l.placement, rel: l.rel, href_form: l.hrefForm,
             });
             if (l.isInternal && !skipUrl(l.targetUrl, excludeRes) && item.depth + 1 <= maxDepth && (crawled + frontier.length) < maxPages) {
               enqueue(l.targetUrl, item.depth + 1);

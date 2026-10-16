@@ -151,7 +151,7 @@ This server's value is composition: joining Search Console, the crawl, URL Inspe
 | Source (table) | Grain | Key dimensions | Join keys | Freshness | Cost |
 |---|---|---|---|---|---|
 | search_analytics (GSC) | date × query × page (+device/country with segments) | clicks, impressions, ctr, position | page_key (url_key), query, date | sync_gsc / refresh_property — incremental, GSC lags ~2–3 days | free |
-| pages + links (crawl) | one row per url_key, LATEST crawl | status, title, H1, meta, canonical_key, robots, json_ld, hreflang, redirects, body_chunks, word_count, ipr, click_depth, inlink_count, conditional_304 | url_key | start_crawl / refresh_property (on demand) | free |
+| pages + links (crawl) | one row per url_key, LATEST crawl | status, title, H1, meta (meta_description_length NULL = tag absent, 0 = empty), canonical_key, robots, json_ld, hreflang, redirects, body_chunks, word_count, ipr, click_depth, inlink_count, conditional_304, images_without_alt / images_empty_alt / images_empty_alt_content; links.href_form (absolute / protocol-relative / root-relative / relative, as written) | url_key | start_crawl / refresh_property (on demand) | free |
 | page_snapshots (drift) | url_key × crawl | field-level SEO snapshot per crawl | url_key, captured_at | every crawl, automatically | free |
 | url_inspection | one row per inspected URL (top pages by clicks, quota-limited) | coverage_state, page_fetch_state, google_canonical, user_canonical, last_crawl_time, crawled_as, rich_results | url_key | inspect_urls | free (GSC quota) |
 | sitemap_urls | one row per sitemap URL | lastmod | url_key | captured at crawl time | free |

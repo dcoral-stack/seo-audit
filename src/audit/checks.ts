@@ -190,6 +190,15 @@ export const CHECKS: CheckDef[] = [
     run: (c) => rows(c, `SELECT url_key urlKey, images_without_alt missing, image_count total FROM pages WHERE status_code=200 AND indexable=1 AND images_without_alt > 0`).map(r => ({ urlKey: r.urlKey, evidence: { missing: r.missing, total: r.total } })),
   },
   {
+    // Judgement (#21): alt="" is right for decorative images, so it can't be a deterministic
+    // finding. But empty alt on images INSIDE the main content (main/article/figure, outside the
+    // site chrome) is often a content image whose alt was never written — e.g. WordPress
+    // wp-block-image figures. Flags pages where such images exist; verify before fixing.
+    id: 'image-empty-alt-content', category: 'accessibility', severity: 'low', labels: ['N'], certainty: 0.5, effortBase: 3, fixType: 'per-page',
+    title: 'Content images with empty alt text', fix: 'Check each empty-alt image inside the main content: give content images (screenshots, product shots, charts, figures) descriptive alt text; keep alt="" only for genuinely decorative ones.',
+    run: (c) => rows(c, `SELECT url_key urlKey, images_empty_alt_content contentEmpty, images_empty_alt empty, image_count total FROM pages WHERE status_code=200 AND indexable=1 AND images_empty_alt_content > 0`).map(r => ({ urlKey: r.urlKey, evidence: { emptyAltInContent: r.contentEmpty, emptyAltTotal: r.empty, total: r.total } })),
+  },
+  {
     id: 'canonical-relative', category: 'indexation', severity: 'med', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'per-page',
     title: 'Canonical declared as a relative URL', fix: 'Use an absolute https URL in rel=canonical — relative canonicals are error-prone.',
     run: (c) => rows(c, `SELECT url_key urlKey, canonical_url canonical FROM pages WHERE status_code=200 AND canonical_relative=1`).map(r => ({ urlKey: r.urlKey, evidence: { canonical: r.canonical } })),

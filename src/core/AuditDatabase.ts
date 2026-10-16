@@ -242,6 +242,7 @@ export class AuditDatabase {
         is_internal INTEGER,
         placement TEXT,                  -- navigation | footer | body
         rel TEXT,
+        href_form TEXT,                  -- absolute | protocol-relative | root-relative | relative (as written)
         FOREIGN KEY (crawl_id) REFERENCES crawl_metadata(crawl_id)
       );
       CREATE INDEX IF NOT EXISTS idx_links_source  ON links(source_key);
@@ -524,6 +525,9 @@ export class AuditDatabase {
     };
     ensure('pages', 'image_count', 'image_count INTEGER DEFAULT 0');
     ensure('pages', 'images_without_alt', 'images_without_alt INTEGER DEFAULT 0');
+    ensure('pages', 'images_empty_alt', 'images_empty_alt INTEGER');
+    ensure('pages', 'images_empty_alt_content', 'images_empty_alt_content INTEGER');
+    ensure('links', 'href_form', 'href_form TEXT');
     ensure('pages', 'images_missing_dimensions', 'images_missing_dimensions INTEGER DEFAULT 0');
     ensure('pages', 'canonical_count', 'canonical_count INTEGER DEFAULT 0');
     ensure('pages', 'canonical_relative', 'canonical_relative INTEGER DEFAULT 0');
