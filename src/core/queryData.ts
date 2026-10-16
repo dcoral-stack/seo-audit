@@ -9,7 +9,7 @@ import Database from 'better-sqlite3';
 
 export const QUERYABLE_TABLES = [
   'pages', 'links', 'search_analytics', 'url_inspection', 'sitemap_urls',
-  'findings', 'image_assets', 'page_backlinks',
+  'findings', 'image_assets', 'page_backlinks', 'redirect_sources', 'probes',
 ] as const;
 export type QueryTable = (typeof QUERYABLE_TABLES)[number];
 
@@ -54,6 +54,8 @@ const DEFAULT_ROW_COLUMNS: Record<QueryTable, string[]> = {
   findings: ['id', 'run_id', 'check_id', 'category', 'severity', 'url_key', 'priority'],
   image_assets: ['url', 'bytes', 'status', 'content_type', 'used_on'],
   page_backlinks: ['url', 'backlinks', 'referring_domains', 'dofollow', 'status_code'],
+  redirect_sources: ['url', 'status', 'final_url', 'hops'],
+  probes: ['url', 'variant_type', 'status', 'final_url', 'final_status', 'canonical', 'verdict', 'probed_at'],
 };
 
 const CELL_CAP = 120;

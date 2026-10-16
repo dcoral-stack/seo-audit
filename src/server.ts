@@ -63,6 +63,7 @@ import { WikidataClient } from './core/WikidataClient.js';
 import { Entities } from './core/Entities.js';
 import { JobManager, corruptionHint, type Job } from './core/JobManager.js';
 import { checkIntegrity, repairIndexes, propertyDbFile } from './core/integrity.js';
+import { probeUrls, urlVariants, judgeVariants, type ProbeResult } from './core/probeUrls.js';
 import { gscFreshness } from './core/gscFreshness.js';
 import { clusterKeywordList } from './audit/keywordList.js';
 import type { FetchOptions } from './core/types.js';
@@ -1014,6 +1015,52 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         crawler.run(siteUrl, { maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns }, update, signal),
       );
       return jobStarted({ jobId, status: 'running', siteUrl }, `Crawl started for ${siteUrl} (job ${jobId}). Poll check_crawl_status.`);
+    },
+  );
+
+  server.registerTool(
+    'probe_urls',
+    {
+      title: 'Probe URLs (test a URL hypothesis live)',
+      description: 'Fetch arbitrary URLs on the property\'s own host (apex or www) — including ones you generate to test a hypothesis — and report per URL: status, the full redirect chain and final URL, canonical, meta robots and X-Robots-Tag, title, a content fingerprint (equal contentHash = same page), and cache headers (cf-cache-status, x-cache, age, cache-control). The crawler only fetches what it discovers; use this to test case, trailing-slash, parameter, scheme, host or typo variants, redirect rules, or whether a 404 in the data still 404s. `variantsOf` (up to 6 URLs) is a preset: it generates uppercase, title-case, slash, index.php, unknown-param, http and www/apex variants of each URL and says per variant whether the site normalises it (one 301 to the baseline), contains it (200 with canonical to the baseline: indexing is safe but each variant is crawled and usually bypasses the page cache), or serves a duplicate. Max 50 URLs per call, 4 at a time, 45-second budget (unfinished URLs are marked, not dropped). persist:true stores results in the probes table for query_data. Free (your own server).',
+      inputSchema: {
+        siteUrl: z.string(),
+        urls: z.array(z.string()).max(50).optional(),
+        variantsOf: z.array(z.string()).max(6).optional().describe('Generate and judge URL variants of each of these URLs'),
+        followRedirects: z.boolean().optional().describe('Default true; false reports only the first response'),
+        persist: z.boolean().optional(),
+      },
+    },
+    async ({ siteUrl, urls, variantsOf, followRedirects, persist }) => {
+      const seed = siteUrl.startsWith('sc-domain:') ? `https://${siteUrl.slice('sc-domain:'.length)}/` : siteUrl;
+      const baseHost = new URL(seed).hostname;
+      const variantSets = (variantsOf ?? []).map(u => ({ of: u, list: urlVariants(u) }));
+      const targets: { url: string; variantType?: string; variantOf?: string }[] = [
+        ...(urls ?? []).map(url => ({ url })),
+        ...variantSets.flatMap(v => v.list.map(x => ({ ...x, variantOf: v.of }))),
+      ];
+      if (!targets.length) throw new Error('Pass urls and/or variantsOf.');
+      if (targets.length > 50) throw new Error(`That is ${targets.length} URLs (each variantsOf URL expands to ~8); the limit is 50 per call.`);
+      const results = await probeUrls(targets, baseHost, { followRedirects });
+      const verdicts = variantSets.map(v => {
+        const set = results.filter((_r, i) => targets[i].variantOf === v.of);
+        const judged = judgeVariants(set);
+        return { url: v.of, normalisesAll: judged.every(j => j.verdict === 'redirects'), variants: judged };
+      });
+      if (persist) {
+        const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
+        try {
+          const ins = db.db.prepare(`INSERT INTO probes (url, variant_of, variant_type, status, redirect_chain, final_url, final_status, canonical, meta_robots, x_robots_tag, title, content_hash, cache, verdict, error)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+          const verdictOf = new Map(verdicts.flatMap(v => v.variants.map(j => [j.url, j.verdict] as const)));
+          db.db.transaction(() => results.forEach((r: ProbeResult, i) => ins.run(r.url, targets[i].variantOf ?? null, r.variantType ?? null, r.status, JSON.stringify(r.redirectChain), r.finalUrl, r.finalStatus, r.canonical, r.metaRobots, r.xRobotsTag, r.title, r.contentHash, JSON.stringify(r.cache), verdictOf.get(r.url) ?? null, r.error ?? null)))();
+        } finally { db.close(); }
+      }
+      const cell = (s: string | null | undefined, n = 60): string => (s ?? '—').replace(/\|/g, '\\|').slice(0, n);
+      const rowsMd = results.map(r => `| ${cell(r.url, 80)}${r.variantType ? ` (${r.variantType})` : ''} | ${r.status ?? '—'} | ${r.redirectChain.length ? r.redirectChain.map(h => h.status).join('→') + ' → ' + cell(r.finalUrl, 60) : '—'} | ${r.finalStatus ?? '—'} | ${cell(r.canonical)} | ${r.contentHash ?? '—'} | ${r.cache.cfCacheStatus ?? r.cache.xCache ?? '—'} | ${r.error ? cell(r.error, 50) : ''} |`);
+      const verdictMd = verdicts.map(v => `\n**${v.url}**: ${v.normalisesAll ? 'normalises every variant with a single redirect' : 'does NOT normalise every variant'}\n${v.variants.map(j => `- ${j.variantType}: ${j.verdict} (${j.detail})`).join('\n')}`).join('\n');
+      const text = `Probed ${results.length} URL(s)${persist ? ' (saved to probes)' : ''}.\n\n| URL | Status | Redirects | Final | Canonical | Content hash | Cache | Error |\n|---|---|---|---|---|---|---|---|\n${rowsMd.join('\n')}${verdictMd ? '\n' + verdictMd : ''}`;
+      return { content: [{ type: 'text', text: text.slice(0, 38000) }], structuredContent: { results, ...(verdicts.length ? { variants: verdicts } : {}) } };
     },
   );
 

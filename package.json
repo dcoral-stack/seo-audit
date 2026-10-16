@@ -62,6 +62,7 @@
     "probe:crawl-local": "node scripts/probe-crawl-local.mjs",
     "probe:checks-v2": "node scripts/probe-checks-v2.mjs",
     "probe:integrity": "node scripts/probe-integrity.mjs",
+    "probe:probeurls": "node scripts/probe-probeurls.mjs",
     "probe:extract2": "node scripts/probe-extract2.mjs",
     "probe:charset": "node scripts/probe-charset-fixture.mjs",
     "probe:a11y": "node scripts/probe-a11y.mjs",
