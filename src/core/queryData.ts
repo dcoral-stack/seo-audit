@@ -55,7 +55,7 @@ const DEFAULT_ROW_COLUMNS: Record<QueryTable, string[]> = {
   findings: ['id', 'run_id', 'check_id', 'category', 'severity', 'url_key', 'priority'],
   image_assets: ['url', 'bytes', 'status', 'content_type', 'used_on'],
   page_backlinks: ['url', 'backlinks', 'referring_domains', 'dofollow', 'status_code'],
-  redirect_sources: ['url', 'status', 'final_url', 'hops'],
+  redirect_sources: ['url', 'status', 'final_url', 'hops', 'chain'],
   probes: ['url', 'variant_type', 'status', 'final_url', 'final_status', 'canonical', 'verdict', 'probed_at'],
   page_resources: ['page_key', 'resource_url', 'type', 'party', 'position', 'is_async', 'is_defer', 'is_preload'],
   resource_assets: ['url', 'type', 'status', 'content_length', 'cache_control', 'used_on'],

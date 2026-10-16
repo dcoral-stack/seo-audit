@@ -328,9 +328,9 @@ export class Crawler {
       `INSERT INTO errors (crawl_id, url, error_type, error_message) VALUES (?, ?, ?, ?)`,
     );
     const redirectInsert = db.db.prepare(
-      `INSERT INTO redirect_sources (url_key, url, status, final_url, final_key, hops, crawl_id) VALUES (?,?,?,?,?,?,?)
+      `INSERT INTO redirect_sources (url_key, url, status, final_url, final_key, hops, chain, crawl_id) VALUES (?,?,?,?,?,?,?,?)
        ON CONFLICT(url_key) DO UPDATE SET url=excluded.url, status=excluded.status, final_url=excluded.final_url,
-         final_key=excluded.final_key, hops=excluded.hops, crawl_id=excluded.crawl_id`,
+         final_key=excluded.final_key, hops=excluded.hops, chain=excluded.chain, crawl_id=excluded.crawl_id`,
     );
     const resourceInsert = db.db.prepare(
       `INSERT INTO page_resources (crawl_id, page_key, resource_url, type, party, position, is_async, is_defer, is_preload, is_module, crossorigin, media)
@@ -449,7 +449,7 @@ export class Crawler {
             const srcKey = urlKey(item.url, keyOpts);
             if (srcKey !== urlKey(r.finalUrl, keyOpts)) {
               ensureWiped();
-              redirectInsert.run(srcKey, item.url, r.redirects[0].status, r.finalUrl, urlKey(r.finalUrl, keyOpts), r.redirects.length, crawlId);
+              redirectInsert.run(srcKey, item.url, r.redirects[0].status, r.finalUrl, urlKey(r.finalUrl, keyOpts), r.redirects.length, JSON.stringify(r.redirects), crawlId);
             }
           } catch { /* unparseable URL: nothing to record */ }
         }

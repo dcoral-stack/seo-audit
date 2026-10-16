@@ -419,6 +419,7 @@ export class AuditDatabase {
         final_url TEXT,
         final_key TEXT,
         hops INTEGER,
+        chain TEXT,                        -- JSON [{from,to,status}] — every hop, in order
         crawl_id TEXT
       );
     `);
@@ -586,6 +587,8 @@ export class AuditDatabase {
     `);
 
     this.migrate();
+    // redirect_sources predates its chain column on some DBs; it's created after migrate(), so check here.
+    if (!(this.db.prepare(`PRAGMA table_info(redirect_sources)`).all() as { name: string }[]).some(c => c.name === 'chain')) this.db.exec('ALTER TABLE redirect_sources ADD COLUMN chain TEXT');
     ensureFtsSchema(this.db); // after migrate: triggers reference columns migrate may add
     ensureExternalSchema(this.db);
   }
