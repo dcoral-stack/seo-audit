@@ -351,6 +351,22 @@ export class AuditDatabase {
       CREATE INDEX IF NOT EXISTS idx_pbl_backlinks ON page_backlinks(backlinks DESC);
     `);
 
+    // ── Redirect sources (latest crawl) ──────────────────────────────────────
+    // Every crawled URL that redirected, keyed by the SOURCE url_key. pages only stores the final
+    // URL, and a second URL redirecting to an already-seen page leaves no trace there at all, so
+    // without this a backlinked URL that now 301s looked dead forever (#32).
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS redirect_sources (
+        url_key TEXT PRIMARY KEY,
+        url TEXT NOT NULL,
+        status INTEGER,                    -- first hop's status (301/302/307/308)
+        final_url TEXT,
+        final_key TEXT,
+        hops INTEGER,
+        crawl_id TEXT
+      );
+    `);
+
     // ── Sitemap URLs (for crawl↔sitemap reconciliation) ────────────────────
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sitemap_urls (

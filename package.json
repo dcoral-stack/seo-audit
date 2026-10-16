@@ -60,6 +60,7 @@
     "probe:extract": "node scripts/probe-extract.mjs",
     "probe:jobs": "node scripts/probe-jobs.mjs",
     "probe:crawl-local": "node scripts/probe-crawl-local.mjs",
+    "probe:checks-v2": "node scripts/probe-checks-v2.mjs",
     "probe:extract2": "node scripts/probe-extract2.mjs",
     "probe:charset": "node scripts/probe-charset-fixture.mjs",
     "probe:a11y": "node scripts/probe-a11y.mjs",

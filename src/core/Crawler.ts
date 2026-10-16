@@ -280,7 +280,7 @@ export class Crawler {
     let wipedPrior = false;
     const ensureWiped = (): void => {
       if (wipedPrior) return;
-      db.db.exec('DELETE FROM links; DELETE FROM pages;');
+      db.db.exec('DELETE FROM links; DELETE FROM pages; DELETE FROM redirect_sources;');
       wipedPrior = true;
     };
 
@@ -320,6 +320,11 @@ export class Crawler {
     );
     const errorInsert = db.db.prepare(
       `INSERT INTO errors (crawl_id, url, error_type, error_message) VALUES (?, ?, ?, ?)`,
+    );
+    const redirectInsert = db.db.prepare(
+      `INSERT INTO redirect_sources (url_key, url, status, final_url, final_key, hops, crawl_id) VALUES (?,?,?,?,?,?,?)
+       ON CONFLICT(url_key) DO UPDATE SET url=excluded.url, status=excluded.status, final_url=excluded.final_url,
+         final_key=excluded.final_key, hops=excluded.hops, crawl_id=excluded.crawl_id`,
     );
     const flushPages = db.db.transaction((rows: Record<string, unknown>[]) => { for (const r of rows) pageInsert.run(r); });
     const flushLinks = db.db.transaction((rows: Record<string, unknown>[]) => { for (const r of rows) linkInsert.run(r); });
@@ -376,6 +381,17 @@ export class Crawler {
       }
     } catch (err) { console.error('[crawl] GSC seed skipped:', err instanceof Error ? err.message : String(err)); }
 
+    // Seed backlinked URLs (top 200 by backlinks) so every crawl re-verifies what external links
+    // actually land on — a URL fixed with a 301 since the backlink pull stops reading as dead (#32).
+    try {
+      for (const row of db.db.prepare(`SELECT url FROM page_backlinks WHERE backlinks > 0 ORDER BY backlinks DESC LIMIT 200`).all() as { url: string }[]) {
+        if (discovered >= maxPages) break;
+        let host: string; try { host = new URL(row.url).hostname; } catch { continue; }
+        if (!isInternalHost(host, baseHost) || skipUrl(row.url, excludeRes) || isAssetUrl(row.url)) continue;
+        enqueue(row.url, 1);
+      }
+    } catch { /* no page_backlinks table yet */ }
+
     const flush = (final = false): void => {
       if (pageBuf.length || linkBuf.length) ensureWiped();
       if (pageBuf.length && (final || pageBuf.length >= FLUSH_EVERY)) { flushPages(pageBuf.splice(0)); }
@@ -413,6 +429,16 @@ export class Crawler {
         try { offsite = r.redirects.length > 0 && (!isInternalHost(new URL(r.finalUrl).hostname, baseHost) || skipUrl(r.finalUrl, excludeRes)); } catch { /* unparseable final URL */ }
         const pageUrl = offsite ? item.url : r.finalUrl;
         const finalKey = urlKey(pageUrl, keyOpts);
+        // Record the redirect SOURCE before the dedupe below can drop it (#32).
+        if (r.redirects.length) {
+          try {
+            const srcKey = urlKey(item.url, keyOpts);
+            if (srcKey !== urlKey(r.finalUrl, keyOpts)) {
+              ensureWiped();
+              redirectInsert.run(srcKey, item.url, r.redirects[0].status, r.finalUrl, urlKey(r.finalUrl, keyOpts), r.redirects.length, crawlId);
+            }
+          } catch { /* unparseable URL: nothing to record */ }
+        }
         // Multiple enqueued URLs can redirect to the same final page. The pages table
         // dedupes via ON CONFLICT(url_key), but re-extracting the same HTML would insert
         // its outlinks AGAIN, inflating inlink_count/iPR weights — so skip re-processing.
