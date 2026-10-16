@@ -1,4 +1,5 @@
 import { AuditDatabase } from './AuditDatabase.js';
+import { getDataFreshness, type DataFreshness } from './dataFreshness.js';
 import { dbPathFor } from './paths.js';
 import { gscFreshness } from './gscFreshness.js';
 import { expectedCtr } from './ctrModel.js';
@@ -10,6 +11,8 @@ import { contentArchitecture, type TopicCluster } from '../audit/contentArchitec
 
 export interface DashboardData {
   siteUrl: string;
+  /** Live data-freshness / job status read from the DB on every load (not cached). */
+  freshness?: DataFreshness;
   empty?: boolean;
   dateRange?: { current: string; prior: string; maxDate: string; rawMaxDate: string; trimmedDays: number };
   summary?: {
@@ -52,6 +55,8 @@ export interface DashboardData {
   topLinkedPages?: { url: string; inlinks: number; status: number | null; indexable: boolean; reason: string | null }[];
   // Site health — Screaming-Frog-style crawl diagnostics, rendered as plain stat bars (no chart lib).
   crawlHealth?: {
+    /** Canonical / redirect / 404 breakdown with the most-linked example URL per bucket. */
+    urlFlow?: { label: string; count: number; example: string | null; tone?: string }[];
     responseCodes: { label: string; count: number; tone?: string }[];
     indexability: { label: string; count: number; tone?: string }[];
     speed: { label: string; count: number; tone?: string }[];    // response-time buckets (HTML pages)
@@ -141,7 +146,7 @@ interface Totals { clicks: number; impressions: number; position: number }
 
 // Bump when the dashboard payload SHAPE/content changes, so cached entries from older code are
 // invalidated even if the underlying GSC/crawl data hasn't changed. Part of the cache version key.
-const PAYLOAD_VERSION = '20';
+const PAYLOAD_VERSION = '21';
 
 /** Build the dashboard payload for a property from its synced GSC history. */
 export function getDashboardData(dataDir: string, siteUrl: string): DashboardData {
@@ -167,7 +172,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const version = `${PAYLOAD_VERSION}|${ver.sa ?? 'none'}|${ver.run ?? 'none'}|${ver.pg}|${ver.ar ?? ''}|${ver.rh ?? ''}|${ver.sf}|${ver.ms}|${ver.pb ?? ''}|${ver.lp ?? ''}`;
     const hit = db.db.prepare('SELECT payload FROM dashboard_cache WHERE id=1 AND version=?').get(version) as { payload: string } | undefined;
     // A corrupt/truncated cache row must fall through to a rebuild, not throw forever.
-    if (hit) { try { return JSON.parse(hit.payload) as DashboardData; } catch { /* rebuild below */ } }
+    if (hit) { try { return { ...(JSON.parse(hit.payload) as DashboardData), freshness: getDataFreshness(db.db) }; } catch { /* rebuild below */ } }
 
     // Use the finalised date (trailing partial GSC days trimmed) for ALL windows + charts, so the
     // dashboard never shows the "traffic tanking" cliff of unfinalised data.
@@ -763,7 +768,25 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         const imgSampled = one(`SELECT COUNT(*) n FROM image_assets WHERE bytes IS NOT NULL`);
         const largeImages = (db.db.prepare(`SELECT url, bytes, used_on FROM image_assets WHERE bytes >= 100000 ORDER BY bytes DESC LIMIT 15`).all() as { url: string; bytes: number; used_on: number }[])
           .map(r => ({ url: r.url, kb: Math.round(r.bytes / 1024), usedOn: r.used_on }));
+        // Canonical / redirect / not-found breakdown (the crawl-health "where do URLs leak" view):
+        // one pass, with the most-linked example URL per bucket.
+        const bucketSql = `CASE
+            WHEN status_code IN (301,308) THEN 'Permanent redirect (301/308)'
+            WHEN status_code IN (302,303,307) THEN 'Temporary redirect (302/307)'
+            WHEN status_code = 404 THEN 'Not found (404)'
+            WHEN status_code = 410 THEN 'Gone (410)'
+            WHEN status_code = 200 AND indexable_reason = 'canonicalised' THEN 'Canonicalised elsewhere'
+            WHEN status_code = 200 AND ${HTML_CT} AND (canonical_url IS NULL OR canonical_url = '') THEN 'Missing canonical'
+            ELSE NULL END`;
+        const urlFlow = (db.db.prepare(
+          `SELECT b label, COUNT(*) count, MAX(CASE WHEN rn = 1 THEN url_key END) example
+           FROM (SELECT url_key, b, ROW_NUMBER() OVER (PARTITION BY b ORDER BY inlink_count DESC) rn
+                 FROM (SELECT url_key, inlink_count, ${bucketSql} b FROM pages WHERE is_internal=1))
+           WHERE b IS NOT NULL GROUP BY b ORDER BY count DESC`,
+        ).all() as { label: string; count: number; example: string | null }[])
+          .map(r => ({ ...r, tone: /404|410/.test(r.label) ? 'bad' : /Missing/.test(r.label) ? 'warn' : 'muted' }));
         crawlHealth = {
+          urlFlow,
           responseCodes, indexability, speed, htmlSize, depth, titles, metas, onPage, serverErrors, slowPages, largeImages,
           imageStats: imgSampled > 0 ? {
             sampled: imgSampled,
@@ -939,7 +962,8 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         ON CONFLICT(id) DO UPDATE SET version=excluded.version, payload=excluded.payload, created_at=excluded.created_at`)
         .run(version, JSON.stringify(payload));
     } catch { /* cache is an optimisation, never block the dashboard on it */ }
-    return payload;
+    // Freshness is read live on every load (outside the cache) - see dataFreshness.ts.
+    return { ...payload, freshness: getDataFreshness(db.db) };
   } finally {
     db.close();
   }
