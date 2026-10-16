@@ -83,7 +83,7 @@ function readConfigDataDir(): string | undefined {
 
 let RESOLVED_DATA_DIR: string | null = null;
 export function dataDir(): string {
-  if (!RESOLVED_DATA_DIR) RESOLVED_DATA_DIR = process.env.SAC_DATA_DIR ?? readConfigDataDir() ?? DEFAULT_DATA_DIR;
+  if (!RESOLVED_DATA_DIR) RESOLVED_DATA_DIR = process.env.SAC_DATA_DIR?.trim() || readConfigDataDir() || DEFAULT_DATA_DIR;
   return RESOLVED_DATA_DIR;
 }
 
@@ -97,7 +97,7 @@ const SYNC_PROGRESS_URI = `ui://sync-progress/main-${SERVER_VERSION}.html`;
 // filters never silently return empty. (Was listing performance/agentic/integrity/war-stories
 // which no check uses, and omitting content/security which checks do use.)
 const CHECK_CATEGORIES = [
-  'crawlability', 'indexation', 'onpage', 'content', 'schema', 'security', 'performance', 'merged',
+  'crawlability', 'indexation', 'onpage', 'content', 'schema', 'security', 'performance', 'accessibility', 'merged',
 ] as const;
 
 function isoDaysAgo(days: number): string {
@@ -276,7 +276,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
 
   const dfsUser = process.env.DATAFORSEO_USERNAME;
   const dfsPass = process.env.DATAFORSEO_PASSWORD;
-  const dfsCacheDays = Number(process.env.DATAFORSEO_CACHE_DAYS) || 7;
+  const dfsCacheDays = Number(process.env.DATAFORSEO_CACHE_DAYS) || 20;
   const dfs = dfsUser && dfsPass
     ? new DataForSeoClient(dfsUser, dfsPass, path.join(dataDir(), 'dataforseo-cache.db'), dfsCacheDays)
     : null;
@@ -1088,7 +1088,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       const seen = new Set<string>();
       const articles: any[] = [];
       const add = (a: any): void => { const k = String(a.url || a.title || '').toLowerCase(); if (k && !seen.has(k)) { seen.add(k); articles.push(a); } };
-      let cost = 0, cached = true, googleCount = 0, dfsCount = 0, googleError: string | null = null;
+      let cost = 0, cached = false, googleCount = 0, dfsCount = 0, googleError: string | null = null;
       // Free Google News RSS.
       if (src === 'google' || src === 'both') {
         try {
@@ -1100,7 +1100,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       // Paid DataForSEO Google News SERP (only when explicitly asked, or 'both' AND a key is set).
       if (src === 'dataforseo' || (src === 'both' && !!dfs)) {
         const r = await requireDfs(dfs).serpNews(keyword, location, languageCode, n);
-        cost += r.cost; cached = cached && r.cached; dfsCount = r.articles.length;
+        cost += r.cost; cached = r.cached; dfsCount = r.articles.length;
         for (const a of r.articles) add({ ...a, via: 'dataforseo' });
       }
       // Top sources: which publishers are covering this topic, ranked by article count — the
@@ -1281,7 +1281,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
     async ({ siteUrl, limit, minImpressions, location, urls, scrapeCompetitors, competitorLimit, crawlAs }) => {
       const client = requireDfs(dfs); // fail fast if no DataForSEO creds, before starting the job
-      const count = urls?.length ?? limit ?? 5;
+      const count = urls?.length || limit || 5;
       // Async job: N live page-fetches + N serialised SERP calls exceed the ~60s MCP ceiling
       // past a handful of pages, so return a jobId and poll (like refresh_property).
       const jobId = jobs.start('recon', async (update, signal) => {
@@ -1522,9 +1522,10 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
           if (note) notes = (notes ? notes + '\n' : '') + `[${new Date().toISOString().slice(0, 10)}] ${note}`;
           let outcome = row.outcome;
           let outcomeNote = '';
-          if (status === 'shipped' && remeasure && dfs) {
+          if (status === 'shipped' && remeasure) {
+            const client = requireDfs(dfs); // remeasure is paid: fail loudly rather than silently skip it
             // Same depth + async-AIO handling as recon_targets, so before/after are comparable.
-            const serpResp = await dfs.serpOrganic(row.query, location, 'en', 20, { loadAsyncAiOverview: true });
+            const serpResp = await client.serpOrganic(row.query, location, 'en', 20, { loadAsyncAiOverview: true });
             const serp = parseSerpForRecon(serpResp, dfsHost(siteUrl), 20);
             const cited = (v: unknown) => (v == null ? 'unknown' : v ? 'yes' : 'no');
             outcome = JSON.stringify({ organicRank: serp.ourOrganicRank, serpDepth: 20, aioCitesUs: serp.aioCitesUs, aioResolved: serp.aioResolved, at: new Date().toISOString().slice(0, 10) });
@@ -1694,7 +1695,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
     async ({ target, location, languageCode, limit }) => {
       const client = requireDfs(dfs);
-      const cleaned = target.replace(/^sc-domain:/, '').replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '');
+      const cleaned = dfsHost(target);
       const r = await client.competitorsDomain(cleaned, location, languageCode, limit ?? 20);
       const items = (r.tasks[0]?.result?.[0]?.items ?? [])
         .filter((it: any) => it.domain && it.domain.replace(/^www\./, '') !== cleaned) // drop the target itself
@@ -1752,7 +1753,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   // Strip any scheme/sc-domain:/path down to a bare host for Labs domain targets.
   // Always strips leading www. — Labs treats www.example.com as a subdomain, not the domain.
   const dfsHost = (t: string): string =>
-    t.replace(/^sc-domain:/, '').replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '').trim();
+    t.trim().replace(/^sc-domain:/, '').replace(/^https?:\/\//, '').replace(/[/?#].*$/, '').replace(/^www\./, '').toLowerCase();
   // Cap a markdown table well under the ~40k model-facing ceiling: keep whole rows, note the rest.
   const capMdRows = (header: string, rows: string[], footer = '', maxChars = 30000): string => {
     let out = header;

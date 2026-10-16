@@ -47,7 +47,7 @@
         },
         {
           "name": "DATAFORSEO_CACHE_DAYS",
-          "description": "TTL for the DataForSEO response cache, in days. Default 7.",
+          "description": "TTL for the DataForSEO response cache, in days. Default 20.",
           "isRequired": false,
           "format": "string",
           "isSecret": false

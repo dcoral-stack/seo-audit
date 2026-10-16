@@ -43,7 +43,7 @@
  *   mcp-review@anthropic.com.
  */
 import { execSync } from 'node:child_process';
-import { cpSync, mkdirSync, rmSync, existsSync, statSync, readdirSync } from 'node:fs';
+import { cpSync, mkdirSync, rmSync, existsSync, statSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -62,6 +62,18 @@ if (!existsSync(join(root, 'dist', 'index.js'))) {
 rmSync(staging, { recursive: true, force: true });
 mkdirSync(staging, { recursive: true });
 cpSync(join(root, 'mcpb', 'manifest.json'), join(staging, 'manifest.json'));
+// Fields that must match the npm package are copied from package.json at pack time, so a
+// release bump can't leave the Desktop install card advertising a stale version, check count
+// or license (#18). The description keeps the manifest's own text otherwise.
+{
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const manifestPath = join(staging, 'manifest.json');
+  const m = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  m.version = pkg.version;
+  m.description = pkg.description;
+  m.license = pkg.license;
+  writeFileSync(manifestPath, JSON.stringify(m, null, 2) + '\n');
+}
 cpSync(join(root, 'dist'), join(staging, 'dist'), { recursive: true });
 // manifest.icon points at this filename at the bundle root — the directory listing uses it.
 if (existsSync(join(root, 'assets', 'icon.png'))) cpSync(join(root, 'assets', 'icon.png'), join(staging, 'icon.png'));

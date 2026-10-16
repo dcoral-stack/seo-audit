@@ -2,7 +2,7 @@
 
 Every tool the server exposes, grouped by job. Each entry gives you what it does, the inputs that matter, the data grain and join keys where they're relevant, and a prompt you can copy. You never call these by name unless you want to - *"run an SEO audit on mysite.com"* routes to the right tool on its own - but knowing what exists is how you get the most out of it.
 
-DataForSEO-backed tools are marked **[paid]**. They cost real money per live call (fractions of a cent to a few cents), are cached for 7 days, and only ever run when you ask - never in bulk behind your back. Setup and honest cost notes: [competitive.md](competitive.md). One tool, `link_intersect`, has a second optional service behind it - **Majestic**, billed in its own resource units - which switches on when `MAJESTIC_API_KEY` is set and stays entirely out of the way when it isn't.
+DataForSEO-backed tools are marked **[paid]**. They cost real money per live call (fractions of a cent to a few cents), are cached for 20 days, and only ever run when you ask - never in bulk behind your back. Setup and honest cost notes: [competitive.md](competitive.md). One tool, `link_intersect`, has a second optional service behind it - **Majestic**, billed in its own resource units - which switches on when `MAJESTIC_API_KEY` is set and stays entirely out of the way when it isn't.
 
 ## The data pipeline
 
@@ -31,7 +31,7 @@ Just the GSC URL Inspection data: Google's own view of coverage, indexing, its c
 > Inspect the top 100 URLs on mysite.com
 
 ### `track_ranks` [paid]
-Ingests the DataForSEO monthly rank distribution and estimated traffic value into `rank_history`, so rank charts get a real time axis reconciled with your GSC dates. One call per refresh, cached 7 days. Pass `location` once ("United Kingdom", "Australia", or a code) - it's saved per property.
+Ingests the DataForSEO monthly rank distribution and estimated traffic value into `rank_history`, so rank charts get a real time axis reconciled with your GSC dates. One call per refresh, cached 20 days. Pass `location` once ("United Kingdom", "Australia", or a code) - it's saved per property.
 > Track ranks for mysite.com in the UK
 
 ### `check_sync_status` / `check_crawl_status`
@@ -41,7 +41,7 @@ Poll a job by id, or list recent jobs. Sync, inspection, backlinks and entity jo
 ## The audit
 
 ### `run_audit`
-Runs the full check registry over the joined data and returns scored findings ranked by expected clicks per developer-hour: priority = (traffic at stake × yield × certainty) / effort. `categories` filters (crawlability, indexation, onpage, content, schema, security, performance, merged); `includeJudgement:true` adds the heuristic (N) checks, which are off by default.
+Runs the full check registry over the joined data and returns scored findings ranked by expected clicks per developer-hour: priority = (traffic at stake × yield × certainty) / effort. `categories` filters (crawlability, indexation, onpage, content, schema, security, performance, accessibility, merged); `includeJudgement:true` adds the heuristic (N) checks, which are off by default.
 > Run an SEO audit on mysite.com
 > Run an SEO audit on mysite.com, indexation and schema only, with judgement findings
 
@@ -109,7 +109,7 @@ Is your site ready for AI agents? Live HTTP probes of your origin scoring four c
 
 ## Competitive and keyword data (DataForSEO)
 
-All **[paid]**, all cached 7 days, all on-demand. Full workflows in [competitive.md](competitive.md).
+All **[paid]**, all cached 20 days, all on-demand. Full workflows in [competitive.md](competitive.md).
 
 ### `keyword_volume`
 True monthly search volume, CPC and competition for up to 700 keywords. How you size an opportunity before writing a word.
