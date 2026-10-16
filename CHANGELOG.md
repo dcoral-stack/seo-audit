@@ -8,6 +8,18 @@ Each release is tagged `vX.Y.Z` on the release commit (tagging lapsed between 0.
 `package.json`, `server.json` (x2) and `mcpb/manifest.json`, retitle `[Unreleased]` here, commit as
 `chore(release): X.Y.Z`, `git tag -a vX.Y.Z -m "X.Y.Z - <headline>"`, push the tag, `npm publish`.
 
+## [Unreleased]
+
+### Changed
+- **Dashboard redesign: crawl and network intelligence (#38 part 1).** Direction from a Google Stitch round (`design/stitch/`), built on the existing data contracts:
+  - A sticky sidebar (property, navigation, data freshness) replaces the pill tabs, under a slim top bar. The graphite dark and cool-paper light themes share one signal-green accent.
+  - The Overview is rebuilt: KPI strip, clicks / impressions / position as small multiples, findings by priority, crawl-health status mix, a site-network preview, top keywords and pages, and a jobs and data-freshness panel.
+  - Crawl health gets a KPI strip and a canonical / redirect / 404 breakdown. The Network tab (formerly Architecture) leads with the full crawl graph, and Issues gets a by-area filter.
+  - The two dual-axis charts (rank and clicks; DataForSEO keywords vs ETV) become small multiples.
+
+### Added
+- Dashboard payload: `freshness`, read from the property database on every load (outside the cache), so the standalone dashboard sidecar shows the same job status as the MCP. Also `crawlHealth.urlFlow`, the canonical / redirect / not-found buckets with the most-linked example URL per bucket.
+
 ## [0.14.0] — 2026-10-16
 
 Fixes and features from the 0.13.1 code review and the first field test (issues #10-#37, except the Docker gateway item in #9). 107 → 111 checks.
