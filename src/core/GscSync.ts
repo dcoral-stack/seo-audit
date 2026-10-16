@@ -10,6 +10,16 @@ import type { FetchOptions, GscApiRow } from './types.js';
 const LITE_DIMENSIONS = ['date', 'query', 'page'];
 export const FULL_DIMENSIONS = ['date', 'query', 'page', 'device', 'country'];
 
+/** Days re-pulled (and replaced) before the last stored date: GSC restates the most recent days. */
+export const LAG_DAYS = 4;
+
+/** Where an incremental sync resumes: last stored date minus LAG_DAYS, never before the requested start. */
+export function incrementalStart(maxStoredDate: string | null, requestedStart: string): string {
+  if (!maxStoredDate) return requestedStart;
+  const resume = new Date(Date.parse(maxStoredDate) - LAG_DAYS * 86400000).toISOString().slice(0, 10);
+  return resume > requestedStart ? resume : requestedStart;
+}
+
 export interface SyncResult {
   siteUrl: string;
   rowsFetched: number;
@@ -23,6 +33,20 @@ export interface SyncResult {
  */
 export class GscSync {
   constructor(private readonly gsc: GscClient, private readonly dataDir: string) {}
+
+  /** The range a sync with these options will fetch, for the start reply (#33). A shape change
+   *  (lite ↔ segmented, or a different search type) still forces the full window; the finished job
+   *  reports the range actually used. */
+  plannedRange(siteUrl: string, options: FetchOptions): { startDate: string; endDate: string; incremental: boolean } {
+    if (options.fullResync) return { startDate: options.startDate, endDate: options.endDate, incremental: false };
+    let mx: string | null = null;
+    try {
+      const db = new AuditDatabase(dbPathFor(this.dataDir, siteUrl));
+      try { mx = (db.db.prepare('SELECT MAX(date) d FROM search_analytics').get() as { d: string | null }).d; } finally { db.close(); }
+    } catch { /* no DB yet */ }
+    const startDate = incrementalStart(mx, options.startDate);
+    return { startDate, endDate: options.endDate, incremental: startDate !== options.startDate };
+  }
 
   async run(
     siteUrl: string,
@@ -96,7 +120,6 @@ export class GscSync {
       // Runs AFTER the mode-guard: if the table was just wiped (shape conflict) MAX(date) is null →
       // full window. `fullResync` forces the full window. Only ever NARROWS the window (never widens
       // past the requested start), and resumes from wherever the data left off (covers any gap).
-      const LAG_DAYS = 4;
       // Re-pulled lag days are REPLACED, not merged (#22): GSC can drop or merge rows while a day
       // finalises, and an upsert would leave those stale rows behind. Like the shape wipe, the
       // delete is deferred into the first fetched batch's transaction, so a failed fetch loses nothing.
@@ -104,7 +127,7 @@ export class GscSync {
       if (!options.fullResync && !mustWipe) { // a pending wipe means the stored MAX(date) is the OLD shape's — pull the full window
         const mx = (db.db.prepare('SELECT MAX(date) d FROM search_analytics').get() as { d: string | null }).d;
         if (mx) {
-          const resume = new Date(Date.parse(mx) - LAG_DAYS * 86400000).toISOString().slice(0, 10);
+          const resume = new Date(Date.parse(mx) - LAG_DAYS * 86400000).toISOString().slice(0, 10); // = incrementalStart() when it narrows
           // Already synced past the requested window (e.g. a historical/comparison pull whose
           // endDate predates the stored data): no-op instead of calling GSC with start > end.
           if (resume > options2.endDate) {

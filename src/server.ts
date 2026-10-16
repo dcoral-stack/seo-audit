@@ -964,12 +964,13 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         fullResync: full,
         searchType,
       };
+      const planned = syncer.plannedRange(siteUrl, options); // before the job can write
       const jobId = jobs.start('sync', (update, signal) => syncer.run(siteUrl, options, update, signal));
-      // The window shown is what was REQUESTED. Unless full:true, an existing property is synced
-      // incrementally from its last stored date minus a few lag days; the finished job reports the
-      // range actually fetched (#33).
-      return jobStarted({ jobId, status: 'running', siteUrl, requestedStartDate: options.startDate, requestedEndDate: options.endDate, incremental: !full, ...(options.dimensions ? { dimensions: options.dimensions } : {}), ...(searchType ? { searchType } : {}) },
-        `Sync started for ${siteUrl} (job ${jobId}). ${full ? 'Full re-pull of the requested window.' : 'Incremental: if data already exists, only the last few stored days onward are fetched and replaced; the finished job reports the actual range.'} Poll check_sync_status.`);
+      // Show the range this sync will actually fetch, not the requested default (#33). planned is
+      // computed by the same rule as the job; a shape change can still widen it, and the finished
+      // job reports the range used.
+      return jobStarted({ jobId, status: 'running', siteUrl, startDate: planned.startDate, endDate: planned.endDate, incremental: planned.incremental, requestedStartDate: options.startDate, ...(options.dimensions ? { dimensions: options.dimensions } : {}), ...(searchType ? { searchType } : {}) },
+        `Sync started for ${siteUrl} (job ${jobId}): fetching ${planned.startDate} → ${planned.endDate}${planned.incremental ? ` (incremental: the last stored days are re-pulled and replaced; requested window started ${options.startDate})` : full ? ' (full re-pull)' : ''}. Poll check_sync_status.`);
     },
   );
 
