@@ -41,16 +41,19 @@ export function chartPalette(): ChartPalette {
   };
 }
 
-/** Shared axis styling: axis-discipline labels + whisper dashed gridlines. */
+/** The mono stack for axis ticks and figures on the canvas (reads the --font-mono token). */
+export const monoFont = (): string => cssVar('--font-mono', 'ui-monospace, monospace');
+
+/** Shared axis styling: axis-discipline labels + solid hairline gridlines (dataviz: never dashed). */
 export function axisDefaults(col: ChartPalette, opts: { numeric?: boolean } = {}) {
   return {
     axisLine: { lineStyle: { color: col.border } },
     axisLabel: {
-      color: col.axisText, fontSize: 11,
+      color: col.axisText, fontSize: 10.5, fontFamily: monoFont(),
       ...(opts.numeric ? { formatter: (v: number) => fmtAxis(v) } : {}),
     },
     nameTextStyle: { color: col.axisText, fontSize: 11 },
-    splitLine: { lineStyle: { color: col.grid, type: 'dashed' as const } },
+    splitLine: { lineStyle: { color: col.grid, type: 'solid' as const, width: 1 } },
   };
 }
 

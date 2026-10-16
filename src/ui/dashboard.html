@@ -7,31 +7,71 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <div class="dashboard">
-    <div class="loading" id="loading">Loading dashboard…</div>
-    <div id="content" style="display:none">
-      <div class="header">
-        <div class="site" id="site"></div>
+  <div class="app">
+    <aside class="sidebar" aria-label="Dashboard navigation">
+      <div class="brand"><span class="brand-dot" aria-hidden="true"></span><span class="brand-name">SEO Audit Console</span></div>
+      <div class="side-property" id="sideProperty"><span class="side-label">Property</span><div class="site" id="site"></div></div>
+      <nav class="tabs nav" id="tabs" role="tablist" aria-orientation="vertical">
+        <button class="tab-btn nav-item active" data-panel="overview" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg><span>Overview</span></button>
+        <button class="tab-btn nav-item" data-panel="issues" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span>Issues &amp; fixes</span></button>
+        <button class="tab-btn nav-item" data-panel="health" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Crawl health</span></button>
+        <button class="tab-btn nav-item" data-panel="architecture" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M11 7.2 6.2 15.8M13 7.2l4.8 8.6M7.5 18h9"/></svg><span>Network</span></button>
+        <button class="tab-btn nav-item" data-panel="search" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></svg><span>Search performance</span></button>
+        <button class="tab-btn nav-item" data-panel="opportunities" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.8V16h5v-.3c0-.7.4-1.4 1-1.8A6 6 0 0 0 12 3z"/></svg><span>Opportunities</span></button>
+        <button class="tab-btn nav-item" data-panel="links" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg><span>Links</span></button>
+        <button class="tab-btn nav-item" data-panel="research" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.6" y2="16.6"/></svg><span>Content research</span></button>
+      </nav>
+      <div class="side-fresh" id="sideFresh" aria-label="Data freshness"></div>
+    </aside>
+    <div class="main">
+      <header class="topbar header">
+        <h1 class="page-title" id="pageTitle">Overview</h1>
         <div class="header-right">
           <div class="range" id="range"></div>
           <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle light or dark theme" title="Toggle light / dark"></button>
         </div>
-      </div>
-      <nav class="tabs" id="tabs" role="tablist">
-        <button class="tab-btn active" data-panel="overview" role="tab">Overview</button>
-        <button class="tab-btn" data-panel="issues" role="tab">Issues &amp; fixes</button>
-        <button class="tab-btn" data-panel="health" role="tab">Site health</button>
-        <button class="tab-btn" data-panel="opportunities" role="tab">Opportunities</button>
-        <button class="tab-btn" data-panel="search" role="tab">Search performance</button>
-        <button class="tab-btn" data-panel="architecture" role="tab">Architecture</button>
-        <button class="tab-btn" data-panel="links" role="tab">Links</button>
-        <button class="tab-btn" data-panel="research" role="tab">Content research</button>
-      </nav>
+      </header>
+      <div class="dashboard">
+    <div class="loading" id="loading">Loading dashboard…</div>
+    <div id="content" style="display:none">
 
       <section class="tab-panel active" data-panel="overview" role="tabpanel">
-        <div id="reportNav" class="report-nav"></div>
-        <div class="chart-card" id="healthCard" style="display:none">
-          <div class="health-score" id="healthScore"></div>
+        <div class="kpis" id="ovKpis"></div>
+        <div class="grid g-8-4">
+          <div class="chart-card">
+            <div class="card-head"><div><h3>Search performance over time</h3><div class="hint">Daily clicks, impressions and average position, one chart each on a shared timeline.</div></div><span class="src" id="ovTrendSrc"></span></div>
+            <p class="sr-only" id="ovTrendSummary"></p>
+            <div class="chart chart-multiples" id="ovTrendChart" role="img" aria-label="Clicks, impressions and average position over time"></div>
+          </div>
+          <div class="chart-card" id="ovFindingsCard">
+            <div class="card-head"><div><h3>Findings by priority</h3><div class="hint">The latest audit, ranked by impact ÷ effort.</div></div><span class="src" id="ovFindingsSrc"></span></div>
+            <div id="ovFindings"></div>
+          </div>
+        </div>
+        <div class="grid g-6-6">
+          <div class="chart-card">
+            <div class="card-head"><div><h3>Crawl health</h3><div class="hint">Status mix and where URLs leak, from the latest crawl.</div></div><span class="src" id="ovCrawlSrc"></span></div>
+            <div id="ovCrawl"></div>
+          </div>
+          <div class="chart-card">
+            <div class="card-head"><div><h3>Site network</h3><div class="hint">The highest-PageRank pages and the in-content links between them.</div></div><button class="link-btn" type="button" data-goto="architecture">Open network →</button></div>
+            <p class="sr-only" id="ovNetSummary"></p>
+            <div class="chart chart-net" id="ovNetChart" role="img" aria-label="Crawl network preview"></div>
+          </div>
+        </div>
+        <div class="grid g-6-6">
+          <div class="chart-card">
+            <div class="card-head"><div><h3>Top keywords</h3><div class="hint">Last 28 days vs the prior 28, by clicks.</div></div><button class="link-btn" type="button" data-goto="search">All keywords →</button></div>
+            <div id="ovKeywords" class="findings-table"></div>
+          </div>
+          <div class="chart-card">
+            <div class="card-head"><div><h3>Top pages</h3><div class="hint">Last 28 days vs the prior 28, by clicks.</div></div><button class="link-btn" type="button" data-goto="search">All pages →</button></div>
+            <div id="ovPages" class="findings-table"></div>
+          </div>
+        </div>
+        <div class="chart-card">
+          <div class="card-head"><div><h3>Jobs and data freshness</h3><div class="hint">What each data source last wrote to this property&#39;s database.</div></div></div>
+          <div id="ovJobs"></div>
         </div>
         <div class="chart-card" id="execCard">
           <h3>Executive summary</h3>
@@ -52,7 +92,10 @@
           <div id="issuesListView">
             <p class="sr-only" id="findingsSummary"></p>
             <div class="sev-chips" id="sevChips" role="group" aria-label="Filter findings by severity"></div>
-            <div id="findingsTable" class="findings-table"></div>
+            <div class="issues-grid">
+              <aside class="by-area" id="byArea" aria-label="Findings by area"></aside>
+              <div id="findingsTable" class="findings-table"></div>
+            </div>
           </div>
           <div id="issuesGroupedView" style="display:none">
             <div class="recs-controls" id="recsControls"></div>
@@ -62,6 +105,11 @@
       </section>
 
       <section class="tab-panel" data-panel="health" role="tabpanel">
+        <div class="kpis" id="healthKpis"></div>
+        <div class="chart-card" id="urlFlowCard">
+          <div class="card-head"><div><h3>Canonical, redirect and not-found breakdown</h3><div class="hint">Internal URLs that redirect, 404, or point their canonical elsewhere, each with its most-linked example.</div></div></div>
+          <div id="urlFlow" class="findings-table"></div>
+        </div>
         <div class="chart-card">
           <h3>Crawl overview</h3>
           <div class="hint">The classic crawl diagnostics, from the latest crawl of your site. Counts are internal URLs; bars are the share of crawled pages.</div>
@@ -234,17 +282,17 @@
       </section>
 
       <section class="tab-panel" data-panel="architecture" role="tabpanel">
+        <div class="chart-card" id="structureCard" style="display:none">
+          <h3>Site network - your internal link skeleton</h3>
+          <div class="hint">The top pages by internal PageRank and the in-content links between them. Node size = internal PageRank; <span style="color:var(--intent-success)">green</span> = healthy and indexable, <span style="color:var(--intent-warning)">amber</span> = indexable: no (noindex / canonicalised), <span style="color:var(--intent-danger)">red</span> = broken or redirected. Drag to explore; scroll to zoom.</div>
+          <p class="sr-only" id="structureSummary"></p>
+          <div class="chart chart-network" id="structureChart" role="img" aria-label="Force-directed map of the internal link structure"></div>
+        </div>
         <div class="chart-card">
           <h3>Where your link equity flows vs where traffic comes from</h3>
           <div class="hint">Internal PageRank share vs organic traffic share, by template. A tall blue bar with little green beside it = equity flowing into a dead end.</div>
           <p class="sr-only" id="mismatchSummary"></p>
           <div class="chart" id="mismatchChart" role="img" aria-label="Internal equity share versus organic traffic share by template"></div>
-        </div>
-        <div class="chart-card" id="structureCard" style="display:none">
-          <h3>Site structure - your internal link skeleton</h3>
-          <div class="hint">The top pages by internal PageRank and the in-content links between them. Node size = internal PageRank; <span style="color:var(--intent-success)">green</span> = healthy and indexable, <span style="color:var(--intent-warning)">amber</span> = indexable: no (noindex / canonicalised), <span style="color:var(--intent-danger)">red</span> = broken or redirected. Drag to explore; scroll to zoom.</div>
-          <p class="sr-only" id="structureSummary"></p>
-          <div class="chart chart-tall" id="structureChart" role="img" aria-label="Force-directed map of the internal link structure"></div>
         </div>
         <div class="chart-card" id="linkFlowsCard" style="display:none">
           <h3>Where link equity flows - folder to folder</h3>
@@ -300,6 +348,8 @@
     <footer class="app-footer">
       <a href="https://houtini.com" target="_blank" rel="noopener noreferrer">By Houtini.com</a>
     </footer>
+      </div>
+    </div>
   </div>
   <script type="module" src="./dashboard.ts"></script>
 </body>
