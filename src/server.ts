@@ -61,7 +61,7 @@ import { MajesticClient } from './core/MajesticClient.js';
 import { fetchGoogleNews } from './core/googleNews.js';
 import { WikidataClient } from './core/WikidataClient.js';
 import { Entities } from './core/Entities.js';
-import { JobManager } from './core/JobManager.js';
+import { JobManager, corruptionHint, type Job } from './core/JobManager.js';
 import { gscFreshness } from './core/gscFreshness.js';
 import { clusterKeywordList } from './audit/keywordList.js';
 import type { FetchOptions } from './core/types.js';
@@ -459,8 +459,12 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         const stale = ageDays != null && ageDays > 20;
         return `- ${p.siteUrl ?? p.file}: ${p.linkProspects} prospects, captured ${fetched?.slice(0, 10) ?? '—'}${ageDays != null ? ` (${ageDays}d ago${stale ? ' — likely stale, re-run link_intersect to update' : ''})` : ''}`;
       }).join('\n');
+      // A crawl that never completed doesn't count as the last crawl (#20); list it so it's visible.
+      const runLines = s.properties.filter(p => p.latestCrawlRun).map(p =>
+        `- ${p.siteUrl ?? p.file}: latest crawl run ${p.latestCrawlRun!.status} (started ${p.latestCrawlRun!.startedAt.slice(0, 16).replace('T', ' ')})${p.latestCrawlRun!.error ? `: ${p.latestCrawlRun!.error}` : ''}${p.latestCrawlRun!.status === 'running' ? ' (if no job is running, it died with its server process)' : ''}`).join('\n');
       const md = `**Data dir:** ${s.dataDir} — total ${fmtBytes(s.totalBytes)}\n\n` +
-        `| Property | Size | GSC rows | Pages | Links | Snapshots | Findings | Last sync | Last crawl |\n|---|---|---|---|---|---|---|---|---|\n${rows}\n\n` +
+        `| Property | Size | GSC rows | Pages | Links | Snapshots | Findings | Last sync | Last completed crawl |\n|---|---|---|---|---|---|---|---|---|\n${rows}\n\n` +
+        `${runLines ? `Crawl runs that did not complete:\n${runLines}\n\n` : ''}` +
         `${liLines ? `Link-intersect prospects (may be stale — competitors keep earning links):\n${liLines}\n\n` : ''}` +
         `${cacheLines ? `Caches:\n${cacheLines}\n` : ''}Reports folder: ${fmtBytes(s.reportsBytes)}` +
         `${s.other.length ? `\nOther .db files: ${s.other.map(o => `${o.file} (${fmtBytes(o.bytes)})`).join(', ')}` : ''}\n\n` +
@@ -590,6 +594,33 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
   );
 
+  // ── Async-job helpers ─────────────────────────────────────────────────────
+  // A job-starting tool returns the same JSON in the text reply as in structuredContent, so a
+  // client that reads only text content can still take the jobId without regexing prose (#27).
+  const jobStarted = (sc: Record<string, unknown>, hint: string) => ({
+    content: [{ type: 'text' as const, text: `${JSON.stringify(sc)}\n${hint}` }],
+    structuredContent: sc,
+  });
+  // One status handler, registered as both check_sync_status and check_crawl_status (#19). The
+  // text carries the failure reason and latest progress, not just the state (#33): many clients
+  // and models read only the text content.
+  const oneLineJob = (job: Job): string => {
+    const head = `Job ${job.id} (${job.type}): ${job.state}`;
+    if (job.state === 'failed') return `${head}: ${job.error ?? 'unknown error'}${corruptionHint(job.error)}`;
+    const prog = Object.keys(job.progress).length ? ` ${JSON.stringify(job.progress).slice(0, 300)}` : '';
+    return head + prog;
+  };
+  const jobStatus = async ({ jobId }: { jobId?: string }) => {
+    if (jobId) {
+      const job = jobs.get(jobId);
+      if (!job) return { content: [{ type: 'text' as const, text: `No job ${jobId}. Jobs live in the server process, so a job is lost if that process restarted.` }], structuredContent: { error: 'not_found', jobId } };
+      return { content: [{ type: 'text' as const, text: oneLineJob(job) }], structuredContent: job as unknown as Record<string, unknown> };
+    }
+    const all = jobs.list();
+    const lines = all.slice(0, 20).map(oneLineJob);
+    return { content: [{ type: 'text' as const, text: `${all.length} jobs${lines.length ? '\n' + lines.join('\n') : ''}` }], structuredContent: { jobs: all } };
+  };
+
   server.registerTool(
     'render_pages',
     {
@@ -599,10 +630,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
     async ({ siteUrl, limit, urls }) => {
       const jobId = jobs.start('render', (update, signal) => auditRender(dataDir(), siteUrl, { ...(limit != null ? { limit } : {}), ...(urls?.length ? { urls } : {}) }, update, signal));
-      return {
-        content: [{ type: 'text', text: `Render pass started for ${siteUrl} (job ${jobId}). Headless Chromium renders each sampled page (a few seconds each), so poll check_crawl_status with jobId "${jobId}"; the finished job reports which pages depend on JavaScript. If Playwright/Chromium isn’t installed the job returns a one-line install hint and the HTTP audit is unaffected.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Render pass started for ${siteUrl} (job ${jobId}). Headless Chromium renders each sampled page (a few seconds each), so poll check_crawl_status with jobId "${jobId}"; the finished job reports which pages depend on JavaScript. If Playwright/Chromium isn’t installed the job returns a one-line install hint and the HTTP audit is unaffected.`);
     },
   );
 
@@ -617,10 +645,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       // Async job: the first run downloads the model and embedding up to `limit` pages (CPU, cold
       // cache, large sites) can exceed the ~60s tool ceiling — return a jobId and poll.
       const jobId = jobs.start('duplicates', () => findNearDuplicates(dataDir(), siteUrl, { ...(threshold != null ? { threshold } : {}), ...(limit != null ? { limit } : {}) }));
-      return {
-        content: [{ type: 'text', text: `Near-duplicate scan started for ${siteUrl} (job ${jobId}). Embedding runs locally (first run downloads ~25MB); poll check_crawl_status with jobId "${jobId}". The finished job lists the near-duplicate pairs; run_audit includeJudgement:true then surfaces them as near-duplicate-content.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Near-duplicate scan started for ${siteUrl} (job ${jobId}). Embedding runs locally (first run downloads ~25MB); poll check_crawl_status with jobId "${jobId}". The finished job lists the near-duplicate pairs; run_audit includeJudgement:true then surfaces them as near-duplicate-content.`);
     },
   );
 
@@ -884,10 +909,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         const dashboardUrl = dashboardServerUrl();
         return dashboardUrl ? { ...(r as Record<string, unknown>), dashboardUrl, dashboard: `${dashboardUrl}/dashboard?siteUrl=${encodeURIComponent(siteUrl)}` } : r;
       });
-      return {
-        content: [{ type: 'text', text: `Refresh started for ${siteUrl} (job ${jobId}). Poll check_sync_status.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Refresh started for ${siteUrl} (job ${jobId}). Poll check_sync_status.`);
     },
   );
 
@@ -916,10 +938,11 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         searchType,
       };
       const jobId = jobs.start('sync', (update, signal) => syncer.run(siteUrl, options, update, signal));
-      return {
-        content: [{ type: 'text', text: `Sync started for ${siteUrl} (job ${jobId}). Poll check_sync_status.` }],
-        structuredContent: { jobId, status: 'running', siteUrl, ...options },
-      };
+      // The window shown is what was REQUESTED. Unless full:true, an existing property is synced
+      // incrementally from its last stored date minus a few lag days; the finished job reports the
+      // range actually fetched (#33).
+      return jobStarted({ jobId, status: 'running', siteUrl, requestedStartDate: options.startDate, requestedEndDate: options.endDate, incremental: !full, ...(options.dimensions ? { dimensions: options.dimensions } : {}), ...(searchType ? { searchType } : {}) },
+        `Sync started for ${siteUrl} (job ${jobId}). ${full ? 'Full re-pull of the requested window.' : 'Incremental: if data already exists, only the last few stored days onward are fetched and replaced; the finished job reports the actual range.'} Poll check_sync_status.`);
     },
   );
 
@@ -927,18 +950,10 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'check_sync_status',
     {
       title: 'Check sync status',
-      description: 'Poll a sync job by id, or omit to list recent jobs.',
+      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A failed job\'s reason is in the text reply as well as in structuredContent.error.',
       inputSchema: { jobId: z.string().optional() },
     },
-    async ({ jobId }) => {
-      if (jobId) {
-        const job = jobs.get(jobId);
-        if (!job) return { content: [{ type: 'text', text: `No job ${jobId}` }], structuredContent: { error: 'not_found', jobId } };
-        return { content: [{ type: 'text', text: `Job ${jobId}: ${job.state}` }], structuredContent: job as unknown as Record<string, unknown> };
-      }
-      const all = jobs.list();
-      return { content: [{ type: 'text', text: `${all.length} jobs` }], structuredContent: { jobs: all } };
-    },
+    jobStatus,
   );
 
   server.registerTool(
@@ -951,10 +966,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     async ({ siteUrl, limit }) => {
       const insp = requireGsc(inspector);
       const jobId = jobs.start('inspect', (update, signal) => insp.run(siteUrl, { limit }, update, signal));
-      return {
-        content: [{ type: 'text', text: `Inspection started for ${siteUrl} (job ${jobId}). Poll check_sync_status.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Inspection started for ${siteUrl} (job ${jobId}). Poll check_sync_status.`);
     },
   );
 
@@ -978,10 +990,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       const jobId = jobs.start('crawl', (update, signal) =>
         crawler.run(siteUrl, { maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns }, update, signal),
       );
-      return {
-        content: [{ type: 'text', text: `Crawl started for ${siteUrl} (job ${jobId}). Poll check_crawl_status.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Crawl started for ${siteUrl} (job ${jobId}). Poll check_crawl_status.`);
     },
   );
 
@@ -989,18 +998,10 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'check_crawl_status',
     {
       title: 'Check crawl status',
-      description: 'Poll a crawl job by id, or omit to list recent jobs.',
+      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A failed job\'s reason is in the text reply as well as in structuredContent.error.',
       inputSchema: { jobId: z.string().optional() },
     },
-    async ({ jobId }) => {
-      if (jobId) {
-        const job = jobs.get(jobId);
-        if (!job) return { content: [{ type: 'text', text: `No job ${jobId}` }], structuredContent: { error: 'not_found', jobId } };
-        return { content: [{ type: 'text', text: `Job ${jobId}: ${job.state}` }], structuredContent: job as unknown as Record<string, unknown> };
-      }
-      const all = jobs.list();
-      return { content: [{ type: 'text', text: `${all.length} jobs` }], structuredContent: { jobs: all } };
-    },
+    jobStatus,
   );
 
   // ── DataForSEO (cached 20 days, single-worker) ──────────────────────────
@@ -1449,10 +1450,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
           return { siteUrl, cost, window: gscWindow, serpDepth: SERP_DEPTH, targets: slimTargets, summary: md };
         } finally { db.close(); }
       });
-      return {
-        content: [{ type: 'text', text: `Content recon started for ${count} page(s) — job ${jobId}. Each page is a live page-fetch + a serialised SERP call (a few seconds each), so poll check_sync_status with jobId "${jobId}"; the finished job's result carries the per-page verdicts, to-dos and a summary.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Content recon started for ${count} page(s) — job ${jobId}. Each page is a live page-fetch + a serialised SERP call (a few seconds each), so poll check_sync_status with jobId "${jobId}"; the finished job's result carries the per-page verdicts, to-dos and a summary.`);
     },
   );
 
@@ -2346,10 +2344,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     async ({ siteUrl, limit, statusLimit }) => {
       const bl = requireDfs(backlinks);
       const jobId = jobs.start('backlinks', (update, signal) => bl.run(siteUrl, { limit, statusLimit }, update, signal));
-      return {
-        content: [{ type: 'text', text: `Backlink pull started for ${siteUrl} (job ${jobId}). Poll check_sync_status, then run_audit for backlinks-to-404.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Backlink pull started for ${siteUrl} (job ${jobId}). Poll check_sync_status, then run_audit for backlinks-to-404.`);
     },
   );
 
@@ -2459,10 +2454,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
     async ({ siteUrl, limit, language }) => {
       const jobId = jobs.start('entities', (update, signal) => entities.run(siteUrl, { ...(limit != null ? { limit } : {}), ...(language ? { language } : {}) }, update, signal));
-      return {
-        content: [{ type: 'text', text: `Entity resolution started for ${siteUrl} (job ${jobId}). Poll check_sync_status, then run_audit includeJudgement:true for entity-internal-link-gap.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Entity resolution started for ${siteUrl} (job ${jobId}). Poll check_sync_status, then run_audit includeJudgement:true for entity-internal-link-gap.`);
     },
   );
 
@@ -2523,10 +2515,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     async ({ siteUrl, location }) => {
       const tracker = requireDfs(rankTracker);
       const jobId = jobs.start('rank_history', (update, signal) => tracker.run(siteUrl, { location }, update, signal));
-      return {
-        content: [{ type: 'text', text: `Rank-history ingest started for ${siteUrl} (job ${jobId}). Poll check_sync_status.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Rank-history ingest started for ${siteUrl} (job ${jobId}). Poll check_sync_status.`);
     },
   );
 

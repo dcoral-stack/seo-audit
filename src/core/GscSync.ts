@@ -84,15 +84,23 @@ export class GscSync {
         db.db.exec('DELETE FROM search_analytics');
         for (const r of records) insert.run(r);
       });
+      const replaceAndInsert = db.db.transaction((from: string, records: Record<string, unknown>[]) => {
+        db.db.prepare('DELETE FROM search_analytics WHERE date >= ?').run(from);
+        for (const r of records) insert.run(r);
+      });
 
       // ── Incremental resume ─────────────────────────────────────────────────────────────────
       // The first sync pulls the requested window; every sync after that only fetches from the
-      // last stored date minus a lag buffer (GSC restates the most recent ~3 days), instead of
+      // last stored date minus a lag buffer (GSC restates the most recent few days), instead of
       // re-pulling the whole window. Turns a 30-minute, 1.8M-row refresh into a seconds-long delta.
       // Runs AFTER the mode-guard: if the table was just wiped (shape conflict) MAX(date) is null →
       // full window. `fullResync` forces the full window. Only ever NARROWS the window (never widens
       // past the requested start), and resumes from wherever the data left off (covers any gap).
-      const LAG_DAYS = 3;
+      const LAG_DAYS = 4;
+      // Re-pulled lag days are REPLACED, not merged (#22): GSC can drop or merge rows while a day
+      // finalises, and an upsert would leave those stale rows behind. Like the shape wipe, the
+      // delete is deferred into the first fetched batch's transaction, so a failed fetch loses nothing.
+      let replaceFrom: string | null = null;
       if (!options.fullResync && !mustWipe) { // a pending wipe means the stored MAX(date) is the OLD shape's — pull the full window
         const mx = (db.db.prepare('SELECT MAX(date) d FROM search_analytics').get() as { d: string | null }).d;
         if (mx) {
@@ -103,7 +111,7 @@ export class GscSync {
             db.db.prepare(`UPDATE property_meta SET last_synced_at = datetime('now') WHERE site_url = ?`).run(siteUrl);
             return { siteUrl, rowsFetched: 0, startDate: options2.startDate, endDate: options2.endDate };
           }
-          if (resume > options2.startDate) { options2 = { ...options2, startDate: resume }; }
+          if (resume > options2.startDate) { options2 = { ...options2, startDate: resume }; replaceFrom = resume; }
         }
       }
 
@@ -128,6 +136,7 @@ export class GscSync {
           };
         });
         if (mustWipe) { wipeAndInsert(records); mustWipe = false; }
+        else if (replaceFrom) { replaceAndInsert(replaceFrom, records); replaceFrom = null; }
         else insertMany(records);
         total += records.length;
         update({ siteUrl, rowsFetched: total });

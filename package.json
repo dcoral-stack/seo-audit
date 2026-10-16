@@ -58,6 +58,7 @@
     "probe:schema": "node scripts/probe-schema.mjs",
     "probe:schema-rules": "node scripts/probe-schema-rules.mjs",
     "probe:extract": "node scripts/probe-extract.mjs",
+    "probe:jobs": "node scripts/probe-jobs.mjs",
     "probe:extract2": "node scripts/probe-extract2.mjs",
     "probe:charset": "node scripts/probe-charset-fixture.mjs",
     "probe:a11y": "node scripts/probe-a11y.mjs",
