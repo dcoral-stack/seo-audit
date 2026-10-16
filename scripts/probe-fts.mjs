@@ -87,6 +87,10 @@ w.close();
   check('worker backfill makes the index usable', r.rows?.length === 1, JSON.stringify(r));
   const w3 = new AuditDatabase(p2); const after = pendingBackfills(w3.db, ['sa_query_fts']); w3.close();
   check('and records it as built', after.length === 0, JSON.stringify(after));
+  const ac = new AbortController(); ac.abort();
+  let cancelled = false;
+  try { await backfillInWorker(p2, ['pages_fts'], ac.signal); } catch (e) { cancelled = /cancel/.test(e.message); }
+  check('an aborted backfill job rejects as cancelled and releases the worker', cancelled, '');
 }
 
 rmSync(dir, { recursive: true, force: true });

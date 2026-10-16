@@ -17,7 +17,7 @@ import { CHROME_HEADERS, looksBotBlocked, type FetchedAs } from './userAgents.js
 
 export type ExternalVerdict = 'ok' | 'redirected' | 'broken' | 'unverifiable';
 export interface ExternalHop { url: string; status: number }
-export interface ExternalCheck { url: string; status: number | null; finalUrl: string | null; chain: ExternalHop[]; verdict: ExternalVerdict; permanent: boolean; error: string | null; method: 'HEAD' | 'GET'; fetchedAs: FetchedAs }
+export interface ExternalCheck { url: string; status: number | null; finalUrl: string | null; chain: ExternalHop[]; verdict: ExternalVerdict; permanent: boolean; error: string | null; method: 'HEAD' | 'GET'; fetchedAs: FetchedAs; botWall?: boolean }
 
 export interface ExternalOptions {
   userAgent: string;
@@ -37,7 +37,6 @@ export interface ExternalOptions {
 export interface ExternalSummary { targets: number; checked: number; cached: number; deferred: number; ok: number; redirected: number; broken: number; unverifiable: number; viaChrome: number }
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
-const BOT_STATUSES = new Set([401, 403, 429, 999]);
 
 function classifyError(e: unknown): string {
   const c = (e as any)?.cause?.code ?? (e as any)?.code ?? '';
@@ -50,7 +49,7 @@ function classifyError(e: unknown): string {
   return (e as any)?.message ? String((e as any).message).slice(0, 120) : 'fetch failed';
 }
 
-type CheckOpts = Required<Pick<ExternalOptions, 'userAgent' | 'timeoutMs'>> & { dispatcher?: Dispatcher; chromeFallback?: boolean };
+type CheckOpts = Required<Pick<ExternalOptions, 'userAgent' | 'timeoutMs'>> & { dispatcher?: Dispatcher; chromeFallback?: boolean; retryDelayMs?: number };
 
 async function follow(url: string, method: 'HEAD' | 'GET', o: CheckOpts, ranged = true, chrome = false): Promise<{ status: number; finalUrl: string; chain: ExternalHop[]; botWall: boolean }> {
   const chain: ExternalHop[] = [];
@@ -67,8 +66,9 @@ async function follow(url: string, method: 'HEAD' | 'GET', o: CheckOpts, ranged 
       current = new URL(loc, current).toString();
       continue;
     }
-    const botWall = looksBotBlocked(res.status, n => res.headers.get(n)) || res.status === 401 || res.status === 429;
-    return { status: res.status, finalUrl: current, chain, botWall };
+    // botWall = identity might matter (403/999/WAF challenge). 401 and plain 429 are 'unverifiable'
+    // too but a different UA won't help, so they never trigger the Chrome retry.
+    return { status: res.status, finalUrl: current, chain, botWall: looksBotBlocked(res.status, n => res.headers.get(n)) };
   }
   throw Object.assign(new Error('too many redirects'), { code: 'TOO_MANY_REDIRECTS' });
 }
@@ -78,7 +78,8 @@ export async function checkExternal(url: string, o: CheckOpts): Promise<External
   const first = await attempt(url, o, false);
   // Bot wall under our own UA: one retry as Chrome. If Chrome gets a real answer, that's the truth
   // about the link; if Chrome is walled too, it stays 'unverifiable'.
-  if (o.chromeFallback !== false && first.verdict === 'unverifiable') {
+  if (o.chromeFallback !== false && first.botWall) {
+    await sleep(o.retryDelayMs ?? 750); // same pacing as between targets: the host just pushed back
     const second = await attempt(url, o, true);
     if (second.verdict !== 'unverifiable') return second;
   }
@@ -101,12 +102,12 @@ async function attempt(url: string, o: CheckOpts, chrome: boolean): Promise<Exte
   if (!r) return { url, status: null, finalUrl: null, chain: [], verdict: 'broken', permanent: false, error: classifyError(err), method, fetchedAs };
   const permanent = r.chain.some(h => h.status === 301 || h.status === 308);
   let verdict: ExternalVerdict;
-  if (r.botWall || BOT_STATUSES.has(r.status)) verdict = 'unverifiable';
+  if (r.botWall || r.status === 401 || r.status === 429) verdict = 'unverifiable';
   else if (r.status >= 400) verdict = 'broken';
   else if (r.status >= 300) return { url, status: r.status, finalUrl: r.finalUrl, chain: r.chain, verdict: 'broken', permanent, error: 'redirect without a Location header', method, fetchedAs };
   else if (r.chain.length) verdict = 'redirected';
   else verdict = 'ok';
-  return { url, status: r.status, finalUrl: r.finalUrl, chain: r.chain, verdict, permanent, error: null, method, fetchedAs };
+  return { url, status: r.status, finalUrl: r.finalUrl, chain: r.chain, verdict, permanent, error: null, method, fetchedAs, ...(r.botWall ? { botWall: true } : {}) };
 }
 
 export function ensureExternalSchema(db: Database.Database): void {
@@ -132,9 +133,9 @@ export function ensureExternalSchema(db: Database.Database): void {
 export async function checkExternalLinks(db: Database.Database, opts: ExternalOptions): Promise<ExternalSummary> {
   ensureExternalSchema(db);
   const cacheDays = opts.cacheDays ?? 7;
-  const o: CheckOpts = { userAgent: opts.userAgent, timeoutMs: opts.timeoutMs ?? 10000, dispatcher: opts.dispatcher, chromeFallback: opts.chromeFallback };
   const perHostMax = opts.perHostMax ?? 300;
   const perHostDelay = opts.perHostDelayMs ?? 750;
+  const o: CheckOpts = { userAgent: opts.userAgent, timeoutMs: opts.timeoutMs ?? 10000, dispatcher: opts.dispatcher, chromeFallback: opts.chromeFallback, retryDelayMs: perHostDelay };
   const deadline = Date.now() + (opts.budgetMs ?? 15 * 60_000);
 
   const targets = db.prepare(`

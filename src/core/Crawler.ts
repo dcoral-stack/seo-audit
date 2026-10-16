@@ -78,7 +78,7 @@ export interface CrawlResult {
   external?: ExternalSummary;
   /** Bot blocking seen on the site's own pages: requests blocked for the crawler UA, how many got
    *  through as Chrome, and whether the crawl switched to Chrome for the rest. */
-  blocking?: { blockedAsBot: number; okAsChrome: number; switchedToChrome: boolean };
+  blocking?: { blockedAsBot: number; okAsChrome: number; blockedForBoth: number; switchedToChrome: boolean };
 }
 
 const DEFAULT_UA = BOT_UA;
@@ -118,7 +118,7 @@ interface FetchOutcome {
 }
 
 /** Per-crawl bot-block bookkeeping: whether the Chrome fallback is allowed, and how it's going. */
-export interface UaState { fallback: boolean; preferChrome: boolean; streak: number; blockedAsBot: number; okAsChrome: number }
+export interface UaState { fallback: boolean; preferChrome: boolean; botTried: number; blockedAsBot: number; okAsChrome: number; blockedAsChrome: number }
 
 // Per-crawl connection pool: HTTP/2 when the origin supports it (one multiplexed connection
 // instead of N TCP handshakes), keep-alive reuse, bounded per-origin connections. Compression
@@ -179,6 +179,17 @@ async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, ga
       }
       throw err;
     }
+    // Bot block (403 / 999 / WAF challenge, which can arrive as a 429 or 503 too) under our own UA:
+    // retry this URL once as Chrome, BEFORE the throttling backoff below so a WAF challenge doesn't
+    // burn the retry budget and penalise the whole pool. Counts feed the crawl result.
+    if (uaState?.fallback && !asChrome && looksBotBlocked(res.status, n => res.headers.get(n))) {
+      try { await res.body?.cancel(); } catch { /* no body */ }
+      uaState.botTried++;
+      uaState.blockedAsBot++;
+      asChrome = true;
+      retriedAsChrome = true;
+      continue;
+    }
     // Transient throttling (429 Too Many Requests / 503 Service Unavailable) is NOT a broken
     // page — back off (respecting Retry-After) and retry, so a fast crawl doesn't poison the
     // data with rate-limit statuses. Only the final status after retries is recorded.
@@ -204,20 +215,16 @@ async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, ga
       hops++;
       continue;
     }
-    // Bot block (403 / 999 / WAF challenge) under our own UA: retry this URL once as Chrome. After
-    // three pages in a row get through only as Chrome, the rest of the crawl goes out as Chrome so a
-    // site that blocks crawlers doesn't cost two requests per page. Counts feed the crawl result.
-    if (uaState?.fallback && !asChrome && looksBotBlocked(res.status, n => res.headers.get(n))) {
-      try { await res.body?.cancel(); } catch { /* no body */ }
-      uaState.blockedAsBot++;
-      asChrome = true;
-      retriedAsChrome = true;
-      continue;
-    }
+    // Fallback bookkeeping. Switch the whole crawl to Chrome only when the evidence says the SITE
+    // walls crawlers: at least 3 pages got through only as Chrome AND they are the majority of pages
+    // tried under the crawler UA so far. A site that walls one section (/docs/*) under concurrency
+    // keeps paying the one retry per walled page, and fetched_as stays an honest per-page record.
     if (uaState && retriedAsChrome) {
-      if (res.status < 400) { uaState.okAsChrome++; if (++uaState.streak >= 3) uaState.preferChrome = true; }
-      else uaState.streak = 0; // blocked for Chrome too: switching identity doesn't help here
-    } else if (uaState && !asChrome) uaState.streak = 0;
+      if (res.status < 400) {
+        uaState.okAsChrome++;
+        if (uaState.okAsChrome >= 3 && uaState.okAsChrome * 2 >= uaState.botTried) uaState.preferChrome = true;
+      } else uaState.blockedAsChrome++; // a real 403 (e.g. /admin/): identity made no difference
+    } else if (uaState && !asChrome) uaState.botTried++;
     const contentType = res.headers.get('content-type') ?? '';
     const isHtml = isHtmlContentType(contentType);
     // Read the body only for HTML; for any non-HTML response (image/PDF/asset) abort the transfer
@@ -284,7 +291,7 @@ export class Crawler {
     const delayMs = opts.delayMs ?? 250;
     const ua = opts.userAgent ?? DEFAULT_UA;
     // Chrome fallback on bot blocks, unless the user chose a user agent explicitly.
-    const uaState: UaState = { fallback: !opts.userAgent && opts.chromeFallback !== false, preferChrome: false, streak: 0, blockedAsBot: 0, okAsChrome: 0 };
+    const uaState: UaState = { fallback: !opts.userAgent && opts.chromeFallback !== false, preferChrome: false, botTried: 0, blockedAsBot: 0, okAsChrome: 0, blockedAsChrome: 0 };
     const excludeRes = (opts.excludePatterns ?? []).flatMap(p => { try { return [new RegExp(p, 'i')]; } catch { return []; } });
 
     const seed = siteUrl.startsWith('sc-domain:') ? `https://${siteUrl.slice('sc-domain:'.length)}/` : siteUrl;
@@ -598,7 +605,9 @@ export class Crawler {
     // workers paced at (at least) the crawl delay, so the aggregate stays at a few rps.
     const headProbe = async (url: string, extraHeaders: Record<string, string>, redirect: 'follow' | 'manual'): Promise<{ status: number; header: (n: string) => string | null } | null> => {
       try {
-        const res = await ufetch(url, { headers: { 'user-agent': ua, ...extraHeaders }, redirect, dispatcher, signal: AbortSignal.timeout(10000) });
+        // Same identity the page crawl ended on: a walled site would otherwise 403 every probe and
+        // record false conditional-304 / asset statuses seconds after storing the pages as 200.
+        const res = await ufetch(url, { headers: { ...(uaState.preferChrome ? CHROME_HEADERS : { 'user-agent': ua }), ...extraHeaders }, redirect, dispatcher, signal: AbortSignal.timeout(10000) });
         try { await res.body?.cancel(); } catch { /* already closed */ }
         return { status: res.status, header: (n: string) => res.headers.get(n) };
       } catch { return null; }
@@ -716,7 +725,9 @@ export class Crawler {
       } catch (e) { console.error(`[crawl ${crawlId}] external link check skipped:`, e instanceof Error ? e.message : String(e)); }
     }
 
-    const blocking = uaState.blockedAsBot ? { blockedAsBot: uaState.blockedAsBot, okAsChrome: uaState.okAsChrome, switchedToChrome: uaState.preferChrome } : undefined;
+    // Report blocking only when Chrome actually got past it: a 403 that Chrome also gets is a
+    // forbidden URL, not bot protection.
+    const blocking = uaState.okAsChrome ? { blockedAsBot: uaState.blockedAsBot, okAsChrome: uaState.okAsChrome, blockedForBoth: uaState.blockedAsChrome, switchedToChrome: uaState.preferChrome } : undefined;
     return { crawlId, siteUrl, crawled, failed, skipped, ...(sitemaps ? { sitemaps } : {}), ...(external ? { external } : {}), ...(blocking ? { blocking } : {}) };
     } catch (err) {
       try {

@@ -79,12 +79,18 @@ export function pendingBackfills(db: Database.Database, indexes: Iterable<FtsInd
 }
 
 /** Run the backfill for these indexes in a worker thread (large DBs). */
-export function backfillInWorker(dbFile: string, indexes: FtsIndex[]): Promise<{ indexes: FtsIndex[] }> {
+export function backfillInWorker(dbFile: string, indexes: FtsIndex[], signal?: AbortSignal): Promise<{ indexes: FtsIndex[] }> {
+  if (signal?.aborted) return Promise.reject(new Error('cancelled'));
   return new Promise((resolve, reject) => {
     const w = new Worker(new URL('./ftsWorker.js', import.meta.url), { workerData: { dbFile, indexes } });
-    w.once('message', (m: any) => (m.ok ? resolve({ indexes: m.indexes }) : reject(new Error(m.error))));
-    w.once('error', reject);
-    w.once('exit', code => { if (code !== 0) reject(new Error(`FTS worker exited with code ${code}`)); });
+    // Cancelling the job terminates the worker; its open transaction rolls back and releases the
+    // write lock, so a crawl or sync started afterwards isn't left waiting on a ghost.
+    const onAbort = (): void => { void w.terminate(); reject(new Error('cancelled')); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const done = (): void => signal?.removeEventListener('abort', onAbort);
+    w.once('message', (m: any) => { done(); m.ok ? resolve({ indexes: m.indexes }) : reject(new Error(m.error)); });
+    w.once('error', e => { done(); reject(e); });
+    w.once('exit', code => { done(); if (code !== 0 && !signal?.aborted) reject(new Error(`FTS worker exited with code ${code}`)); });
   });
 }
 

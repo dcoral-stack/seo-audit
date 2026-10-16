@@ -609,8 +609,9 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         try { const ro = new Database(dbFile, { readonly: true, fileMustExist: true }); try { pending = pendingBackfills(ro, wanted); } finally { ro.close(); } } catch { /* no DB: runQueryData reports it */ }
         const big = pending.filter(p => p.rows > INLINE_BACKFILL_MAX_ROWS);
         if (big.length) {
-          const running = jobs.list().find(j => j.type === 'fts-index' && j.state === 'running');
-          const jobId = running?.id ?? jobs.start('fts-index', () => backfillInWorker(dbFile, pending.map(p => p.index)));
+          // One build per database: a running fts-index job for ANOTHER property must not be handed back.
+          const running = jobs.list().find(j => j.type === 'fts-index' && j.state === 'running' && (j.progress as { dbFile?: string }).dbFile === dbFile);
+          const jobId = running?.id ?? jobs.start('fts-index', (update, signal) => { update({ dbFile, siteUrl, indexes: pending.map(p => p.index) }); return backfillInWorker(dbFile, pending.map(p => p.index), signal); });
           return jobStarted({ jobId, status: 'running', siteUrl, building: pending.map(p => p.index) },
             `Building the full-text index for ${pending.map(p => p.index).join(', ')} (one-time, ~${big.reduce((a, p) => a + p.rows, 0).toLocaleString('en-US')} rows, in the background). Poll check_sync_status, then re-run this query. Meanwhile op "like" works, just slower.`);
         }
@@ -680,7 +681,8 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     if (!detail || job.state !== 'completed' || !DATA_JOBS.has(job.type)) return head + prog;
     const link = (job.result as { dashboard?: string } | undefined)?.dashboard;
     const siteUrl = (job.result as { siteUrl?: string } | undefined)?.siteUrl;
-    const blk = (job.result as { blocking?: { blockedAsBot: number; okAsChrome: number; switchedToChrome: boolean } } | undefined)?.blocking;
+    const res = job.result as { blocking?: { blockedAsBot: number; okAsChrome: number; switchedToChrome: boolean }; crawl?: { blocking?: { blockedAsBot: number; okAsChrome: number; switchedToChrome: boolean } } } | undefined;
+    const blk = res?.blocking ?? res?.crawl?.blocking; // refresh nests the crawl result
     const blockLine = blk ? `\n\n🛡 ${blk.blockedAsBot} request(s) were bot-blocked for the crawler's user agent; ${blk.okAsChrome} got through as Chrome${blk.switchedToChrome ? ' and the rest of the crawl ran as Chrome' : ''}. The site's bot protection is challenging non-browser clients: check it isn't also blocking crawlers you want (pages.fetched_as shows which pages).` : '';
     return head + prog + blockLine + (link
       ? `\n\n📊 The dashboard is updated with this data: ${link} (open it in your browser).`
