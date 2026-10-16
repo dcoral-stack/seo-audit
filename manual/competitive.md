@@ -20,7 +20,7 @@ That's what the DataForSEO integration is for. Together these tools cover most o
 ## What it costs
 
 - Calls happen **on demand only** - one per question you ask. Nothing loops, nothing runs in bulk behind your back, and there are no scheduled pulls.
-- Every response is **cached for 7 days** (configurable via `DATAFORSEO_CACHE_DAYS`). Ask the same question twice in a fortnight and the second answer is free.
+- Every response is **cached for 20 days** (configurable via `DATAFORSEO_CACHE_DAYS`). Ask the same question twice in a fortnight and the second answer is free.
 - Live tool responses show the actual cost of the call; cached ones say "cached". `topic_gaps` is the biggest spender and it's bounded at four Labs calls maximum.
 - **Majestic bills separately**, in its own resource units rather than dollars per call, and only when you run `link_intersect` with `MAJESTIC_API_KEY` set - roughly one unit per prospect enriched, capped at 100 by default, cached 30 days. Details in [the Majestic section](#the-directory-problem-and-the-majestic-fix) below.
 - `page_lighthouse` is the priciest single call (a full Lighthouse run on DataForSEO's infrastructure) and also the slowest (20-120s), which is why it's strictly one URL per request.

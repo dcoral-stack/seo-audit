@@ -26,7 +26,11 @@ export interface PropertyStorage {
   pageSnapshots: number;
   findings: number;
   lastSynced: string | null;
+  /** finished_at of the most recent COMPLETED crawl. Running, failed or cancelled runs never count (#20). */
   lastCrawl: string | null;
+  /** The most recent crawl run when it did NOT complete (still running, failed, cancelled, or died
+   *  with its process), so a dead job is visible instead of masquerading as the last crawl. */
+  latestCrawlRun?: { status: string; startedAt: string; error: string | null };
   linkProspects: number;         // rows in link_prospects (0 = link_intersect never run)
   linkProspectsFetched: string | null; // MAX(fetched_at) — freshness of the intersect (may be stale)
   /** Other properties sharing this file (pre-per-form-filename databases) — their data is mixed in. */
@@ -94,8 +98,11 @@ export function storageSummary(dataDir: string, siteUrl?: string): StorageSummar
       const sharedWith = metaRows.length > 1 ? metaRows.slice(1).map(r => r.site_url) : undefined;
       if (wantStem && file !== `${wantStem}.db`) continue;
       let lastCrawl: string | null = null;
+      let latestCrawlRun: PropertyStorage['latestCrawlRun'];
       try {
-        lastCrawl = (db.prepare(`SELECT MAX(COALESCE(finished_at, started_at)) t FROM crawl_metadata`).get() as { t: string | null }).t;
+        lastCrawl = (db.prepare(`SELECT MAX(finished_at) t FROM crawl_metadata WHERE status = 'completed'`).get() as { t: string | null }).t;
+        const latest = db.prepare(`SELECT status, started_at, error FROM crawl_metadata ORDER BY started_at DESC LIMIT 1`).get() as { status: string; started_at: string; error: string | null } | undefined;
+        if (latest && latest.status !== 'completed') latestCrawlRun = { status: latest.status, startedAt: latest.started_at, error: latest.error ?? null };
       } catch { /* no crawl table */ }
       let linkProspectsFetched: string | null = null;
       try {
@@ -115,6 +122,7 @@ export function storageSummary(dataDir: string, siteUrl?: string): StorageSummar
         linkProspectsFetched,
         ...(sharedWith ? { sharedWith } : {}),
         lastCrawl,
+        ...(latestCrawlRun ? { latestCrawlRun } : {}),
       });
     } catch {
       other.push({ file, bytes });

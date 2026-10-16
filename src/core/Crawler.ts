@@ -8,6 +8,9 @@ import { fetchRobots } from './robots.js';
 import { finalizeLinkGraph } from './linkGraph.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { snapshotCrawl } from '../audit/drift.js';
+import { checkExternalLinks, type ExternalSummary } from './externalLinks.js';
+import { CLEAR_CRAWL_FTS } from './fts.js';
+import { BOT_UA, CHROME_HEADERS, looksBotBlocked, type FetchedAs } from './userAgents.js';
 
 // Robust HTML detection from a Content-Type header: take the MIME type before any
 // parameters (charset, boundary), normalised — text/html and XHTML count as HTML.
@@ -57,6 +60,10 @@ export interface CrawlOptions {
   delayMs?: number;
   userAgent?: string;
   excludePatterns?: string[]; // extra URL regexes to never crawl (on top of the junk defaults)
+  headResources?: boolean;    // header-only pass over css/js/font subresources → resource_assets (#37)
+  checkExternal?: boolean;    // check outbound link targets after the crawl (default true) (#36)
+  externalCacheDays?: number; // reuse external results younger than this (default 7)
+  chromeFallback?: boolean;   // retry bot-blocked requests once as Chrome (default true; off when userAgent is set)
 }
 
 export interface CrawlResult {
@@ -65,9 +72,16 @@ export interface CrawlResult {
   crawled: number;
   failed: number;
   skipped: number;
+  /** Sitemaps found: declared in robots.txt, plus conventional locations robots.txt didn't declare (#25). */
+  sitemaps?: { declared: string[]; undeclared: string[]; fetched: number; urls: number };
+  /** Outbound link status pass (#36). */
+  external?: ExternalSummary;
+  /** Bot blocking seen on the site's own pages: requests blocked for the crawler UA, how many got
+   *  through as Chrome, and whether the crawl switched to Chrome for the rest. */
+  blocking?: { blockedAsBot: number; okAsChrome: number; blockedForBoth: number; switchedToChrome: boolean };
 }
 
-const DEFAULT_UA = 'Mozilla/5.0 (compatible; seo-audit-console/0.1; +https://github.com/houtini-ai/seo-audit-console)';
+const DEFAULT_UA = BOT_UA;
 const FETCH_TIMEOUT_MS = 20000;
 const MAX_TRANSIENT_RETRIES = 6; // 429/503 backoff attempts before recording the status
 const MAX_NET_RETRIES = 4;       // network-error (timeout/reset) retries — separate budget so a slow URL can't stall a worker for minutes
@@ -100,7 +114,11 @@ interface FetchOutcome {
   bytes: number | null;
   timeMs: number;
   throttled: boolean; // saw a 429/503 (after retries) — signal for adaptive pacing
+  fetchedAs: FetchedAs; // which user agent produced this response
 }
+
+/** Per-crawl bot-block bookkeeping: whether the Chrome fallback is allowed, and how it's going. */
+export interface UaState { fallback: boolean; preferChrome: boolean; botTried: number; blockedAsBot: number; okAsChrome: number; blockedAsChrome: number }
 
 // Per-crawl connection pool: HTTP/2 when the origin supports it (one multiplexed connection
 // instead of N TCP handshakes), keep-alive reuse, bounded per-origin connections. Compression
@@ -109,7 +127,10 @@ interface FetchOutcome {
 const makeDispatcher = (connections: number): Agent =>
   new Agent({ allowH2: true, connections, keepAliveTimeout: 30_000, keepAliveMaxTimeout: 60_000 });
 
-async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, gate: ThrottleGate, signal: AbortSignal, maxHops = 5): Promise<FetchOutcome> {
+async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, gate: ThrottleGate, signal: AbortSignal, maxHops = 5, uaState?: UaState): Promise<FetchOutcome> {
+  // Starts as the crawler's own UA unless this crawl already switched to Chrome (see below).
+  let asChrome = !!uaState?.preferChrome;
+  let retriedAsChrome = false;
   const redirects: RedirectHop[] = [];
   let current = url;
   let hops = 0;
@@ -134,8 +155,7 @@ async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, ga
         dispatcher,
         // pages change between crawls — ask upstream caches/CDNs for the current copy
         headers: {
-          'user-agent': ua,
-          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          ...(asChrome ? CHROME_HEADERS : { 'user-agent': ua, accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }),
           'accept-encoding': 'gzip, deflate, br',
           'cache-control': 'no-cache',
           pragma: 'no-cache',
@@ -158,6 +178,17 @@ async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, ga
         continue;
       }
       throw err;
+    }
+    // Bot block (403 / 999 / WAF challenge, which can arrive as a 429 or 503 too) under our own UA:
+    // retry this URL once as Chrome, BEFORE the throttling backoff below so a WAF challenge doesn't
+    // burn the retry budget and penalise the whole pool. Counts feed the crawl result.
+    if (uaState?.fallback && !asChrome && looksBotBlocked(res.status, n => res.headers.get(n))) {
+      try { await res.body?.cancel(); } catch { /* no body */ }
+      uaState.botTried++;
+      uaState.blockedAsBot++;
+      asChrome = true;
+      retriedAsChrome = true;
+      continue;
     }
     // Transient throttling (429 Too Many Requests / 503 Service Unavailable) is NOT a broken
     // page — back off (respecting Retry-After) and retry, so a fast crawl doesn't poison the
@@ -184,6 +215,16 @@ async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, ga
       hops++;
       continue;
     }
+    // Fallback bookkeeping. Switch the whole crawl to Chrome only when the evidence says the SITE
+    // walls crawlers: at least 3 pages got through only as Chrome AND they are the majority of pages
+    // tried under the crawler UA so far. A site that walls one section (/docs/*) under concurrency
+    // keeps paying the one retry per walled page, and fetched_as stays an honest per-page record.
+    if (uaState && retriedAsChrome) {
+      if (res.status < 400) {
+        uaState.okAsChrome++;
+        if (uaState.okAsChrome >= 3 && uaState.okAsChrome * 2 >= uaState.botTried) uaState.preferChrome = true;
+      } else uaState.blockedAsChrome++; // a real 403 (e.g. /admin/): identity made no difference
+    } else if (uaState && !asChrome) uaState.botTried++;
     const contentType = res.headers.get('content-type') ?? '';
     const isHtml = isHtmlContentType(contentType);
     // Read the body only for HTML; for any non-HTML response (image/PDF/asset) abort the transfer
@@ -224,6 +265,7 @@ async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, ga
       bytes: body ? Buffer.byteLength(body) : (Number(h('content-length')) || null),
       timeMs: Date.now() - start,
       throttled: transientRetries > 0 || netRetries > 0,
+      fetchedAs: asChrome ? 'chrome' : 'bot',
     };
   }
 }
@@ -248,6 +290,8 @@ export class Crawler {
     const concurrency = Math.max(1, Math.min(opts.maxConcurrency ?? 8, 24));
     const delayMs = opts.delayMs ?? 250;
     const ua = opts.userAgent ?? DEFAULT_UA;
+    // Chrome fallback on bot blocks, unless the user chose a user agent explicitly.
+    const uaState: UaState = { fallback: !opts.userAgent && opts.chromeFallback !== false, preferChrome: false, botTried: 0, blockedAsBot: 0, okAsChrome: 0, blockedAsChrome: 0 };
     const excludeRes = (opts.excludePatterns ?? []).flatMap(p => { try { return [new RegExp(p, 'i')]; } catch { return []; } });
 
     const seed = siteUrl.startsWith('sc-domain:') ? `https://${siteUrl.slice('sc-domain:'.length)}/` : siteUrl;
@@ -278,7 +322,8 @@ export class Crawler {
     let wipedPrior = false;
     const ensureWiped = (): void => {
       if (wipedPrior) return;
-      db.db.exec('DELETE FROM links; DELETE FROM pages;');
+      // One transaction, so the FTS indexes are cleared exactly when the rows they index are (#35).
+      db.db.transaction(() => db.db.exec(`DELETE FROM links; DELETE FROM pages; DELETE FROM redirect_sources; DELETE FROM page_resources; ${CLEAR_CRAWL_FTS}`))();
       wipedPrior = true;
     };
 
@@ -290,7 +335,7 @@ export class Crawler {
          is_internal, indexable, indexable_reason, noindex, title, title_length, meta_description, meta_description_length,
          h1, h1_count, word_count, lang, charset, canonical_url, canonical_key, robots, x_robots_tag, viewport,
          json_ld, og_tags, hreflang, redirects, internal_links, external_links,
-         image_count, images_without_alt, images_missing_dimensions, canonical_count, canonical_relative,
+         image_count, images_without_alt, images_empty_alt, images_empty_alt_content, fetched_as, images_missing_dimensions, canonical_count, canonical_relative,
          h2_count, heading_skips, rel_next, rel_prev, rel_amphtml, mixed_content_count, twitter_tags,
          has_microdata, has_rdfa, has_favicon, has_analytics, body_chunks, security_headers,
          a11y_links_no_name, a11y_buttons_no_name, a11y_inputs_no_label, a11y_viewport_zoom_disabled, a11y_positive_tabindex, a11y_duplicate_ids)
@@ -299,7 +344,7 @@ export class Crawler {
          @is_internal,@indexable,@indexable_reason,@noindex,@title,@title_length,@meta_description,@meta_description_length,
          @h1,@h1_count,@word_count,@lang,@charset,@canonical_url,@canonical_key,@robots,@x_robots_tag,@viewport,
          @json_ld,@og_tags,@hreflang,@redirects,@internal_links,@external_links,
-         @image_count,@images_without_alt,@images_missing_dimensions,@canonical_count,@canonical_relative,
+         @image_count,@images_without_alt,@images_empty_alt,@images_empty_alt_content,@fetched_as,@images_missing_dimensions,@canonical_count,@canonical_relative,
          @h2_count,@heading_skips,@rel_next,@rel_prev,@rel_amphtml,@mixed_content_count,@twitter_tags,
          @has_microdata,@has_rdfa,@has_favicon,@has_analytics,@body_chunks,@security_headers,
          @a11y_links_no_name,@a11y_buttons_no_name,@a11y_inputs_no_label,@a11y_viewport_zoom_disabled,@a11y_positive_tabindex,@a11y_duplicate_ids)
@@ -313,12 +358,24 @@ export class Crawler {
        ON CONFLICT(url_key) DO NOTHING`,
     );
     const linkInsert = db.db.prepare(
-      `INSERT INTO links (crawl_id, source_url, source_key, target_url, target_key, anchor_text, is_internal, placement, rel)
-       VALUES (@crawl_id,@source_url,@source_key,@target_url,@target_key,@anchor_text,@is_internal,@placement,@rel)`,
+      `INSERT INTO links (crawl_id, source_url, source_key, target_url, target_key, anchor_text, is_internal, placement, rel, href_form)
+       VALUES (@crawl_id,@source_url,@source_key,@target_url,@target_key,@anchor_text,@is_internal,@placement,@rel,@href_form)`,
     );
     const errorInsert = db.db.prepare(
       `INSERT INTO errors (crawl_id, url, error_type, error_message) VALUES (?, ?, ?, ?)`,
     );
+    const redirectInsert = db.db.prepare(
+      `INSERT INTO redirect_sources (url_key, url, status, final_url, final_key, hops, chain, crawl_id) VALUES (?,?,?,?,?,?,?,?)
+       ON CONFLICT(url_key) DO UPDATE SET url=excluded.url, status=excluded.status, final_url=excluded.final_url,
+         final_key=excluded.final_key, hops=excluded.hops, chain=excluded.chain, crawl_id=excluded.crawl_id`,
+    );
+    const resourceInsert = db.db.prepare(
+      `INSERT INTO page_resources (crawl_id, page_key, resource_url, type, party, position, is_async, is_defer, is_preload, is_module, crossorigin, media)
+       VALUES (@crawl_id,@page_key,@resource_url,@type,@party,@position,@is_async,@is_defer,@is_preload,@is_module,@crossorigin,@media)`,
+    );
+    const flushResources = db.db.transaction((rows: Record<string, unknown>[]) => { for (const r of rows) resourceInsert.run(r); });
+    const resourceBuf: Record<string, unknown>[] = [];
+    const resourceRefs = new Map<string, { type: string; usedOn: number }>(); // for the optional HEAD pass
     const flushPages = db.db.transaction((rows: Record<string, unknown>[]) => { for (const r of rows) pageInsert.run(r); });
     const flushLinks = db.db.transaction((rows: Record<string, unknown>[]) => { for (const r of rows) linkInsert.run(r); });
 
@@ -343,9 +400,11 @@ export class Crawler {
     // alone misses them (e.g. one site: 367 sitemap URLs, only ~100 reachable via links).
     // Also stores the sitemap for crawl↔sitemap reconciliation. Off-host/junk/asset URLs filtered;
     // bounded by maxPages.
+    let sitemaps: CrawlResult['sitemaps'];
     if (!signal.aborted) {
       try {
         const sm = await fetchSitemapUrls(origin, ua, keyOpts);
+        sitemaps = { declared: sm.sources, undeclared: sm.undeclared, fetched: sm.sitemapsFetched, urls: sm.urls.length };
         const smInsert = db.db.prepare(`INSERT INTO sitemap_urls (url_key, url, lastmod, fetched_at) VALUES (?,?,?,datetime('now')) ON CONFLICT(url_key) DO NOTHING`);
         db.db.transaction(() => { db.db.exec('DELETE FROM sitemap_urls'); for (const u of sm.urls) smInsert.run(u.urlKey, u.url, u.lastmod); })();
         for (const u of sm.urls) {
@@ -372,10 +431,22 @@ export class Crawler {
       }
     } catch (err) { console.error('[crawl] GSC seed skipped:', err instanceof Error ? err.message : String(err)); }
 
+    // Seed backlinked URLs (top 200 by backlinks) so every crawl re-verifies what external links
+    // actually land on — a URL fixed with a 301 since the backlink pull stops reading as dead (#32).
+    try {
+      for (const row of db.db.prepare(`SELECT url FROM page_backlinks WHERE backlinks > 0 ORDER BY backlinks DESC LIMIT 200`).all() as { url: string }[]) {
+        if (discovered >= maxPages) break;
+        let host: string; try { host = new URL(row.url).hostname; } catch { continue; }
+        if (!isInternalHost(host, baseHost) || skipUrl(row.url, excludeRes) || isAssetUrl(row.url)) continue;
+        enqueue(row.url, 1);
+      }
+    } catch { /* no page_backlinks table yet */ }
+
     const flush = (final = false): void => {
       if (pageBuf.length || linkBuf.length) ensureWiped();
       if (pageBuf.length && (final || pageBuf.length >= FLUSH_EVERY)) { flushPages(pageBuf.splice(0)); }
       if (linkBuf.length && (final || linkBuf.length >= FLUSH_EVERY)) { flushLinks(linkBuf.splice(0)); }
+      if (resourceBuf.length && (final || resourceBuf.length >= FLUSH_EVERY)) { ensureWiped(); flushResources(resourceBuf.splice(0)); }
     };
     const saveProgress = (): void => {
       db.db.prepare(`UPDATE crawl_metadata SET urls_discovered=?, urls_crawled=?, urls_failed=?, urls_skipped=? WHERE crawl_id=?`)
@@ -398,7 +469,7 @@ export class Crawler {
         skipped++; return;
       }
       try {
-        const r = await fetchWithRedirects(item.url, ua, dispatcher, gate, signal);
+        const r = await fetchWithRedirects(item.url, ua, dispatcher, gate, signal, 5, uaState);
         // Self-tune the delay from the throttle signal.
         if (r.throttled) dynamicDelay = Math.min(Math.round(dynamicDelay * 1.5) + 200, 5000);
         else if (dynamicDelay > delayMs) dynamicDelay = Math.max(delayMs, Math.round(dynamicDelay * 0.9));
@@ -409,6 +480,16 @@ export class Crawler {
         try { offsite = r.redirects.length > 0 && (!isInternalHost(new URL(r.finalUrl).hostname, baseHost) || skipUrl(r.finalUrl, excludeRes)); } catch { /* unparseable final URL */ }
         const pageUrl = offsite ? item.url : r.finalUrl;
         const finalKey = urlKey(pageUrl, keyOpts);
+        // Record the redirect SOURCE before the dedupe below can drop it (#32).
+        if (r.redirects.length) {
+          try {
+            const srcKey = urlKey(item.url, keyOpts);
+            if (srcKey !== urlKey(r.finalUrl, keyOpts)) {
+              ensureWiped();
+              redirectInsert.run(srcKey, item.url, r.redirects[0].status, r.finalUrl, urlKey(r.finalUrl, keyOpts), r.redirects.length, JSON.stringify(r.redirects), crawlId);
+            }
+          } catch { /* unparseable URL: nothing to record */ }
+        }
         // Multiple enqueued URLs can redirect to the same final page. The pages table
         // dedupes via ON CONFLICT(url_key), but re-extracting the same HTML would insert
         // its outlinks AGAIN, inflating inlink_count/iPR weights — so skip re-processing.
@@ -429,7 +510,7 @@ export class Crawler {
           bytes: r.bytes, response_time_ms: r.timeMs, depth: item.depth,
           is_internal: 1, indexable, indexable_reason: reason, noindex: ex?.noindex ? 1 : 0,
           title: ex?.title ?? null, title_length: ex?.titleLength ?? 0,
-          meta_description: ex?.metaDescription ?? null, meta_description_length: ex?.metaDescriptionLength ?? 0,
+          meta_description: ex?.metaDescription ?? null, meta_description_length: ex ? ex.metaDescriptionLength : null,
           h1: ex?.h1 ?? null, h1_count: ex?.h1Count ?? 0, word_count: ex?.wordCount ?? 0,
           lang: ex?.lang ?? null,
           charset: ex?.charset ?? r.contentType.match(/charset=([\w-]+)/i)?.[1] ?? null, // meta, else Content-Type header
@@ -439,6 +520,8 @@ export class Crawler {
           redirects: r.redirects.length ? JSON.stringify(r.redirects) : null,
           internal_links: ex?.internalLinks ?? 0, external_links: ex?.externalLinks ?? 0,
           image_count: ex?.imageCount ?? 0, images_without_alt: ex?.imagesWithoutAlt ?? 0,
+          images_empty_alt: ex ? ex.imagesEmptyAlt : null, images_empty_alt_content: ex ? ex.imagesEmptyAltContent : null,
+          fetched_as: r.fetchedAs,
           images_missing_dimensions: ex?.imagesMissingDimensions ?? 0,
           canonical_count: ex?.canonicalCount ?? 0, canonical_relative: ex?.canonicalRelative ? 1 : 0,
           h2_count: ex?.h2Count ?? 0, heading_skips: ex?.headingSkips ?? 0,
@@ -459,11 +542,16 @@ export class Crawler {
 
         if (ex) {
           for (const src of ex.imageSrcs) imageRefs.set(src, (imageRefs.get(src) ?? 0) + 1);
+          for (const res of ex.resources) {
+            resourceBuf.push({ crawl_id: crawlId, page_key: finalKey, resource_url: res.url, type: res.type, party: res.party, position: res.position,
+              is_async: res.async ? 1 : 0, is_defer: res.defer ? 1 : 0, is_preload: res.preload ? 1 : 0, is_module: res.module ? 1 : 0, crossorigin: res.crossorigin, media: res.media });
+            if (res.type !== 'img') { const ref = resourceRefs.get(res.url); if (ref) ref.usedOn++; else resourceRefs.set(res.url, { type: res.type, usedOn: 1 }); }
+          }
           for (const l of ex.links) {
             linkBuf.push({
               crawl_id: crawlId, source_url: r.finalUrl, source_key: finalKey,
               target_url: l.targetUrl, target_key: l.targetKey, anchor_text: l.anchor,
-              is_internal: l.isInternal ? 1 : 0, placement: l.placement, rel: l.rel,
+              is_internal: l.isInternal ? 1 : 0, placement: l.placement, rel: l.rel, href_form: l.hrefForm,
             });
             if (l.isInternal && !skipUrl(l.targetUrl, excludeRes) && item.depth + 1 <= maxDepth && (crawled + frontier.length) < maxPages) {
               enqueue(l.targetUrl, item.depth + 1);
@@ -517,7 +605,9 @@ export class Crawler {
     // workers paced at (at least) the crawl delay, so the aggregate stays at a few rps.
     const headProbe = async (url: string, extraHeaders: Record<string, string>, redirect: 'follow' | 'manual'): Promise<{ status: number; header: (n: string) => string | null } | null> => {
       try {
-        const res = await ufetch(url, { headers: { 'user-agent': ua, ...extraHeaders }, redirect, dispatcher, signal: AbortSignal.timeout(10000) });
+        // Same identity the page crawl ended on: a walled site would otherwise 403 every probe and
+        // record false conditional-304 / asset statuses seconds after storing the pages as 200.
+        const res = await ufetch(url, { headers: { ...(uaState.preferChrome ? CHROME_HEADERS : { 'user-agent': ua }), ...extraHeaders }, redirect, dispatcher, signal: AbortSignal.timeout(10000) });
         try { await res.body?.cancel(); } catch { /* already closed */ }
         return { status: res.status, header: (n: string) => res.headers.get(n) };
       } catch { return null; }
@@ -556,6 +646,23 @@ export class Crawler {
         } else rows.push([url, null, 0, '', usedOn]);
       });
       db.db.transaction(() => { for (const r of rows) imgInsert.run(...r); })();
+    }
+
+    // Optional (#37): header-only pass over css/js/font subresources — status, size and caching —
+    // most-used first, capped, through the same paced pool. Bodies are never downloaded.
+    if (opts.headResources && !signal.aborted && wipedPrior && resourceRefs.size) {
+      const MAX_RESOURCES = 500;
+      const sample = [...resourceRefs.entries()]
+        .filter(([url]) => { try { const u = new URL(url); return !isInternalHost(u.hostname, baseHost) || robots.isAllowed(u.pathname); } catch { return false; } })
+        .sort((a, b) => b[1].usedOn - a[1].usedOn).slice(0, MAX_RESOURCES);
+      const rows: [string, string, number, number | null, string, string | null, number][] = [];
+      await probePool(sample, async ([url, ref]) => {
+        const r = await headProbe(url, {}, 'follow');
+        const len = r ? Number(r.header('content-length')) : NaN;
+        rows.push([url, ref.type, r?.status ?? 0, Number.isFinite(len) && len > 0 ? len : null, (r?.header('content-type') ?? '').split(';')[0].trim(), r?.header('cache-control') ?? null, ref.usedOn]);
+      });
+      const ins = db.db.prepare(`INSERT INTO resource_assets (url, type, status, content_length, content_type, cache_control, used_on, checked_at) VALUES (?,?,?,?,?,?,?,datetime('now'))`);
+      db.db.transaction(() => { db.db.exec('DELETE FROM resource_assets'); for (const r of rows) ins.run(...r); })();
     }
 
     // Post-crawl: in-degree (orphans), internal PageRank (iPR) + body-only click depth.
@@ -607,11 +714,25 @@ export class Crawler {
         console.error(`[crawl ${crawlId}] snapshot failed (change-detection will report this crawl as missing):`, e);
       }
     }
-    return { crawlId, siteUrl, crawled, failed, skipped };
+    // Post-crawl (#36): status of every distinct outbound link target — cached, host-throttled,
+    // HEAD with a ranged-GET fallback. On by default; checkExternal:false skips it. Runs AFTER the
+    // crawl is marked completed and snapshotted: it can take minutes, and dying here must not leave a
+    // finished crawl looking like a dead 'running' one.
+    let external: ExternalSummary | undefined;
+    if (opts.checkExternal !== false && !signal.aborted && wipedPrior) {
+      try {
+        external = await checkExternalLinks(db.db, { userAgent: ua, chromeFallback: uaState.fallback, dispatcher, signal, update: p => update({ crawlId, ...p }), cacheDays: opts.externalCacheDays });
+      } catch (e) { console.error(`[crawl ${crawlId}] external link check skipped:`, e instanceof Error ? e.message : String(e)); }
+    }
+
+    // Report blocking only when Chrome actually got past it: a 403 that Chrome also gets is a
+    // forbidden URL, not bot protection.
+    const blocking = uaState.okAsChrome ? { blockedAsBot: uaState.blockedAsBot, okAsChrome: uaState.okAsChrome, blockedForBoth: uaState.blockedAsChrome, switchedToChrome: uaState.preferChrome } : undefined;
+    return { crawlId, siteUrl, crawled, failed, skipped, ...(sitemaps ? { sitemaps } : {}), ...(external ? { external } : {}), ...(blocking ? { blocking } : {}) };
     } catch (err) {
       try {
-        db.db.prepare(`UPDATE crawl_metadata SET status='failed', error=?, finished_at=datetime('now') WHERE crawl_id=? AND status='running'`)
-          .run(err instanceof Error ? err.message : String(err), crawlId);
+        db.db.prepare(`UPDATE crawl_metadata SET status='failed', error=?, finished_at=? WHERE crawl_id=? AND status='running'`)
+          .run(err instanceof Error ? err.message : String(err), new Date().toISOString(), crawlId);
       } catch { /* best-effort */ }
       throw err;
     } finally {

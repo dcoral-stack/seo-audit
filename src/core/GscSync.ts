@@ -1,4 +1,5 @@
 import { AuditDatabase } from './AuditDatabase.js';
+import { addQueries } from './fts.js';
 import { GscClient } from './GscClient.js';
 import { dbPathFor } from './paths.js';
 import { urlKey, hostFormForProperty } from './url-key.js';
@@ -9,6 +10,23 @@ import type { FetchOptions, GscApiRow } from './types.js';
 // FULL_DIMENSIONS (segments) to also populate the device/country breakdowns.
 const LITE_DIMENSIONS = ['date', 'query', 'page'];
 export const FULL_DIMENSIONS = ['date', 'query', 'page', 'device', 'country'];
+
+/** Days re-pulled (and replaced) before the last stored date: GSC restates the most recent days. */
+export const LAG_DAYS = 4;
+
+/** Where an incremental sync resumes: last stored date minus LAG_DAYS, never before the requested start. */
+export function incrementalStart(maxStoredDate: string | null, requestedStart: string): string {
+  return planIncremental(maxStoredDate, requestedStart, '9999-12-31').startDate;
+}
+
+/** The one incremental rule, shared by run() and plannedRange(): the range to fetch, whether the
+ *  re-pulled lag days are replaced (from replaceFrom), and whether there is nothing to fetch. */
+export function planIncremental(maxStoredDate: string | null, start: string, end: string): { startDate: string; replaceFrom: string | null; noop: boolean } {
+  if (!maxStoredDate) return { startDate: start, replaceFrom: null, noop: false };
+  const resume = new Date(Date.parse(maxStoredDate) - LAG_DAYS * 86400000).toISOString().slice(0, 10);
+  if (resume > end) return { startDate: start, replaceFrom: null, noop: true }; // already synced past the requested window
+  return resume > start ? { startDate: resume, replaceFrom: resume, noop: false } : { startDate: start, replaceFrom: null, noop: false };
+}
 
 export interface SyncResult {
   siteUrl: string;
@@ -23,6 +41,20 @@ export interface SyncResult {
  */
 export class GscSync {
   constructor(private readonly gsc: GscClient, private readonly dataDir: string) {}
+
+  /** The range a sync with these options will fetch, for the start reply (#33). A shape change
+   *  (lite ↔ segmented, or a different search type) still forces the full window; the finished job
+   *  reports the range actually used. */
+  plannedRange(siteUrl: string, options: FetchOptions): { startDate: string; endDate: string; incremental: boolean; noop?: boolean } {
+    if (options.fullResync) return { startDate: options.startDate, endDate: options.endDate, incremental: false };
+    let mx: string | null = null;
+    try {
+      const db = new AuditDatabase(dbPathFor(this.dataDir, siteUrl));
+      try { mx = (db.db.prepare('SELECT MAX(date) d FROM search_analytics').get() as { d: string | null }).d; } finally { db.close(); }
+    } catch { /* no DB yet */ }
+    const plan = planIncremental(mx, options.startDate, options.endDate);
+    return { startDate: plan.startDate, endDate: options.endDate, incremental: plan.startDate !== options.startDate, ...(plan.noop ? { noop: true } : {}) };
+  }
 
   async run(
     siteUrl: string,
@@ -43,8 +75,17 @@ export class GscSync {
            clicks = excluded.clicks, impressions = excluded.impressions, search_type = excluded.search_type,
            ctr = excluded.ctr, position = excluded.position, page_key = excluded.page_key`,
       );
+      // Distinct-query FTS index (#35): each batch's NEW distinct queries go in inside the batch's
+      // own transaction. seenQueries spans the run so repeat queries across batches cost nothing.
+      const seenQueries = new Set<string>();
+      const indexQueries = (records: Record<string, unknown>[]): void => {
+        const fresh: string[] = [];
+        for (const r of records) { const q = r.query; if (typeof q === 'string' && !seenQueries.has(q)) { seenQueries.add(q); fresh.push(q); } }
+        if (fresh.length) addQueries(db.db, fresh);
+      };
       const insertMany = db.db.transaction((records: Record<string, unknown>[]) => {
         for (const r of records) insert.run(r);
+        indexQueries(records);
       });
 
       let total = 0;
@@ -83,28 +124,47 @@ export class GscSync {
       const wipeAndInsert = db.db.transaction((records: Record<string, unknown>[]) => {
         db.db.exec('DELETE FROM search_analytics');
         for (const r of records) insert.run(r);
+        indexQueries(records);
+      });
+      // Lag-day replace (#22), made atomic: re-pulled rows are STAGED in a temp table while GSC pages
+      // in, then one transaction deletes exactly the re-pulled window [from, endDate] and inserts the
+      // staged rows — only after the whole fetch succeeded and returned rows. A failure or abort on
+      // any page leaves the stored days untouched, and rows after endDate are never touched.
+      const STAGE_COLS = 'date, query, page, page_key, device, country, search_type, clicks, impressions, ctr, position';
+      const stageRows = (records: Record<string, unknown>[]): void => {
+        db.db.exec(`CREATE TEMP TABLE IF NOT EXISTS sa_stage (${STAGE_COLS})`);
+        const ins = db.db.prepare(`INSERT INTO sa_stage (${STAGE_COLS}) VALUES (@date, @query, @page, @page_key, @device, @country, @search_type, @clicks, @impressions, @ctr, @position)`);
+        db.db.transaction(() => { for (const r of records) ins.run(r); })();
+      };
+      const applyStaged = db.db.transaction((from: string, to: string) => {
+        db.db.prepare('DELETE FROM search_analytics WHERE date >= ? AND date <= ?').run(from, to);
+        db.db.exec(`INSERT INTO search_analytics (${STAGE_COLS}) SELECT ${STAGE_COLS} FROM sa_stage WHERE true
+          ON CONFLICT(date, query, page, device, country) DO UPDATE SET clicks = excluded.clicks, impressions = excluded.impressions,
+            search_type = excluded.search_type, ctr = excluded.ctr, position = excluded.position, page_key = excluded.page_key`);
+        db.db.exec(`INSERT OR IGNORE INTO sa_queries(query) SELECT DISTINCT query FROM sa_stage WHERE query IS NOT NULL`);
+        db.db.exec('DELETE FROM sa_stage');
       });
 
       // ── Incremental resume ─────────────────────────────────────────────────────────────────
       // The first sync pulls the requested window; every sync after that only fetches from the
-      // last stored date minus a lag buffer (GSC restates the most recent ~3 days), instead of
+      // last stored date minus a lag buffer (GSC restates the most recent few days), instead of
       // re-pulling the whole window. Turns a 30-minute, 1.8M-row refresh into a seconds-long delta.
       // Runs AFTER the mode-guard: if the table was just wiped (shape conflict) MAX(date) is null →
       // full window. `fullResync` forces the full window. Only ever NARROWS the window (never widens
       // past the requested start), and resumes from wherever the data left off (covers any gap).
-      const LAG_DAYS = 3;
+      // Re-pulled lag days are REPLACED, not merged (#22): GSC can drop or merge rows while a day
+      // finalises, and an upsert would leave those stale rows behind. See stageRows/applyStaged.
+      let replaceFrom: string | null = null;
       if (!options.fullResync && !mustWipe) { // a pending wipe means the stored MAX(date) is the OLD shape's — pull the full window
         const mx = (db.db.prepare('SELECT MAX(date) d FROM search_analytics').get() as { d: string | null }).d;
-        if (mx) {
-          const resume = new Date(Date.parse(mx) - LAG_DAYS * 86400000).toISOString().slice(0, 10);
-          // Already synced past the requested window (e.g. a historical/comparison pull whose
-          // endDate predates the stored data): no-op instead of calling GSC with start > end.
-          if (resume > options2.endDate) {
-            db.db.prepare(`UPDATE property_meta SET last_synced_at = datetime('now') WHERE site_url = ?`).run(siteUrl);
-            return { siteUrl, rowsFetched: 0, startDate: options2.startDate, endDate: options2.endDate };
-          }
-          if (resume > options2.startDate) { options2 = { ...options2, startDate: resume }; }
+        const plan = planIncremental(mx, options2.startDate, options2.endDate);
+        // Already synced past the requested window (e.g. a historical/comparison pull whose
+        // endDate predates the stored data): no-op instead of calling GSC with start > end.
+        if (plan.noop) {
+          db.db.prepare(`UPDATE property_meta SET last_synced_at = datetime('now') WHERE site_url = ?`).run(siteUrl);
+          return { siteUrl, rowsFetched: 0, startDate: options2.startDate, endDate: options2.endDate };
         }
+        if (plan.replaceFrom) { options2 = { ...options2, startDate: plan.startDate }; replaceFrom = plan.replaceFrom; }
       }
 
       await this.gsc.fetchSearchAnalytics(siteUrl, options2, signal, ({ rows }) => {
@@ -128,11 +188,16 @@ export class GscSync {
           };
         });
         if (mustWipe) { wipeAndInsert(records); mustWipe = false; }
+        else if (replaceFrom) stageRows(records);
         else insertMany(records);
         total += records.length;
         update({ siteUrl, rowsFetched: total });
       });
 
+      if (replaceFrom) {
+        if (signal.aborted) return { siteUrl, rowsFetched: 0, startDate: options2.startDate, endDate: options2.endDate }; // staged rows discarded with the connection
+        if (total > 0) applyStaged(replaceFrom, options2.endDate); // an empty response never wipes stored days
+      }
       db.db.prepare(`UPDATE property_meta SET last_synced_at = datetime('now') WHERE site_url = ?`).run(siteUrl);
       return { siteUrl, rowsFetched: total, startDate: options2.startDate, endDate: options2.endDate };
     } finally {

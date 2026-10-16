@@ -12,6 +12,17 @@ export interface Job {
   result?: unknown;
 }
 
+/**
+ * A plain-language pointer for SQLite corruption errors, which otherwise surface as a bare
+ * "database disk image is malformed" with no next step (#33, #34). Empty for anything else.
+ */
+export function corruptionHint(error: string | undefined | null): string {
+  if (!error) return '';
+  return /SQLITE_CORRUPT|disk image is malformed|missing from index|database corrupt/i.test(error)
+    ? ' (The property database looks damaged. Run data_storage with check:true to find the damaged index, then prune with action:"repair" to back up the file and rebuild it.)'
+    : '';
+}
+
 type JobFn = (update: (p: Record<string, unknown>) => void, signal: AbortSignal) => Promise<unknown>;
 
 /**
@@ -56,6 +67,8 @@ export class JobManager {
         job.state = 'failed';
         job.error = err instanceof Error ? err.message : String(err);
         job.updatedAt = new Date().toISOString();
+        // stdout is the MCP stdio channel, so failures go to stderr (the client's server log).
+        console.error(`[job ${id}] ${type} failed: ${job.error}${corruptionHint(job.error)}`);
       })
       .finally(() => this.controllers.delete(id));
 

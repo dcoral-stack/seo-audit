@@ -2,7 +2,7 @@
 
 Every tool the server exposes, grouped by job. Each entry gives you what it does, the inputs that matter, the data grain and join keys where they're relevant, and a prompt you can copy. You never call these by name unless you want to - *"run an SEO audit on mysite.com"* routes to the right tool on its own - but knowing what exists is how you get the most out of it.
 
-DataForSEO-backed tools are marked **[paid]**. They cost real money per live call (fractions of a cent to a few cents), are cached for 7 days, and only ever run when you ask - never in bulk behind your back. Setup and honest cost notes: [competitive.md](competitive.md). One tool, `link_intersect`, has a second optional service behind it - **Majestic**, billed in its own resource units - which switches on when `MAJESTIC_API_KEY` is set and stays entirely out of the way when it isn't.
+DataForSEO-backed tools are marked **[paid]**. They cost real money per live call (fractions of a cent to a few cents), are cached for 20 days, and only ever run when you ask - never in bulk behind your back. Setup and honest cost notes: [competitive.md](competitive.md). One tool, `link_intersect`, has a second optional service behind it - **Majestic**, billed in its own resource units - which switches on when `MAJESTIC_API_KEY` is set and stays entirely out of the way when it isn't.
 
 ## The data pipeline
 
@@ -22,7 +22,9 @@ Just the Search Console history. Grain: date × query × page (plus device/count
 > Sync Search Console data for mysite.com back to 2024-01-01
 
 ### `start_crawl`
-Just the crawl. Fetches the site into the local database: status, titles, H1s, metas, canonicals, robots, structured data, hreflang, redirect chains, body text by section, then computes internal PageRank, click depth and in-degree. Discovery is links + sitemaps + every URL Google already knows about from GSC. Respects robots.txt; assets are checked without downloading their bytes; search/cart/login junk is skipped. `excludePatterns` adds your own skip regexes, `maxPages` caps it. Grain: one row per `url_key`, latest crawl only (history lives in snapshots, see `detect_changes`).
+Just the crawl. Fetches the site into the local database: status, titles, H1s, metas, canonicals, robots, structured data, hreflang, redirect chains, body text by section, then computes internal PageRank, click depth and in-degree. Discovery is links + sitemaps + every URL Google already knows about from GSC. Respects robots.txt; assets are checked without downloading their bytes; search/cart/login junk is skipped. `excludePatterns` adds your own skip regexes, `maxPages` caps it. Each page's subresources (stylesheets, scripts, fonts, images: first or third party, head or body, async/defer/preload) are recorded without being downloaded; `headResources:true` adds a header-only size-and-caching pass over the CSS, JS and fonts. After the crawl every distinct outbound link is checked - politely, one request at a time per host, cached for a week - so the audit can report broken and permanently redirected external links; bot walls count as unverifiable, never broken. `checkExternal:false` skips that.
+
+**Bot protection.** The crawler identifies itself honestly (`seo-audit-console/0.1`). When a site answers that with a bot block - a 403, LinkedIn's 999, or a Cloudflare / Akamai / DataDome challenge - the request is retried once as desktop Chrome; after three pages in a row only get through as Chrome, the rest of the crawl runs as Chrome. Each page records which one fetched it (`pages.fetched_as`), and the finished crawl reports how much blocking it met, which is worth knowing in itself: protection that walls this crawler may also wall AI crawlers or tools you rely on. The outbound-link checker and `probe_urls` retry the same way. Setting your own `userAgent` turns the fallback off, as does `chromeFallback:false`. Robots.txt is respected either way. Grain: one row per `url_key`, latest crawl only (history lives in snapshots, see `detect_changes`).
 > Crawl mysite.com, 500 pages max
 > Crawl mysite.com but exclude /author/ and /tag/
 
@@ -31,17 +33,26 @@ Just the GSC URL Inspection data: Google's own view of coverage, indexing, its c
 > Inspect the top 100 URLs on mysite.com
 
 ### `track_ranks` [paid]
-Ingests the DataForSEO monthly rank distribution and estimated traffic value into `rank_history`, so rank charts get a real time axis reconciled with your GSC dates. One call per refresh, cached 7 days. Pass `location` once ("United Kingdom", "Australia", or a code) - it's saved per property.
+Ingests the DataForSEO monthly rank distribution and estimated traffic value into `rank_history`, so rank charts get a real time axis reconciled with your GSC dates. One call per refresh, cached 20 days. Pass `location` once ("United Kingdom", "Australia", or a code) - it's saved per property.
 > Track ranks for mysite.com in the UK
 
 ### `check_sync_status` / `check_crawl_status`
-Poll a job by id, or list recent jobs. Sync, inspection, backlinks and entity jobs report through `check_sync_status`; crawls through `check_crawl_status`.
+Poll any job by id, or list recent jobs - the two names are the same tool. A failed job's reason is in the reply text, with a repair pointer when it's database corruption. Every job-starting tool also returns its `jobId` as JSON in the text, so clients that only read text can poll it.
 > Check the crawl status
+
+### `probe_urls`
+Fetch any URLs on your own host, including ones you make up to test a hypothesis, and see the status, the full redirect chain, canonical, robots directives, title, a content fingerprint (same hash, same page) and cache headers. `variantsOf` generates uppercase, title-case, slash, `index.php`, unknown-parameter, `http` and www/apex variants of a URL and says for each whether the site normalises it with one redirect, contains it with a canonical (safe for indexing, but every variant is crawled and usually skips the page cache), or serves a duplicate. Up to 50 URLs a call; `persist:true` keeps the results in a `probes` table for `query_data`.
+> Does mysite.com serve the same page at different capitalisations?
+> Probe these five old URLs and show me where they redirect
+
+### `triage_404s`
+Turns the crawl's 404 list into a short redirect map. Each dead URL gets where it was found (internal link, sitemap, GSC, backlink), its clicks, impressions and last-seen date, its backlinks, and the closest live URL by slug similarity. Then it's bucketed: **redirect** (real value and a confident match), **ignore** (mangled or stray URLs with no value) or **review** (everything else, such as 404s you still link to internally). The reply ends with a paste-ready from/to 301 map. Check a target with `probe_urls` before shipping it.
+> Triage the 404s on mysite.com
 
 ## The audit
 
 ### `run_audit`
-Runs the full check registry over the joined data and returns scored findings ranked by expected clicks per developer-hour: priority = (traffic at stake × yield × certainty) / effort. `categories` filters (crawlability, indexation, onpage, content, schema, security, performance, merged); `includeJudgement:true` adds the heuristic (N) checks, which are off by default.
+Runs the full check registry over the joined data and returns scored findings ranked by expected clicks per developer-hour: priority = (traffic at stake × yield × certainty) / effort. `categories` filters (crawlability, indexation, onpage, content, schema, security, performance, accessibility, merged); `includeJudgement:true` adds the heuristic (N) checks, which are off by default.
 > Run an SEO audit on mysite.com
 > Run an SEO audit on mysite.com, indexation and schema only, with judgement findings
 
@@ -51,7 +62,7 @@ One named check, with every affected URL and its full evidence. The drill-down a
 > Run the keyword-cannibalisation check on mysite.com with evidence
 
 ### `list_checks`
-The whole check catalogue - all 99, with categories and labels. The same list, annotated, is [checks.md](checks.md).
+The whole check catalogue - all 111, with categories and labels. The same list, annotated, is [checks.md](checks.md).
 > What does the audit check for?
 
 ### `list_templates`
@@ -61,10 +72,12 @@ Clusters crawled pages into templates by URL shape and schema type, each with a 
 ## Raw data
 
 ### `query_data`
-Direct, read-only access to the property database, built around one principle: **aggregate in the database and return answers, not rows**. The default mode groups by the columns you name and returns counts, percentages and sum/avg/min/max metrics - "status codes by folder", "clicks by page", "coverage states by verdict" - each as one small table with an honest total line, however many rows sit underneath. Tables: `pages`, `links`, `search_analytics`, `url_inspection`, `sitemap_urls`, `findings`, `image_assets`, `page_backlinks`. Filters (equals, ranges, like, in) are always parameterised, and every column name is validated against the live schema - there's no way to smuggle SQL in. `mode:rows` returns raw rows when you genuinely need them, with a curated default column set, 120-character cells and a *showing X-Y of TOTAL; next offset N* footer.
+Direct, read-only access to the property database, built around one principle: **aggregate in the database and return answers, not rows**. The default mode groups by the columns you name and returns counts, percentages and sum/avg/min/max metrics - "status codes by folder", "clicks by page", "coverage states by verdict" - each as one small table with an honest total line, however many rows sit underneath. Tables: `pages`, `links`, `search_analytics`, `url_inspection`, `sitemap_urls`, `findings`, `image_assets`, `page_backlinks`, `redirect_sources`, `probes`, `page_resources`, `resource_assets`, `external_link_status`. Filters (equals, ranges, like, in, match) are always parameterised; `match` is full-text search (words, "phrases", prefix\*, AND/OR/NOT, NEAR) over GSC queries, page titles/H1s/body text and anchor text, and is far faster than `like` on big tables. and every column name is validated against the live schema - there's no way to smuggle SQL in. `mode:rows` returns raw rows when you genuinely need them, with a curated default column set, 120-character cells and a *showing X-Y of TOTAL; next offset N* footer.
 > How do status codes break down on mysite.com?
 > Top 10 pages by total clicks from the raw GSC data
 > Show me the 404 rows with their inlink counts
+> Total clicks for every query that mentions "crystal" near "light"
+> Which third-party scripts load on the most pages?
 
 ## Fixes
 
@@ -109,7 +122,7 @@ Is your site ready for AI agents? Live HTTP probes of your origin scoring four c
 
 ## Competitive and keyword data (DataForSEO)
 
-All **[paid]**, all cached 7 days, all on-demand. Full workflows in [competitive.md](competitive.md).
+All **[paid]**, all cached 20 days, all on-demand. Full workflows in [competitive.md](competitive.md).
 
 ### `keyword_volume`
 True monthly search volume, CPC and competition for up to 700 keywords. How you size an opportunity before writing a word.
@@ -227,6 +240,10 @@ The interactive dashboard, rendered right in the chat: eight tabs - overview, fi
 The same dashboard, served on a localhost-only webserver so you can open it in a real browser tab: live data straight from the local database (always current, unlike an exported snapshot), a property switcher, and working CSV downloads. Localhost only - nothing is exposed to the network. `stop:true` shuts it down.
 > Serve the dashboard for mysite.com
 
+### `open_dashboard`
+One obvious way to say "show me the dashboard": it starts the local dashboard server if it isn't running and returns the property's link. Syncs, crawls, inspections and refreshes now do this themselves when they finish, so the completed job's status says the dashboard is updated and gives the link. Where no local port can be served (the Docker MCP gateway), it points you at `get_dashboard`, which renders the dashboard in chat. `SAC_AUTOSERVE=0` stops the automatic start after jobs, but an explicit `open_dashboard` still starts the server, like `serve_dashboard`.
+> Open the dashboard for mysite.com
+
 ### `get_dashboard_data`
 Internal - the widget fetches its own dataset through this so the full payload never hits the model's token limits. Not for direct use; listed here so you know what it is when you see it.
 
@@ -253,7 +270,9 @@ Reports where the per-property databases live, or sets a new location (persisted
 > Where is my audit data stored?
 
 ### `data_storage`
-The data-hygiene view: every property database with its size, key row counts (GSC rows, pages, links, snapshots, findings) and last sync/crawl dates, plus each `link_intersect` prospect set with its capture date (flagged once it's past 20 days - rivals keep earning links, so an old prospect list is a misleading one), the per-service caches (DataForSEO, Majestic, Firecrawl, Supadata, Wikidata) and the reports folder. When something's grown too big, `prune` offers three actions per property: `vacuum` (compact the file, reports bytes reclaimed), `clear-crawl-history` (drop snapshots and audit runs older than the five most recent, then vacuum), and `delete-property` (remove the database entirely). The destructive two require `confirm:true` and refuse loudly without it, naming exactly what would go; nothing runs while a sync or crawl job is in flight.
+The data-hygiene view: every property database with its size, key row counts (GSC rows, pages, links, snapshots, findings) and last sync/crawl dates, plus each `link_intersect` prospect set with its capture date (flagged once it's past 20 days - rivals keep earning links, so an old prospect list is a misleading one), the per-service caches (DataForSEO, Majestic, Firecrawl, Supadata, Wikidata) and the reports folder. When something's grown too big, `prune` offers three actions per property: `vacuum` (compact the file, reports bytes reclaimed), `clear-crawl-history` (drop snapshots and audit runs older than the five most recent, then vacuum), and `delete-property` (remove the database entirely). The destructive two require `confirm:true` and refuse loudly without it, naming exactly what would go; nothing runs while a sync or crawl job is in flight. `lastCrawl` is the last *completed* crawl; a run that failed or died is listed separately.
+
+**Integrity and repair.** If a sync keeps failing with "database disk image is malformed", run `data_storage` with `check:true` for the property. It runs SQLite's full `integrity_check` as a background job (minutes on a multi-GB file; `check:"quick"` is faster but misses damaged index rows) and names any damaged index. `prune` with `action:"repair"` and `confirm:true` then backs up the file, rebuilds only the damaged indexes and re-checks. Damage in table data rather than an index is reported, never papered over.
 > How much disk is my audit data using?
 > Vacuum the mysite.com database
 > Clear the old crawl history for mysite.com

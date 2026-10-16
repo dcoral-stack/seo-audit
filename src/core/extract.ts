@@ -52,13 +52,41 @@ export interface ExtractedLink {
   placement: 'navigation' | 'footer' | 'body';
   rel: string;
   isInternal: boolean;
+  /** How the href was WRITTEN, before resolution (#26): absolute | protocol-relative | root-relative | relative. */
+  hrefForm: HrefForm;
+}
+
+/** A subresource the page loads (#37): recorded from the HTML parse, never downloaded. */
+export interface ExtractedResource {
+  url: string;
+  type: 'css' | 'js' | 'font' | 'img' | 'other';
+  party: 'first' | 'third';      // first = the site's host or any subdomain of it (e.g. cdn.example.com)
+  position: 'head' | 'body';
+  async: boolean;
+  defer: boolean;
+  preload: boolean;              // <link rel=preload|modulepreload>
+  module: boolean;               // <script type=module> / modulepreload
+  crossorigin: string | null;
+  media: string | null;          // stylesheet media (print-only CSS isn't render-blocking)
+}
+
+export type HrefForm = 'absolute' | 'protocol-relative' | 'root-relative' | 'relative';
+
+/** Classify a raw href by how it is written. Pure string test, no resolution. */
+export function hrefFormOf(raw: string): HrefForm {
+  const h = raw.trim();
+  if (/^[a-z][a-z0-9+.-]*:/i.test(h)) return 'absolute';
+  if (h.startsWith('//')) return 'protocol-relative';
+  if (h.startsWith('/')) return 'root-relative';
+  return 'relative';
 }
 
 export interface ExtractedPage {
   title: string | null;
   titleLength: number;
   metaDescription: string | null;
-  metaDescriptionLength: number;
+  /** NULL when there is no <meta name="description"> at all; 0 when the tag is present but empty (#24). */
+  metaDescriptionLength: number | null;
   h1: string | null;
   h1Count: number;
   wordCount: number;
@@ -75,7 +103,9 @@ export interface ExtractedPage {
   internalLinks: number;
   externalLinks: number;
   imageCount: number;
-  imagesWithoutAlt: number;
+  imagesWithoutAlt: number;        // <img> with NO alt attribute
+  imagesEmptyAlt: number;          // <img alt=""> (correct for decorative images, often wrong for content images) (#21)
+  imagesEmptyAltContent: number;   // the subset of imagesEmptyAlt inside <main>/<article>/<figure>, outside nav/header/footer
   imagesMissingDimensions: number; // <img> lacking both width & height (CLS)
   canonicalCount: number;
   canonicalRelative: boolean;
@@ -100,6 +130,7 @@ export interface ExtractedPage {
   bodyChunks: { heading: string; level: number; text: string }[]; // content segmented by heading (RAG layer)
   links: ExtractedLink[];
   imageSrcs: string[];             // distinct absolute <img> src URLs (capped) — image-weight sampling
+  resources: ExtractedResource[];  // subresources the page loads (css/js/fonts/images), capped at 200 (#37)
 }
 
 function placementOf($: cheerio.CheerioAPI, el: any): 'navigation' | 'footer' | 'body' {
@@ -202,11 +233,15 @@ export function extractPage(
     if (t) jsonLdBlocks.push(t);
   });
 
+  // URL-valued social tags are resolved against the document base like links (#12), so a
+  // relative og:image on a <base href> site doesn't point under the current path.
+  const absOrRaw = (v: string): string => { try { const u = new URL(v, docBase); return u.protocol === 'http:' || u.protocol === 'https:' ? u.toString() : v; } catch { return v; } };
+  const URL_OG = /^og:(url|image|image:url|image:secure_url|video|video:url|video:secure_url|audio|audio:url|audio:secure_url)$/;
   const og: Record<string, string> = {};
   $('meta[property^="og:"]').each((_, el) => {
     const p = $(el).attr('property');
     const c = $(el).attr('content');
-    if (p && c) og[p] = c;
+    if (p && c) og[p] = URL_OG.test(p) ? absOrRaw(c.trim()) : c;
   });
 
   const hreflang: { lang: string; href: string }[] = [];
@@ -225,7 +260,7 @@ export function extractPage(
   $('meta[name^="twitter:"]').each((_, el) => {
     const n = $(el).attr('name');
     const c = $(el).attr('content');
-    if (n && c) tw[n] = c;
+    if (n && c) tw[n] = /^twitter:(image|image:src|player)$/.test(n) ? absOrRaw(c.trim()) : c;
   });
 
   // Heading hierarchy: levels in document order → count skipped jumps (h1→h3 etc.).
@@ -241,7 +276,8 @@ export function extractPage(
   // rel link relations Google still reads / we don't otherwise capture.
   const relNext = $('link[rel="next"]').length > 0;
   const relPrev = $('link[rel="prev"]').length > 0;
-  const relAmphtml = $('link[rel="amphtml"]').attr('href')?.trim() ?? null;
+  const relAmphtmlRaw = $('link[rel="amphtml"]').attr('href')?.trim() || null;
+  const relAmphtml = relAmphtmlRaw ? absOrRaw(relAmphtmlRaw) : null;
 
   // Mixed content: insecure (http) subresources on an https page.
   const isHttps = /^https:/i.test(pageUrl);
@@ -315,6 +351,8 @@ export function extractPage(
   // and those lacking both width & height attributes (a deterministic CLS signal).
   const imgEls = $('img');
   let imagesWithoutAlt = 0;
+  let imagesEmptyAlt = 0;
+  let imagesEmptyAltContent = 0;
   let imagesMissingDimensions = 0;
   // Distinct absolute image URLs, capped per page — the crawler samples their content-length
   // after the crawl for the image-weight report (CDN-hosted images count; SEO cares about
@@ -322,7 +360,12 @@ export function extractPage(
   const imageSrcSet = new Set<string>();
   imgEls.each((_, el) => {
     const $e = $(el);
-    if ($e.attr('alt') === undefined) imagesWithoutAlt++;
+    const alt = $e.attr('alt');
+    if (alt === undefined) imagesWithoutAlt++;
+    else if (alt.trim() === '') {
+      imagesEmptyAlt++;
+      if ($e.closest('main, article, figure').length && !$e.closest('nav, header, footer').length) imagesEmptyAltContent++;
+    }
     if ($e.attr('width') === undefined && $e.attr('height') === undefined) imagesMissingDimensions++;
     const src = ($e.attr('src') ?? '').trim();
     if (src && !src.startsWith('data:') && imageSrcSet.size < 15) {
@@ -332,6 +375,52 @@ export function extractPage(
       } catch { /* skip bad src */ }
     }
   });
+
+  // ── Subresource inventory (#37): what the page loads, from the parse already happening. ──────
+  const resources: ExtractedResource[] = [];
+  {
+    const seenRes = new Set<string>();
+    const apexOf = (h: string): string => h.toLowerCase().replace(/^www\./, '');
+    const siteApex = apexOf(baseHost);
+    const partyOf = (u: URL): 'first' | 'third' => { const h = apexOf(u.hostname); return h === siteApex || h.endsWith(`.${siteApex}`) ? 'first' : 'third'; };
+    const add = (el: any, raw: string | undefined, type: ExtractedResource['type'], extra: Partial<ExtractedResource> = {}): void => {
+      if (!raw || resources.length >= 200) return;
+      const v = raw.trim();
+      if (!v || v.startsWith('data:') || v.startsWith('blob:')) return;
+      let u: URL;
+      try { u = new URL(v, docBase); } catch { return; }
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+      const key = `${type} ${u.toString()}`;
+      if (seenRes.has(key)) return;
+      seenRes.add(key);
+      const $e = el ? $(el) : null;
+      resources.push({
+        url: u.toString(), type, party: partyOf(u), position: $e && !$e.closest('head').length ? 'body' : 'head',
+        async: !!$e && $e.attr('async') !== undefined, defer: !!$e && $e.attr('defer') !== undefined,
+        preload: false, module: !!$e && ($e.attr('type') ?? '').toLowerCase() === 'module',
+        crossorigin: $e?.attr('crossorigin') ?? null, media: $e?.attr('media')?.trim() || null, ...extra,
+      });
+    };
+    const relHas = (el: any, r: string): boolean => (($(el).attr('rel') ?? '').toLowerCase().split(/\s+/)).includes(r);
+    $('link[href]').each((_, el) => {
+      const href = $(el).attr('href');
+      if (relHas(el, 'stylesheet')) add(el, href, 'css');
+      else if (relHas(el, 'modulepreload')) add(el, href, 'js', { preload: true, module: true });
+      else if (relHas(el, 'preload')) {
+        const as = ($(el).attr('as') ?? '').toLowerCase();
+        add(el, href, as === 'font' ? 'font' : as === 'style' ? 'css' : as === 'script' ? 'js' : as === 'image' ? 'img' : 'other', { preload: true });
+      } else if (relHas(el, 'icon') || relHas(el, 'apple-touch-icon')) add(el, href, 'img');
+    });
+    $('script[src]').each((_, el) => add(el, $(el).attr('src'), 'js'));
+    $('img[src]').each((_, el) => add(el, $(el).attr('src'), 'img'));
+    // Fonts declared in inline <style> @font-face blocks ("where visible": external CSS isn't fetched).
+    $('style').each((_, el) => {
+      const css = $(el).text();
+      for (const face of css.matchAll(/@font-face\s*{([^}]*)}/gi)) {
+        for (const m of face[1].matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/gi)) add(el, m[1], 'font');
+      }
+    });
+  }
 
   const links: ExtractedLink[] = [];
   let internalLinks = 0;
@@ -363,6 +452,7 @@ export function extractPage(
       placement: placementOf($, el),
       rel: $(el).attr('rel')?.trim() ?? '',
       isInternal,
+      hrefForm: hrefFormOf(href),
     });
   });
 
@@ -370,7 +460,7 @@ export function extractPage(
     title,
     titleLength: title?.length ?? 0,
     metaDescription,
-    metaDescriptionLength: metaDescription?.length ?? 0,
+    metaDescriptionLength: $('meta[name="description"]').length ? (metaDescription?.length ?? 0) : null,
     h1,
     h1Count: h1Els.length,
     wordCount,
@@ -388,6 +478,8 @@ export function extractPage(
     externalLinks,
     imageCount: imgEls.length,
     imagesWithoutAlt,
+    imagesEmptyAlt,
+    imagesEmptyAltContent,
     imagesMissingDimensions,
     canonicalCount: canonicalEls.length,
     canonicalRelative,
@@ -411,5 +503,6 @@ export function extractPage(
     bodyChunks,
     links,
     imageSrcs: [...imageSrcSet],
+    resources,
   };
 }

@@ -190,6 +190,33 @@ export const CHECKS: CheckDef[] = [
     run: (c) => rows(c, `SELECT url_key urlKey, images_without_alt missing, image_count total FROM pages WHERE status_code=200 AND indexable=1 AND images_without_alt > 0`).map(r => ({ urlKey: r.urlKey, evidence: { missing: r.missing, total: r.total } })),
   },
   {
+    // #36: outbound links whose target is gone (4xx/5xx, DNS, timeout, refused, TLS). Keyed by the
+    // LINKING page (that's where the fix happens). Bot walls (401/403/429, Cloudflare challenges)
+    // are 'unverifiable' and never counted here. Needs the post-crawl external-link pass.
+    id: 'external-broken', category: 'onpage', severity: 'med', labels: ['D'], certainty: 0.9, effortBase: 2, fixType: 'per-page',
+    title: 'Broken outbound links', fix: 'Replace or remove each dead external link: point it at the current page on that site, a better source, or drop it. Dead outbound links read as neglect to users and to quality raters.',
+    run: (c) => externalByPage(c, `s.verdict = 'broken'`).map(p => ({ urlKey: p.urlKey, evidence: { broken: p.items.length, outboundLinks: p.outbound, examples: p.items.slice(0, 10).map(i => ({ target: i.target, status: i.status ?? i.error, anchor: i.anchor })) } })),
+  },
+  {
+    // #36: permanent redirects on outbound links ("update the link"). A deep link that now 301s to
+    // the target site's HOMEPAGE usually means the product or doc was removed — flagged per item.
+    id: 'external-redirected', category: 'onpage', severity: 'low', labels: ['D'], certainty: 0.9, effortBase: 1, fixType: 'per-page',
+    title: 'Outbound links that permanently redirect', fix: 'Update each link to its final URL. Where a deep link now lands on the site\'s homepage, the page it pointed at is probably gone: find the replacement or remove the link.',
+    run: (c) => externalByPage(c, `s.verdict = 'redirected' AND s.permanent = 1`).map(p => ({ urlKey: p.urlKey, evidence: {
+      redirected: p.items.length, toHomepage: p.items.filter(i => i.toHomepage).length,
+      examples: p.items.slice(0, 10).map(i => ({ target: i.target, finalUrl: i.finalUrl, ...(i.toHomepage ? { note: 'deep link now redirects to the homepage: likely removed' } : {}), anchor: i.anchor })),
+    } })),
+  },
+  {
+    // Judgement (#21): alt="" is right for decorative images, so it can't be a deterministic
+    // finding. But empty alt on images INSIDE the main content (main/article/figure, outside the
+    // site chrome) is often a content image whose alt was never written — e.g. WordPress
+    // wp-block-image figures. Flags pages where such images exist; verify before fixing.
+    id: 'image-empty-alt-content', category: 'accessibility', severity: 'low', labels: ['N'], certainty: 0.5, effortBase: 3, fixType: 'per-page',
+    title: 'Content images with empty alt text', fix: 'Check each empty-alt image inside the main content: give content images (screenshots, product shots, charts, figures) descriptive alt text; keep alt="" only for genuinely decorative ones.',
+    run: (c) => rows(c, `SELECT url_key urlKey, images_empty_alt_content contentEmpty, images_empty_alt empty, image_count total FROM pages WHERE status_code=200 AND indexable=1 AND images_empty_alt_content > 0`).map(r => ({ urlKey: r.urlKey, evidence: { emptyAltInContent: r.contentEmpty, emptyAltTotal: r.empty, total: r.total } })),
+  },
+  {
     id: 'canonical-relative', category: 'indexation', severity: 'med', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'per-page',
     title: 'Canonical declared as a relative URL', fix: 'Use an absolute https URL in rel=canonical — relative canonicals are error-prone.',
     run: (c) => rows(c, `SELECT url_key urlKey, canonical_url canonical FROM pages WHERE status_code=200 AND canonical_relative=1`).map(r => ({ urlKey: r.urlKey, evidence: { canonical: r.canonical } })),
@@ -871,8 +898,33 @@ export const CHECKS: CheckDef[] = [
   {
     id: 'backlinks-to-404', category: 'crawlability', severity: 'crit', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'per-page',
     title: 'External backlinks pointing to a dead page', fix: '301-redirect this URL to the best live equivalent — external link equity is hitting a 4xx/5xx page and being wasted.',
-    run: (c) => rows(c, `SELECT url_key urlKey, backlinks, referring_domains rd, status_code st FROM page_backlinks WHERE status_code >= 400 AND backlinks > 0 ORDER BY backlinks DESC`)
-      .map(r => ({ urlKey: r.urlKey, evidence: { status: r.st, backlinks: r.backlinks, referringDomains: r.rd } })),
+    // Status comes from the LATEST CRAWL first (#32): the status stored with the backlink pull can be
+    // weeks old, and a URL 301'd since then was reported as a crit 404. Order: the URL's own pages
+    // row → a recorded redirect (judged by where it lands) → the stored pull status, labelled with
+    // its age, only when the crawl never reached the URL.
+    run: (c) => {
+      const out: RawFinding[] = [];
+      for (const r of rows(c, `SELECT b.url_key urlKey, b.backlinks, b.referring_domains rd, b.status_code storedSt, b.fetched_at fetchedAt,
+          p.status_code crawlSt, rs.status redirSt, rs.final_url finalUrl, fp.status_code finalSt
+        FROM page_backlinks b
+        LEFT JOIN pages p ON p.url_key = b.url_key
+        LEFT JOIN redirect_sources rs ON rs.url_key = b.url_key
+        LEFT JOIN pages fp ON fp.url_key = rs.final_key
+        WHERE b.backlinks > 0 ORDER BY b.backlinks DESC`)) {
+        const base = { backlinks: r.backlinks, referringDomains: r.rd };
+        const dead = (st: number | null): boolean => st != null && st >= 400 && st !== 429 && st !== 503;
+        if (r.redirSt != null) {
+          // Redirected in the current crawl: equity passes unless the target is itself dead.
+          if (dead(r.finalSt)) out.push({ urlKey: r.urlKey, evidence: { ...base, status: r.finalSt, redirectStatus: r.redirSt, redirectsTo: r.finalUrl, statusSource: 'crawl' } });
+        } else if (r.crawlSt != null) {
+          if (dead(r.crawlSt)) out.push({ urlKey: r.urlKey, evidence: { ...base, status: r.crawlSt, statusSource: 'crawl' } });
+        } else if (dead(r.storedSt)) {
+          out.push({ urlKey: r.urlKey, evidence: { ...base, status: r.storedSt, statusSource: 'backlink pull', statusCheckedAt: r.fetchedAt,
+            note: 'Not reached by the latest crawl, so this is the status from the backlink pull. Re-crawl (backlinked URLs are seeded) to confirm before redirecting.' } });
+        }
+      }
+      return out;
+    },
   },
   {
     id: 'orphan-no-links', category: 'crawlability', severity: 'med', labels: ['D'], certainty: 1, effortBase: 5, fixType: 'per-page',
@@ -1343,24 +1395,50 @@ export const CHECKS: CheckDef[] = [
     },
   },
   {
-    // The guide's "unique point of view based on personal experience or expertise", cut down to its
-    // deterministically checkable slice: an Article/BlogPosting that carries schema yet names no
-    // author. Attribution is the machine-readable experience/expertise signal; a byline-less article
-    // is the commodity-content default. Only fires where Article schema EXISTS (no schema at all is
-    // schema-opportunity territory, not this check).
+    // Fires only when NO Article-family node on the page names an author (#28): a page carrying
+    // Yoast's graph Article (with author) plus a second content-embedded Article (author: null)
+    // has attribution — the real problem there is the duplicate entity, which the next check
+    // reports. An author given only as an @id reference resolves against the page's graph.
     id: 'article-no-author', category: 'schema', severity: 'low', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'per-page',
-    title: 'Article schema with no author attribution', fix: 'This page marks itself up as an Article/BlogPosting but declares no author. Google’s AI-search guidance rewards content with a demonstrable first-hand point of view — add `author` (a Person with a real name, ideally linking to an author page) to the Article schema and a visible byline to match.',
+    title: 'Article schema with no author attribution', fix: 'This page marks itself up as an Article/BlogPosting but no Article node declares an author. Google’s AI-search guidance rewards content with a demonstrable first-hand point of view — add `author` (a Person with a real name, ideally linking to an author page) to the Article schema and a visible byline to match.',
     run: (c) => {
       const out: RawFinding[] = [];
-      for (const r of rows(c, `SELECT url_key urlKey, json_ld jsonLd FROM pages WHERE status_code=200 AND indexable=1 AND json_ld LIKE '%Article%'`)) {
-        for (const n of parseJsonLdNodes(r.jsonLd)) {
-          const t = nodeType(n);
-          if (!t || !/^(article|blogposting|newsarticle|techarticle|scholarlyarticle)$/i.test(t)) continue;
-          const a = (n as any).author;
-          const named = (v: any): boolean => !!v && (typeof v === 'string' ? v.trim().length > 0
-            : Array.isArray(v) ? v.some(named) : typeof v === 'object' && typeof v.name === 'string' && v.name.trim().length > 0);
-          if (!named(a)) { out.push({ urlKey: r.urlKey, evidence: { schemaType: t, author: a ?? null, note: 'Article markup present, author absent or unnamed' } }); break; }
-        }
+      for (const r of rows(c, `SELECT url_key urlKey, json_ld jsonLd FROM pages WHERE status_code=200 AND indexable=1 AND ${ARTICLE_LIKE}`)) {
+        const nodes = parseJsonLdNodes(r.jsonLd);
+        const articles = nodes.filter(isArticleNode);
+        if (!articles.length) continue;
+        const named = authorNamer(nodes);
+        if (articles.some(n => named((n as any).author))) continue;
+        out.push({ urlKey: r.urlKey, evidence: {
+          schemaType: nodeType(articles[0]), articleNodes: articles.length, author: (articles[0] as any).author ?? null,
+          note: articles.length > 1 ? `none of the ${articles.length} Article nodes names an author` : 'Article markup present, author absent or unnamed',
+        } });
+      }
+      return out;
+    },
+  },
+  {
+    // #28: more than one Article-family ENTITY on one URL (nodes sharing an @id are the same
+    // entity, so a graph that references itself isn't flagged). Typically an SEO plugin's graph
+    // Article plus a theme- or block-embedded Article, often with conflicting author/date/headline,
+    // which leaves Google to guess which one describes the page. Top-level and @graph nodes only,
+    // so a blog index listing BlogPostings inside an ItemList isn't counted.
+    id: 'duplicate-article-entities', category: 'schema', severity: 'low', labels: ['D'], certainty: 0.9, effortBase: 2, fixType: 'per-page',
+    title: 'Duplicate Article entities on one page', fix: 'Emit ONE Article/BlogPosting per page. Remove the second source (usually a theme, page-builder block or second plugin) or merge it into the main graph by giving it the same @id, so author, dates and headline are declared once and agree.',
+    run: (c) => {
+      const out: RawFinding[] = [];
+      for (const r of rows(c, `SELECT url_key urlKey, json_ld jsonLd FROM pages WHERE status_code=200 AND indexable=1 AND ${ARTICLE_LIKE}`)) {
+        const nodes = parseJsonLdNodes(r.jsonLd);
+        const named = authorNamer(nodes);
+        const entities = new Map<string, any>();
+        nodes.filter(isArticleNode).forEach((n: any, i) => {
+          const id = typeof n['@id'] === 'string' && n['@id'] ? n['@id'] : `#anon-${i}`;
+          if (!entities.has(id)) entities.set(id, n);
+        });
+        if (entities.size < 2) continue;
+        out.push({ urlKey: r.urlKey, evidence: {
+          entities: [...entities].map(([id, n]) => ({ id: id.startsWith('#anon-') ? null : id, types: nodeTypeList(n), hasAuthor: named(n.author), headline: typeof n.headline === 'string' ? n.headline.slice(0, 80) : null })),
+        } });
       }
       return out;
     },
@@ -1459,6 +1537,43 @@ const DISCOVER_TYPES = ['article', 'newsarticle', 'blogposting', 'liveblogpostin
 const DISCOVER_PREFILTER = `status_code=200 AND indexable=1 AND ${HTML_CT} AND (json_ld LIKE '%Article%' OR json_ld LIKE '%BlogPosting%' OR json_ld LIKE '%ProfilePage%' OR og_tags LIKE '%article%')`;
 // Every @type a node declares. A node's @type may be a STRING or an ARRAY (e.g. ["Article","BlogPosting"]);
 // templates.nodeType() returns only the first entry, which misreads array types — so read them all here.
+// SQL prefilter for the article family. 'BlogPosting' / 'SocialMediaPosting' don't contain the word
+// 'Article', so a LIKE '%Article%' prefilter silently skipped BlogPosting-only pages.
+// Outbound links joined to their checked status (#36), grouped by linking page.
+function externalByPage(c: CheckContext, where: string): { urlKey: string; outbound: number; items: { target: string; status: number | null; error: string | null; finalUrl: string | null; anchor: string | null; toHomepage: boolean }[] }[] {
+  const pathOf = (u: string | null): string => { try { return new URL(u ?? '').pathname; } catch { return ''; } };
+  const byPage = new Map<string, { urlKey: string; outbound: number; items: any[] }>();
+  for (const r of rows(c, `SELECT l.source_key src, l.target_url target, l.anchor_text anchor, s.status, s.error, s.final_url finalUrl,
+      (SELECT external_links FROM pages p WHERE p.url_key = l.source_key) outbound
+    FROM links l JOIN external_link_status s ON s.url_key = l.target_key
+    WHERE l.is_internal = 0 AND ${where} ORDER BY l.source_key`)) {
+    const page = byPage.get(r.src) ?? byPage.set(r.src, { urlKey: r.src, outbound: r.outbound ?? 0, items: [] }).get(r.src)!;
+    if (page.items.some((i: any) => i.target === r.target)) continue;
+    page.items.push({ target: r.target, status: r.status, error: r.error, finalUrl: r.finalUrl, anchor: r.anchor || null,
+      toHomepage: pathOf(r.target).replace(/\/+$/, '') !== '' && pathOf(r.finalUrl).replace(/\/+$/, '') === '' });
+  }
+  return [...byPage.values()];
+}
+const ARTICLE_LIKE = `(json_ld LIKE '%Article%' OR json_ld LIKE '%Posting%')`;
+const ARTICLE_TYPES = /^(article|blogposting|newsarticle|techarticle|scholarlyarticle|reportagenewsarticle|analysisnewsarticle|opinionnewsarticle|reviewnewsarticle|backgroundnewsarticle|socialmediaposting|liveblogposting)$/;
+// Array-@type aware: Yoast emits @type ["Article","BlogPosting"].
+function isArticleNode(n: unknown): boolean { return nodeTypeList(n).some(t => ARTICLE_TYPES.test(t)); }
+// True when an author value carries a real name, directly or via an @id reference to a node in the
+// same page graph (Yoast: "author": {"@id": "…#/schema/person/…"} with the Person declared once).
+function authorNamer(nodes: unknown[]): (v: unknown) => boolean {
+  const byId = new Map<string, any>();
+  for (const n of nodes as any[]) if (n && typeof n['@id'] === 'string') byId.set(n['@id'], n);
+  const hasName = (o: any): boolean => !!o && typeof o.name === 'string' && o.name.trim().length > 0;
+  const named = (v: any, depth = 0): boolean => {
+    if (!v || depth > 3) return false;
+    if (typeof v === 'string') return v.trim().length > 0;
+    if (Array.isArray(v)) return v.some(x => named(x, depth + 1));
+    if (typeof v !== 'object') return false;
+    if (hasName(v)) return true;
+    return typeof v['@id'] === 'string' && hasName(byId.get(v['@id']));
+  };
+  return (v: unknown) => named(v);
+}
 function nodeTypeList(n: unknown): string[] {
   const t = (n as { '@type'?: unknown } | null)?.['@type'];
   if (typeof t === 'string') return [t.toLowerCase()];

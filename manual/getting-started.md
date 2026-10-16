@@ -143,7 +143,7 @@ Add this to `claude_desktop_config.json` (Settings → Developer → Edit Config
         "SAC_DATA_DIR": "C:/path/to/where/audits/are/stored",
         "DATAFORSEO_USERNAME": "you@example.com",
         "DATAFORSEO_PASSWORD": "your-dataforseo-password",
-        "DATAFORSEO_CACHE_DAYS": "7",
+        "DATAFORSEO_CACHE_DAYS": "20",
         "MAJESTIC_API_KEY": "your-majestic-api-key",
         "MAJESTIC_CACHE_DAYS": "30",
         "FIRECRAWL_API_KEY": "your-firecrawl-key",

@@ -6,16 +6,17 @@
  * is ever interpolated into SQL.
  */
 import Database from 'better-sqlite3';
+import { matchPredicate, ftsIndexFor, ensureFtsSchema, ensureFtsBackfilled, type FtsIndex } from './fts.js';
 
 export const QUERYABLE_TABLES = [
   'pages', 'links', 'search_analytics', 'url_inspection', 'sitemap_urls',
-  'findings', 'image_assets', 'page_backlinks',
+  'findings', 'image_assets', 'page_backlinks', 'redirect_sources', 'probes', 'page_resources', 'resource_assets', 'external_link_status',
 ] as const;
 export type QueryTable = (typeof QUERYABLE_TABLES)[number];
 
-export const FILTER_OPS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'like', 'in'] as const;
+export const FILTER_OPS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'like', 'in', 'match'] as const;
 export type FilterOp = (typeof FILTER_OPS)[number];
-const OP_SQL: Record<Exclude<FilterOp, 'in'>, string> = {
+const OP_SQL: Record<Exclude<FilterOp, 'in' | 'match'>, string> = {
   eq: '=', ne: '<>', gt: '>', gte: '>=', lt: '<', lte: '<=', like: 'LIKE',
 };
 
@@ -47,13 +48,18 @@ export interface QueryDataResult {
  *  json_ld, evidence…) stay out unless explicitly requested. */
 const DEFAULT_ROW_COLUMNS: Record<QueryTable, string[]> = {
   pages: ['url', 'status_code', 'indexable', 'title', 'h1', 'word_count', 'ipr', 'click_depth', 'inlink_count', 'canonical_key'],
-  links: ['source_key', 'target_key', 'anchor_text', 'is_internal', 'placement', 'rel'],
+  links: ['source_key', 'target_key', 'anchor_text', 'is_internal', 'placement', 'rel', 'href_form'],
   search_analytics: ['date', 'query', 'page_key', 'clicks', 'impressions', 'ctr', 'position'],
   url_inspection: ['url_key', 'verdict', 'coverage_state', 'google_canonical', 'user_canonical', 'last_crawl_time'],
   sitemap_urls: ['url', 'lastmod'],
   findings: ['id', 'run_id', 'check_id', 'category', 'severity', 'url_key', 'priority'],
   image_assets: ['url', 'bytes', 'status', 'content_type', 'used_on'],
   page_backlinks: ['url', 'backlinks', 'referring_domains', 'dofollow', 'status_code'],
+  redirect_sources: ['url', 'status', 'final_url', 'hops', 'chain'],
+  probes: ['url', 'variant_type', 'status', 'final_url', 'final_status', 'canonical', 'verdict', 'probed_at'],
+  page_resources: ['page_key', 'resource_url', 'type', 'party', 'position', 'is_async', 'is_defer', 'is_preload'],
+  resource_assets: ['url', 'type', 'status', 'content_length', 'cache_control', 'used_on'],
+  external_link_status: ['url', 'verdict', 'status', 'final_url', 'error', 'checked_at'],
 };
 
 const CELL_CAP = 120;
@@ -74,6 +80,25 @@ const quoteIdent = (name: string): string => `"${name.replace(/"/g, '""')}"`;
 const NUMERIC_AFFINITY = /INT|REAL|FLOA|DOUB|NUM|DECI/i;
 
 export function runQueryData(dbPath: string, input: QueryDataInput): QueryDataResult {
+  // query_data reads through a READ-ONLY handle. A match filter needs its FTS index present and
+  // backfilled (a one-time write for DBs created before #35), so do that first on a short-lived
+  // writable handle, then query read-only as usual.
+  const needed = new Set<FtsIndex>();
+  for (const f of input.filters ?? []) {
+    if (f.op !== 'match') continue;
+    const idx = ftsIndexFor(input.table, f.column);
+    if (!idx) matchPredicate(input.table, f.column); // throws the "works on …" explanation
+    else needed.add(idx);
+  }
+  if (needed.size) {
+    try {
+      const w = new Database(dbPath, { fileMustExist: true });
+      w.pragma('busy_timeout = 10000'); // small inline backfill: wait out a running job's write lock
+      try { ensureFtsSchema(w); for (const idx of needed) ensureFtsBackfilled(w, idx); } finally { w.close(); }
+    } catch (e) {
+      if (!/unable to open|no such file|SQLITE_CANTOPEN/i.test(String(e))) throw e; // missing DB falls through to the message below
+    }
+  }
   let db: Database.Database;
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
@@ -123,6 +148,12 @@ function execute(db: Database.Database, input: QueryDataInput): QueryDataResult 
       if (f.value.length > 100) throw new Error(`Filter op "in" on ${f.column}: max 100 values.`);
       whereParts.push(`${col} IN (${f.value.map(() => '?').join(',')})`);
       params.push(...f.value);
+    } else if (f.op === 'match') {
+      // Full-text via FTS5 (#35) instead of a LIKE scan; value is FTS5 query syntax.
+      if (typeof f.value !== 'string' || !f.value.trim()) throw new Error(`Filter op "match" on ${f.column} needs a non-empty FTS5 query string, e.g. "crystal light" or "NEAR(crystal light, 3)".`);
+      const m = matchPredicate(table, f.column);
+      whereParts.push(m.sql);
+      params.push(m.wrap(f.value));
     } else if (f.value === null && (f.op === 'eq' || f.op === 'ne')) {
       whereParts.push(`${col} IS ${f.op === 'eq' ? '' : 'NOT '}NULL`);
     } else {

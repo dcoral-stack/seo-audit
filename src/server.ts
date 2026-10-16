@@ -39,7 +39,9 @@ import { suggestPages } from './audit/opportunities.js';
 import { computeTopicGaps, type GapKeywordRow } from './audit/topicGaps.js';
 import { AuditDatabase } from './core/AuditDatabase.js';
 import { dbPathFor, sanitizeProperty } from './core/paths.js';
+import Database from 'better-sqlite3';
 import { runQueryData, QUERYABLE_TABLES, FILTER_OPS, METRIC_FNS, truncateCell } from './core/queryData.js';
+import { ftsIndexFor, pendingBackfills, backfillInWorker, INLINE_BACKFILL_MAX_ROWS, type FtsIndex } from './core/fts.js';
 import { storageSummary, pruneProperty, fmtBytes } from './core/dataStorage.js';
 import { scoreSitePassages } from './core/passageScore.js';
 import { findNearDuplicates } from './core/nearDuplicate.js';
@@ -61,7 +63,10 @@ import { MajesticClient } from './core/MajesticClient.js';
 import { fetchGoogleNews } from './core/googleNews.js';
 import { WikidataClient } from './core/WikidataClient.js';
 import { Entities } from './core/Entities.js';
-import { JobManager } from './core/JobManager.js';
+import { JobManager, corruptionHint, type Job } from './core/JobManager.js';
+import { checkIntegrity, repairIndexes, propertyDbFile } from './core/integrity.js';
+import { probeUrls, urlVariants, judgeVariants, type ProbeResult } from './core/probeUrls.js';
+import { triage404s } from './core/triage404.js';
 import { gscFreshness } from './core/gscFreshness.js';
 import { clusterKeywordList } from './audit/keywordList.js';
 import type { FetchOptions } from './core/types.js';
@@ -83,7 +88,7 @@ function readConfigDataDir(): string | undefined {
 
 let RESOLVED_DATA_DIR: string | null = null;
 export function dataDir(): string {
-  if (!RESOLVED_DATA_DIR) RESOLVED_DATA_DIR = process.env.SAC_DATA_DIR ?? readConfigDataDir() ?? DEFAULT_DATA_DIR;
+  if (!RESOLVED_DATA_DIR) RESOLVED_DATA_DIR = process.env.SAC_DATA_DIR?.trim() || readConfigDataDir() || DEFAULT_DATA_DIR;
   return RESOLVED_DATA_DIR;
 }
 
@@ -97,7 +102,7 @@ const SYNC_PROGRESS_URI = `ui://sync-progress/main-${SERVER_VERSION}.html`;
 // filters never silently return empty. (Was listing performance/agentic/integrity/war-stories
 // which no check uses, and omitting content/security which checks do use.)
 const CHECK_CATEGORIES = [
-  'crawlability', 'indexation', 'onpage', 'content', 'schema', 'security', 'performance', 'merged',
+  'crawlability', 'indexation', 'onpage', 'content', 'schema', 'security', 'performance', 'accessibility', 'merged',
 ] as const;
 
 function isoDaysAgo(days: number): string {
@@ -151,7 +156,7 @@ This server's value is composition: joining Search Console, the crawl, URL Inspe
 | Source (table) | Grain | Key dimensions | Join keys | Freshness | Cost |
 |---|---|---|---|---|---|
 | search_analytics (GSC) | date × query × page (+device/country with segments) | clicks, impressions, ctr, position | page_key (url_key), query, date | sync_gsc / refresh_property — incremental, GSC lags ~2–3 days | free |
-| pages + links (crawl) | one row per url_key, LATEST crawl | status, title, H1, meta, canonical_key, robots, json_ld, hreflang, redirects, body_chunks, word_count, ipr, click_depth, inlink_count, conditional_304 | url_key | start_crawl / refresh_property (on demand) | free |
+| pages + links (crawl) | one row per url_key, LATEST crawl | status, title, H1, meta (meta_description_length NULL = tag absent, 0 = empty), canonical_key, robots, json_ld, hreflang, redirects, body_chunks, word_count, ipr, click_depth, inlink_count, conditional_304, images_without_alt / images_empty_alt / images_empty_alt_content; links.href_form (absolute / protocol-relative / root-relative / relative, as written) | url_key | start_crawl / refresh_property (on demand) | free |
 | page_snapshots (drift) | url_key × crawl | field-level SEO snapshot per crawl | url_key, captured_at | every crawl, automatically | free |
 | url_inspection | one row per inspected URL (top pages by clicks, quota-limited) | coverage_state, page_fetch_state, google_canonical, user_canonical, last_crawl_time, crawled_as, rich_results | url_key | inspect_urls | free (GSC quota) |
 | sitemap_urls | one row per sitemap URL | lastmod | url_key | captured at crawl time | free |
@@ -227,7 +232,12 @@ A technical-SEO audit that fuses **Search Console + a site crawl + DataForSEO**,
 - **run_audit** — score all checks; returns a prioritised markdown report. _"Run an SEO audit on sc-domain:example.com"_ · \`scope:full\`, \`categories\`, \`includeJudgement:true\`.
 - **query_audit** — one named check with evidence (\`columns\`/\`offset\` for big sets). _"Show striking-distance for example.com"_
 - **query_data** — read-only queries over the raw tables; aggregates in the database (counts/percentages/sums), answers not rows. _"How do status codes break down on example.com?"_
+- **probe_urls** — fetch any URLs on the site live (status, redirect chain, canonical, cache headers); \`variantsOf\` tests case/slash/param/host variants. _"Does example.com serve the same page at /Page/ and /page/?"_
+- **triage_404s** — crawled 404s bucketed redirect / review / ignore, with the closest live URL and a 301 map. _"Triage the 404s on example.com"_
+- **open_dashboard** — the property's browser dashboard link (finished syncs/crawls offer it automatically). _"Open the dashboard for example.com"_
 - **list_checks** — _"What does the audit check for?"_
+- **find_duplicates** — semantic near-duplicate pages from a local embedding model (no API cost); feeds \`near-duplicate-content\`. _"Find near-duplicate pages on example.com"_
+- **render_pages** — Response vs Render: a sampled set of pages in headless Chromium, showing content and links that only exist after JavaScript (needs the optional Playwright). _"Render the top pages on example.com"_
 
 ## 3. Fix (the moat)
 - **fix_finding** — paste-ready remediation from your own data: JSON-LD for missing/invalid schema, a 301 rule for broken links, iPR-ranked internal-link suggestions. _"Generate the fix for finding 12"_ or _"fix_finding check:missing-required-fields url:https://example.com/x"_
@@ -246,20 +256,25 @@ A technical-SEO audit that fuses **Search Console + a site crawl + DataForSEO**,
 - **domain_visibility** — monthly ranking-keyword distribution + ETV trend for ANY domain/subdomain (Semrush-style organic overview). _"Show visibility over time for competitor.com"_
 - **top_pages** — a domain's top organic pages by estimated traffic. _"Top pages on competitor.com"_
 - **ranked_keywords** — keywords a domain / subdomain / URL / subfolder ranks for (+ difficulty, intent, SERP features). _"What does competitor.com/blog/ rank for?"_ · \`scope:url|folder\` · \`aioOnly:true\` = keywords where the target is cited in AI Overviews
+- **youtube_discovery / news_discovery** — the YouTube videos and recent news ranking for a keyword (live SERPs). _"What news is there on direct drive wheelbases this month?"_
+- **market_sizing** — total demand and share of voice for you plus up to four competitors, per topic cluster. _"Size the market: example.com vs rival1.com and rival2.com"_
 - **topic_gaps** — what related topics should this site cover to be expert in its space: competitor keyword footprints minus everything you already rank or have a page for, clustered into ranked topics with volumes, the owning competitor and your nearest existing page. _"What topics should example.com cover? Compare against rival.com"_
 
 ## 5. Templates & opportunities
 - **list_templates** — cluster pages into templates (one fix → N pages) with a representative exemplar. _"List page templates for example.com"_
 - **suggest_pages** — new-page ideas grounded in real GSC demand, minus what you already cover. _"Suggest new pages for example.com"_
+- **content_opportunities** — the content marketer's report from stored data: write next, refresh now, rewrite snippets, strengthen. _"Content opportunities for example.com"_
+- **keyword_list** — cluster a keyword list (or your top GSC queries) by the page Google ranks for it: own / weak / absent, no paid calls. _"Cluster these keywords for example.com: [...]"_
 - **resolve_entities** — map pages to Wikidata entities → unlocks entity-internal-link-gap (judgement). _"Resolve entities for example.com"_
 
 ## 6. Reports & dashboard
 - **get_dashboard** — interactive dashboard (renders in chat). _"Show the dashboard for example.com"_
+- **serve_dashboard / open_dashboard** — the same dashboard in a local browser tab (live data, CSV downloads). _"Open the dashboard for example.com"_
 - **export_report** — self-contained shareable HTML to send a client. _"Export the report for example.com"_
 
 ## 7. Utilities
-- **data_location** — where DBs are stored (set with a path). · **normalize_url** — the join key for a URL.
-- **data_storage** — per-property disk usage + row counts; prune (vacuum / clear-crawl-history / delete-property, destructive ones need \`confirm:true\`). _"How much disk is my audit data using?"_
+- **data_location** — where DBs are stored (set with a path). · **normalize_url** — the join key for a URL. · **composition_cookbook** — the data-surface map and multi-source recipes. · **seo_audit_help** — this page.
+- **data_storage** — per-property disk usage + row counts; prune (vacuum / clear-crawl-history / delete-property / repair, destructive ones and repair need \`confirm:true\`); \`check:true\` runs an integrity check. _"How much disk is my audit data using?"_
 
 _Tip: first time on a property → \`refresh_property\` then \`run_audit\`._
 _Composing your own analysis? Call \`composition_cookbook\` first — the data-surface map (grain + join keys per source) and worked multi-source recipes._`;
@@ -276,7 +291,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
 
   const dfsUser = process.env.DATAFORSEO_USERNAME;
   const dfsPass = process.env.DATAFORSEO_PASSWORD;
-  const dfsCacheDays = Number(process.env.DATAFORSEO_CACHE_DAYS) || 7;
+  const dfsCacheDays = Number(process.env.DATAFORSEO_CACHE_DAYS) || 20;
   const dfs = dfsUser && dfsPass
     ? new DataForSeoClient(dfsUser, dfsPass, path.join(dataDir(), 'dataforseo-cache.db'), dfsCacheDays)
     : null;
@@ -414,20 +429,42 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'data_storage',
     {
       title: 'Data storage summary + pruning',
-      description: 'Data hygiene. No args: list every per-property database in the data dir — size (incl. WAL), key row counts (search_analytics, pages, links, page_snapshots, findings), last sync and last crawl, and any link_intersect prospect set with its capture date (flagged when it is going stale) — plus the DataForSEO/Majestic caches and reports folder sizes. Optional siteUrl narrows to one property. Pruning via `prune:{siteUrl, action}`: "vacuum" (compact the DB, reports bytes reclaimed), "clear-crawl-history" (delete page_snapshots + audit runs/findings older than the 5 most recent, then vacuum), "delete-property" (remove the DB files entirely). Destructive actions (clear-crawl-history, delete-property) REQUIRE confirm:true and refuse loudly without it, naming what would be deleted. Refuses to prune while any job is running.',
+      description: 'Data hygiene. No args: list every per-property database in the data dir — size (incl. WAL), key row counts (search_analytics, pages, links, page_snapshots, findings), last sync and last crawl, and any link_intersect prospect set with its capture date (flagged when it is going stale) — plus the DataForSEO/Majestic caches and reports folder sizes. Optional siteUrl narrows to one property. Pruning via `prune:{siteUrl, action}`: "vacuum" (compact the DB, reports bytes reclaimed), "clear-crawl-history" (delete page_snapshots + audit runs/findings older than the 5 most recent, then vacuum), "delete-property" (remove the DB files entirely). Destructive actions (clear-crawl-history, delete-property) REQUIRE confirm:true and refuse loudly without it, naming what would be deleted. Refuses to prune while any job is running. Integrity: `check:true` (with siteUrl) starts an async job running SQLite\'s full integrity_check (minutes on a multi-GB DB; check:"quick" is faster but misses missing-index-row damage) and reports damaged indexes. `prune:{siteUrl, action:"repair"}` with confirm:true backs up the DB file, REINDEXes the damaged indexes and re-checks (async job) — the fix for a sync failing with "database disk image is malformed".',
       inputSchema: {
         siteUrl: z.string().optional(),
         prune: z.object({
           siteUrl: z.string(),
-          action: z.enum(['vacuum', 'clear-crawl-history', 'delete-property']),
+          action: z.enum(['vacuum', 'clear-crawl-history', 'delete-property', 'repair']),
         }).optional(),
         confirm: z.boolean().optional(),
+        check: z.union([z.boolean(), z.enum(['quick', 'full'])]).optional().describe('Run an integrity check on siteUrl\'s DB (async job). true = full integrity_check.'),
       },
     },
-    async ({ siteUrl, prune, confirm }) => {
+    async ({ siteUrl, prune, confirm, check }) => {
+      if (check) {
+        if (!siteUrl) throw new Error('check needs a siteUrl.');
+        const mode = check === 'quick' ? 'quick' : 'full';
+        propertyDbFile(dataDir(), siteUrl); // fail fast on an unknown property
+        const jobId = jobs.start('integrity', () => checkIntegrity(dataDir(), siteUrl, mode));
+        return jobStarted({ jobId, status: 'running', siteUrl, mode },
+          `Integrity check (${mode === 'full' ? 'full integrity_check — can take minutes on a large DB' : 'quick_check — misses missing-index-row damage'}) started for ${siteUrl}. Poll check_sync_status; the result lists damaged indexes. If any are reported, run data_storage prune:{siteUrl, action:"repair"} confirm:true.`);
+      }
+      if (prune?.action === 'repair') {
+        const running = jobs.list().filter(j => j.state === 'running');
+        if (running.length) {
+          return { content: [{ type: 'text', text: `Refusing to repair while ${running.length} job(s) are running (${running.map(j => `${j.type}#${j.id}`).join(', ')}). Wait for them to finish and retry.` }], structuredContent: { ok: false, refused: 'jobs_running' } };
+        }
+        const dbFile = propertyDbFile(dataDir(), prune.siteUrl);
+        if (!confirm) {
+          const bytes = storageSummary(dataDir(), prune.siteUrl).properties[0]?.bytes ?? 0;
+          return { content: [{ type: 'text', text: `REFUSED: repair needs confirm:true. It will run a full integrity_check, copy ${dbFile} to a timestamped .bak file alongside it (${fmtBytes(bytes)} of extra disk), REINDEX only the damaged indexes, then re-check. Table data is never modified; damage that isn't in an index is reported, not "fixed".` }], structuredContent: { ok: false, refused: 'confirm_required', dbFile, bytes } };
+        }
+        const jobId = jobs.start('repair', () => repairIndexes(dataDir(), prune.siteUrl));
+        return jobStarted({ jobId, status: 'running', siteUrl: prune.siteUrl }, `Repair started for ${prune.siteUrl}: integrity check, backup, REINDEX of damaged indexes, re-check. Poll check_sync_status.`);
+      }
       if (prune) {
         const running = jobs.list().filter(j => j.state === 'running').map(j => ({ id: j.id, type: j.type }));
-        const r = pruneProperty(dataDir(), prune.siteUrl, prune.action, confirm === true, running);
+        const r = pruneProperty(dataDir(), prune.siteUrl, prune.action as 'vacuum' | 'clear-crawl-history' | 'delete-property', confirm === true, running);
         if (!r.ok) {
           return { content: [{ type: 'text', text: r.refused ?? `Could not ${prune.action}.` }], structuredContent: r as unknown as Record<string, unknown> };
         }
@@ -459,12 +496,16 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         const stale = ageDays != null && ageDays > 20;
         return `- ${p.siteUrl ?? p.file}: ${p.linkProspects} prospects, captured ${fetched?.slice(0, 10) ?? '—'}${ageDays != null ? ` (${ageDays}d ago${stale ? ' — likely stale, re-run link_intersect to update' : ''})` : ''}`;
       }).join('\n');
+      // A crawl that never completed doesn't count as the last crawl (#20); list it so it's visible.
+      const runLines = s.properties.filter(p => p.latestCrawlRun).map(p =>
+        `- ${p.siteUrl ?? p.file}: latest crawl run ${p.latestCrawlRun!.status} (started ${p.latestCrawlRun!.startedAt.slice(0, 16).replace('T', ' ')})${p.latestCrawlRun!.error ? `: ${p.latestCrawlRun!.error}` : ''}${p.latestCrawlRun!.status === 'running' ? ' (if no job is running, it died with its server process)' : ''}`).join('\n');
       const md = `**Data dir:** ${s.dataDir} — total ${fmtBytes(s.totalBytes)}\n\n` +
-        `| Property | Size | GSC rows | Pages | Links | Snapshots | Findings | Last sync | Last crawl |\n|---|---|---|---|---|---|---|---|---|\n${rows}\n\n` +
+        `| Property | Size | GSC rows | Pages | Links | Snapshots | Findings | Last sync | Last completed crawl |\n|---|---|---|---|---|---|---|---|---|\n${rows}\n\n` +
+        `${runLines ? `Crawl runs that did not complete:\n${runLines}\n\n` : ''}` +
         `${liLines ? `Link-intersect prospects (may be stale — competitors keep earning links):\n${liLines}\n\n` : ''}` +
         `${cacheLines ? `Caches:\n${cacheLines}\n` : ''}Reports folder: ${fmtBytes(s.reportsBytes)}` +
         `${s.other.length ? `\nOther .db files: ${s.other.map(o => `${o.file} (${fmtBytes(o.bytes)})`).join(', ')}` : ''}\n\n` +
-        `Prune with data_storage prune:{siteUrl, action:"vacuum" | "clear-crawl-history" | "delete-property"} (destructive actions need confirm:true).`;
+        `Prune with data_storage prune:{siteUrl, action:"vacuum" | "clear-crawl-history" | "delete-property" | "repair"} (destructive actions and repair need confirm:true). Check integrity with data_storage {siteUrl, check:true}.`;
       return { content: [{ type: 'text', text: md }], structuredContent: s as unknown as Record<string, unknown> };
     },
   );
@@ -539,7 +580,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'query_data',
     {
       title: 'Query the raw data (aggregate first)',
-      description: 'Direct read-only access to the property database — the composition layer\'s escape hatch. AGGREGATE IN THE DATABASE and return answers, not rows: default mode groups by the columns you name and returns counts, percentages and sum/avg/min/max metrics (classic crawler-style distributions in one call — "status codes by folder", "clicks by page_key"). mode:rows returns raw rows with strict token discipline (curated default columns, 120-char cells, loud paging footer). Filters are exact/range/like/in and always parameterised; column names are validated against the live table schema. Grain: per table — search_analytics = date × query × page; pages/links = latest crawl per url_key; url_inspection / sitemap_urls / page_backlinks = one row per URL; findings = check × URL per audit run. Joins: url_key across pages/links/search_analytics.page_key/url_inspection/sitemap_urls/page_backlinks; query → keyword tools; run_id → audit runs.',
+      description: 'Direct read-only access to the property database — the composition layer\'s escape hatch. AGGREGATE IN THE DATABASE and return answers, not rows: default mode groups by the columns you name and returns counts, percentages and sum/avg/min/max metrics (classic crawler-style distributions in one call — "status codes by folder", "clicks by page_key"). mode:rows returns raw rows with strict token discipline (curated default columns, 120-char cells, loud paging footer). Filters are exact/range/like/in/match and always parameterised; op:"match" is full-text search via FTS5 (words, "phrases", prefix*, AND/OR/NOT, NEAR(a b, 5)) on search_analytics.query, pages.title / h1 / body_chunks and links.anchor_text — use it instead of like for text on big tables; column names are validated against the live table schema. Grain: per table — search_analytics = date × query × page; pages/links = latest crawl per url_key; url_inspection / sitemap_urls / page_backlinks = one row per URL; findings = check × URL per audit run. Joins: url_key across pages/links/search_analytics.page_key/url_inspection/sitemap_urls/page_backlinks; query → keyword tools; run_id → audit runs.',
       inputSchema: {
         siteUrl: z.string(),
         table: z.enum(QUERYABLE_TABLES),
@@ -559,6 +600,22 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       },
     },
     async ({ siteUrl, table, mode, groupBy, metrics, filters, orderBy, orderDir, limit, offset, columns }) => {
+      // A match filter on a large DB whose FTS index isn't built yet: build it in a worker job rather
+      // than stalling this call (and the whole stdio loop) on a multi-million-row backfill.
+      const wanted = (filters ?? []).filter(f => f.op === 'match').map(f => ftsIndexFor(table, f.column)).filter((x): x is FtsIndex => !!x);
+      if (wanted.length) {
+        const dbFile = dbPathFor(dataDir(), siteUrl);
+        let pending: { index: FtsIndex; rows: number }[] = [];
+        try { const ro = new Database(dbFile, { readonly: true, fileMustExist: true }); try { pending = pendingBackfills(ro, wanted); } finally { ro.close(); } } catch { /* no DB: runQueryData reports it */ }
+        const big = pending.filter(p => p.rows > INLINE_BACKFILL_MAX_ROWS);
+        if (big.length) {
+          // One build per database: a running fts-index job for ANOTHER property must not be handed back.
+          const running = jobs.list().find(j => j.type === 'fts-index' && j.state === 'running' && (j.progress as { dbFile?: string }).dbFile === dbFile);
+          const jobId = running?.id ?? jobs.start('fts-index', (update, signal) => { update({ dbFile, siteUrl, indexes: pending.map(p => p.index) }); return backfillInWorker(dbFile, pending.map(p => p.index), signal); });
+          return jobStarted({ jobId, status: 'running', siteUrl, building: pending.map(p => p.index) },
+            `Building the full-text index for ${pending.map(p => p.index).join(', ')} (one-time, ~${big.reduce((a, p) => a + p.rows, 0).toLocaleString('en-US')} rows, in the background). Poll check_sync_status, then re-run this query. Meanwhile op "like" works, just slower.`);
+        }
+      }
       const r = runQueryData(dbPathFor(dataDir(), siteUrl), {
         table, mode, groupBy, metrics, filters, orderBy, orderDir, limit, offset, columns,
       } as Parameters<typeof runQueryData>[1]);
@@ -590,6 +647,58 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
   );
 
+  // sync_gsc's start reply: the range the job will actually fetch (#33), or that there's nothing to.
+  const syncReply = (siteUrl: string, jobId: string, planned: { startDate: string; endDate: string; incremental: boolean; noop?: boolean }, requestedStart: string, full: boolean): string => {
+    if (planned.noop) return `Sync started for ${siteUrl} (job ${jobId}): nothing to fetch, the stored data already covers ${requestedStart} → ${planned.endDate}. Poll check_sync_status.`;
+    const how = planned.incremental ? ` (incremental: the last stored days are re-pulled and replaced; requested window started ${requestedStart})` : full ? ' (full re-pull)' : '';
+    return `Sync started for ${siteUrl} (job ${jobId}): fetching ${planned.startDate} → ${planned.endDate}${how}. Poll check_sync_status.`;
+  };
+  // ── Async-job helpers ─────────────────────────────────────────────────────
+  // A job-starting tool returns the same JSON in the text reply as in structuredContent, so a
+  // client that reads only text content can still take the jobId without regexing prose (#27).
+  const jobStarted = (sc: Record<string, unknown>, hint: string) => ({
+    content: [{ type: 'text' as const, text: `${JSON.stringify(sc)}\n${hint}` }],
+    structuredContent: sc,
+  });
+  // One status handler, registered as both check_sync_status and check_crawl_status (#19). The
+  // text carries the failure reason and latest progress, not just the state (#33): many clients
+  // and models read only the text content.
+  // #38: a job that wrote property data starts the dashboard server when it finishes and carries
+  // the link in its result, so the completion reply can offer it (refresh_property already did).
+  const DATA_JOBS = new Set(['sync', 'crawl', 'inspect', 'refresh']);
+  const withDashboard = (siteUrl: string, fn: (update: (p: Record<string, unknown>) => void, signal: AbortSignal) => Promise<unknown>) =>
+    async (update: (p: Record<string, unknown>) => void, signal: AbortSignal): Promise<unknown> => {
+      const r = await fn(update, signal);
+      if (signal.aborted) return r;
+      await autoServeDashboard();
+      const base = dashboardServerUrl();
+      return base && r && typeof r === 'object' ? { ...(r as Record<string, unknown>), dashboardUrl: base, dashboard: `${base}/dashboard?siteUrl=${encodeURIComponent(siteUrl)}` } : r;
+    };
+  const oneLineJob = (job: Job, detail = false): string => {
+    const head = `Job ${job.id} (${job.type}): ${job.state}`;
+    if (job.state === 'failed') return `${head}: ${job.error ?? 'unknown error'}${corruptionHint(job.error)}`;
+    const prog = Object.keys(job.progress).length ? ` ${JSON.stringify(job.progress).slice(0, 300)}` : '';
+    if (!detail || job.state !== 'completed' || !DATA_JOBS.has(job.type)) return head + prog;
+    const link = (job.result as { dashboard?: string } | undefined)?.dashboard;
+    const siteUrl = (job.result as { siteUrl?: string } | undefined)?.siteUrl;
+    const res = job.result as { blocking?: { blockedAsBot: number; okAsChrome: number; switchedToChrome: boolean }; crawl?: { blocking?: { blockedAsBot: number; okAsChrome: number; switchedToChrome: boolean } } } | undefined;
+    const blk = res?.blocking ?? res?.crawl?.blocking; // refresh nests the crawl result
+    const blockLine = blk ? `\n\n🛡 ${blk.blockedAsBot} request(s) were bot-blocked for the crawler's user agent; ${blk.okAsChrome} got through as Chrome${blk.switchedToChrome ? ' and the rest of the crawl ran as Chrome' : ''}. The site's bot protection is challenging non-browser clients: check it isn't also blocking crawlers you want (pages.fetched_as shows which pages).` : '';
+    return head + prog + blockLine + (link
+      ? `\n\n📊 The dashboard is updated with this data: ${link} (open it in your browser).`
+      : `\n\n📊 The data is in. See it with get_dashboard${siteUrl ? ` for ${siteUrl}` : ''} (in chat), open_dashboard (browser tab) or export_report.`);
+  };
+  const jobStatus = async ({ jobId }: { jobId?: string }) => {
+    if (jobId) {
+      const job = jobs.get(jobId);
+      if (!job) return { content: [{ type: 'text' as const, text: `No job ${jobId}. Jobs live in the server process, so a job is lost if that process restarted.` }], structuredContent: { error: 'not_found', jobId } };
+      return { content: [{ type: 'text' as const, text: oneLineJob(job, true) }], structuredContent: job as unknown as Record<string, unknown> };
+    }
+    const all = jobs.list();
+    const lines = all.slice(0, 20).map(j => oneLineJob(j));
+    return { content: [{ type: 'text' as const, text: `${all.length} jobs${lines.length ? '\n' + lines.join('\n') : ''}` }], structuredContent: { jobs: all } };
+  };
+
   server.registerTool(
     'render_pages',
     {
@@ -599,10 +708,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
     async ({ siteUrl, limit, urls }) => {
       const jobId = jobs.start('render', (update, signal) => auditRender(dataDir(), siteUrl, { ...(limit != null ? { limit } : {}), ...(urls?.length ? { urls } : {}) }, update, signal));
-      return {
-        content: [{ type: 'text', text: `Render pass started for ${siteUrl} (job ${jobId}). Headless Chromium renders each sampled page (a few seconds each), so poll check_crawl_status with jobId "${jobId}"; the finished job reports which pages depend on JavaScript. If Playwright/Chromium isn’t installed the job returns a one-line install hint and the HTTP audit is unaffected.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Render pass started for ${siteUrl} (job ${jobId}). Headless Chromium renders each sampled page (a few seconds each), so poll check_crawl_status with jobId "${jobId}"; the finished job reports which pages depend on JavaScript. If Playwright/Chromium isn’t installed the job returns a one-line install hint and the HTTP audit is unaffected.`);
     },
   );
 
@@ -617,10 +723,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       // Async job: the first run downloads the model and embedding up to `limit` pages (CPU, cold
       // cache, large sites) can exceed the ~60s tool ceiling — return a jobId and poll.
       const jobId = jobs.start('duplicates', () => findNearDuplicates(dataDir(), siteUrl, { ...(threshold != null ? { threshold } : {}), ...(limit != null ? { limit } : {}) }));
-      return {
-        content: [{ type: 'text', text: `Near-duplicate scan started for ${siteUrl} (job ${jobId}). Embedding runs locally (first run downloads ~25MB); poll check_crawl_status with jobId "${jobId}". The finished job lists the near-duplicate pairs; run_audit includeJudgement:true then surfaces them as near-duplicate-content.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Near-duplicate scan started for ${siteUrl} (job ${jobId}). Embedding runs locally (first run downloads ~25MB); poll check_crawl_status with jobId "${jobId}". The finished job lists the near-duplicate pairs; run_audit includeJudgement:true then surfaces them as near-duplicate-content.`);
     },
   );
 
@@ -876,18 +979,11 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       _meta: { ui: { resourceUri: SYNC_PROGRESS_URI } },
     },
     async ({ siteUrl, gsc: doGsc, crawl, inspect, ranks, segments, full, location, startDate, endDate, maxPages, inspectLimit }) => {
-      const jobId = jobs.start('refresh', async (update, signal) => {
-        const r = await refresh.run(siteUrl, { gsc: doGsc, crawl, inspect, ranks, segments, full, location, startDate, endDate, maxPages, inspectLimit }, update, signal);
-        // Property is now populated — spin up the browser dashboard and hand back its URL so the
-        // finished job (polled via check_sync_status) carries a one-click link, no extra tool call.
-        await autoServeDashboard();
-        const dashboardUrl = dashboardServerUrl();
-        return dashboardUrl ? { ...(r as Record<string, unknown>), dashboardUrl, dashboard: `${dashboardUrl}/dashboard?siteUrl=${encodeURIComponent(siteUrl)}` } : r;
-      });
-      return {
-        content: [{ type: 'text', text: `Refresh started for ${siteUrl} (job ${jobId}). Poll check_sync_status.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      // Property is now populated: the shared helper starts the browser dashboard and puts its link
+      // on the finished job (polled via check_sync_status), and skips that if the job was cancelled.
+      const jobId = jobs.start('refresh', withDashboard(siteUrl, (update, signal) =>
+        refresh.run(siteUrl, { gsc: doGsc, crawl, inspect, ranks, segments, full, location, startDate, endDate, maxPages, inspectLimit }, update, signal)));
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Refresh started for ${siteUrl} (job ${jobId}). Poll check_sync_status.`);
     },
   );
 
@@ -915,11 +1011,13 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         fullResync: full,
         searchType,
       };
-      const jobId = jobs.start('sync', (update, signal) => syncer.run(siteUrl, options, update, signal));
-      return {
-        content: [{ type: 'text', text: `Sync started for ${siteUrl} (job ${jobId}). Poll check_sync_status.` }],
-        structuredContent: { jobId, status: 'running', siteUrl, ...options },
-      };
+      const planned = syncer.plannedRange(siteUrl, options); // before the job can write
+      const jobId = jobs.start('sync', withDashboard(siteUrl, (update, signal) => syncer.run(siteUrl, options, update, signal)));
+      // Show the range this sync will actually fetch, not the requested default (#33). planned is
+      // computed by the same rule as the job; a shape change can still widen it, and the finished
+      // job reports the range used.
+      return jobStarted({ jobId, status: 'running', siteUrl, startDate: planned.startDate, endDate: planned.endDate, incremental: planned.incremental, requestedStartDate: options.startDate, ...(options.dimensions ? { dimensions: options.dimensions } : {}), ...(searchType ? { searchType } : {}) },
+        syncReply(siteUrl, jobId, planned, options.startDate, !!full));
     },
   );
 
@@ -927,18 +1025,10 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'check_sync_status',
     {
       title: 'Check sync status',
-      description: 'Poll a sync job by id, or omit to list recent jobs.',
+      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A failed job\'s reason is in the text reply as well as in structuredContent.error.',
       inputSchema: { jobId: z.string().optional() },
     },
-    async ({ jobId }) => {
-      if (jobId) {
-        const job = jobs.get(jobId);
-        if (!job) return { content: [{ type: 'text', text: `No job ${jobId}` }], structuredContent: { error: 'not_found', jobId } };
-        return { content: [{ type: 'text', text: `Job ${jobId}: ${job.state}` }], structuredContent: job as unknown as Record<string, unknown> };
-      }
-      const all = jobs.list();
-      return { content: [{ type: 'text', text: `${all.length} jobs` }], structuredContent: { jobs: all } };
-    },
+    jobStatus,
   );
 
   server.registerTool(
@@ -950,11 +1040,8 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
     async ({ siteUrl, limit }) => {
       const insp = requireGsc(inspector);
-      const jobId = jobs.start('inspect', (update, signal) => insp.run(siteUrl, { limit }, update, signal));
-      return {
-        content: [{ type: 'text', text: `Inspection started for ${siteUrl} (job ${jobId}). Poll check_sync_status.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      const jobId = jobs.start('inspect', withDashboard(siteUrl, (update, signal) => insp.run(siteUrl, { limit }, update, signal)));
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Inspection started for ${siteUrl} (job ${jobId}). Poll check_sync_status.`);
     },
   );
 
@@ -963,7 +1050,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'start_crawl',
     {
       title: 'Crawl a site (just the crawl)',
-      description: 'Update just the crawl: fetch the site into the local database (async job — poll with check_crawl_status). HTTP crawl; respects robots.txt; asset file-types are HEAD-only (no body download); internal-search / cart / wp-json / builder junk URLs are skipped by default. For a full refresh use refresh_property. excludePatterns adds extra URL regexes to skip (e.g. ["/author/","/tag/","/page/"]) to keep big crawls light. Grain: one row per url_key, latest crawl. Joins: url_key → GSC/inspection/backlinks.',
+      description: 'Update just the crawl: fetch the site into the local database (async job — poll with check_crawl_status). HTTP crawl; respects robots.txt; asset file-types are HEAD-only (no body download); internal-search / cart / wp-json / builder junk URLs are skipped by default. For a full refresh use refresh_property. excludePatterns adds extra URL regexes to skip (e.g. ["/author/","/tag/","/page/"]) to keep big crawls light. Every crawl also records each page\'s subresources (CSS, JS, fonts, images: type, first/third party, head/body, async/defer/preload) into page_resources without downloading them; headResources:true adds a header-only pass over the CSS/JS/font ones. After the crawl, every distinct outbound link target is checked (HEAD, ranged-GET fallback, host-throttled, cached 7 days in external_link_status; bot walls are "unverifiable", not broken) and run_audit reports external-broken / external-redirected — checkExternal:false skips it. Grain: one row per url_key, latest crawl. Joins: url_key → GSC/inspection/backlinks.',
       inputSchema: {
         siteUrl: z.string(),
         maxPages: z.number().int().min(1).max(50000).optional(),
@@ -972,16 +1059,93 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         delayMs: z.number().int().min(0).max(10000).optional(),
         userAgent: z.string().optional(),
         excludePatterns: z.array(z.string()).optional(),
+        headResources: z.boolean().optional().describe('Also run a header-only pass over the CSS/JS/font subresources pages load (status, size, cache-control) into resource_assets. Off by default; bodies are never downloaded.'),
+        checkExternal: z.boolean().optional().describe('Check every distinct outbound link target after the crawl (default true). false skips it.'),
+        externalCacheDays: z.number().int().min(0).max(90).optional().describe('Reuse outbound-link results younger than this many days (default 7; 0 re-checks everything).'),
+        chromeFallback: z.boolean().optional().describe('When a request is bot-blocked (403, 999, a WAF challenge) under the crawler\'s own user agent, retry it once as desktop Chrome; after 3 pages in a row need it, the rest of the crawl goes out as Chrome. Default true; always off when userAgent is set.'),
       },
     },
-    async ({ siteUrl, maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns }) => {
-      const jobId = jobs.start('crawl', (update, signal) =>
-        crawler.run(siteUrl, { maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns }, update, signal),
-      );
-      return {
-        content: [{ type: 'text', text: `Crawl started for ${siteUrl} (job ${jobId}). Poll check_crawl_status.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+    async ({ siteUrl, maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources, checkExternal, externalCacheDays, chromeFallback }) => {
+      const jobId = jobs.start('crawl', withDashboard(siteUrl, (update, signal) =>
+        crawler.run(siteUrl, { maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources, checkExternal, externalCacheDays, chromeFallback }, update, signal),
+      ));
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Crawl started for ${siteUrl} (job ${jobId}). Poll check_crawl_status.`);
+    },
+  );
+
+  server.registerTool(
+    'probe_urls',
+    {
+      title: 'Probe URLs (test a URL hypothesis live)',
+      description: 'Fetch arbitrary URLs on the property\'s own host (apex or www) — including ones you generate to test a hypothesis — and report per URL: status, the full redirect chain and final URL, canonical, meta robots and X-Robots-Tag, title, a content fingerprint (equal contentHash = same page), and cache headers (cf-cache-status, x-cache, age, cache-control). The crawler only fetches what it discovers; use this to test case, trailing-slash, parameter, scheme, host or typo variants, redirect rules, or whether a 404 in the data still 404s. `variantsOf` (up to 6 URLs) is a preset: it generates uppercase, title-case, slash, index.php, unknown-param, http and www/apex variants of each URL and says per variant whether the site normalises it (one 301 to the baseline), contains it (200 with canonical to the baseline: indexing is safe but each variant is crawled and usually bypasses the page cache), or serves a duplicate. Max 50 URLs per call, 4 at a time, 45-second budget (unfinished URLs are marked, not dropped). persist:true stores results in the probes table for query_data. Free (your own server).',
+      inputSchema: {
+        siteUrl: z.string(),
+        urls: z.array(z.string()).max(50).optional(),
+        variantsOf: z.array(z.string()).max(6).optional().describe('Generate and judge URL variants of each of these URLs'),
+        followRedirects: z.boolean().optional().describe('Default true; false reports only the first response'),
+        persist: z.boolean().optional(),
+        chromeFallback: z.boolean().optional().describe('Retry a bot-blocked URL once as desktop Chrome (default true)'),
+      },
+    },
+    async ({ siteUrl, urls, variantsOf, followRedirects, persist, chromeFallback }) => {
+      const seed = siteUrl.startsWith('sc-domain:') ? `https://${siteUrl.slice('sc-domain:'.length)}/` : siteUrl;
+      const baseHost = new URL(seed).hostname;
+      const variantSets = (variantsOf ?? []).map(u => ({ of: u, list: urlVariants(u) }));
+      const targets: { url: string; variantType?: string; variantOf?: string }[] = [
+        ...(urls ?? []).map(url => ({ url })),
+        ...variantSets.flatMap(v => v.list.map(x => ({ ...x, variantOf: v.of }))),
+      ];
+      if (!targets.length) throw new Error('Pass urls and/or variantsOf.');
+      if (targets.length > 50) throw new Error(`That is ${targets.length} URLs (each variantsOf URL expands to ~8); the limit is 50 per call.`);
+      const results = await probeUrls(targets, baseHost, { followRedirects, chromeFallback });
+      const verdicts = variantSets.map(v => {
+        const set = results.filter((_r, i) => targets[i].variantOf === v.of);
+        const judged = judgeVariants(set);
+        return { url: v.of, normalisesAll: judged.every(j => j.verdict === 'redirects'), variants: judged };
+      });
+      if (persist) {
+        const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
+        try {
+          const ins = db.db.prepare(`INSERT INTO probes (url, variant_of, variant_type, status, redirect_chain, final_url, final_status, canonical, meta_robots, x_robots_tag, title, content_hash, cache, verdict, error)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+          const verdictOf = new Map(verdicts.flatMap(v => v.variants.map(j => [j.url, j.verdict] as const)));
+          db.db.transaction(() => results.forEach((r: ProbeResult, i) => ins.run(r.url, targets[i].variantOf ?? null, r.variantType ?? null, r.status, JSON.stringify(r.redirectChain), r.finalUrl, r.finalStatus, r.canonical, r.metaRobots, r.xRobotsTag, r.title, r.contentHash, JSON.stringify(r.cache), verdictOf.get(r.url) ?? null, r.error ?? null)))();
+        } finally { db.close(); }
+      }
+      const cell = (s: string | null | undefined, n = 60): string => (s ?? '—').replace(/\|/g, '\\|').slice(0, n);
+      const rowsMd = results.map(r => `| ${cell(r.url, 80)}${r.variantType ? ` (${r.variantType})` : ''} | ${r.status ?? '—'} | ${r.redirectChain.length ? r.redirectChain.map(h => h.status).join('→') + ' → ' + cell(r.finalUrl, 60) : '—'} | ${r.finalStatus ?? '—'} | ${cell(r.canonical)} | ${r.contentHash ?? '—'} | ${r.cache.cfCacheStatus ?? r.cache.xCache ?? '—'} | ${r.error ? cell(r.error, 50) : ''}${r.blockedAsBot ? ' blocked for the crawler UA; result fetched as Chrome' : ''} |`);
+      const verdictMd = verdicts.map(v => `\n**${v.url}**: ${v.normalisesAll ? 'normalises every variant with a single redirect' : 'does NOT normalise every variant'}\n${v.variants.map(j => `- ${j.variantType}: ${j.verdict} (${j.detail})`).join('\n')}`).join('\n');
+      const text = `Probed ${results.length} URL(s)${persist ? ' (saved to probes)' : ''}.\n\n| URL | Status | Redirects | Final | Canonical | Content hash | Cache | Error |\n|---|---|---|---|---|---|---|---|\n${rowsMd.join('\n')}${verdictMd ? '\n' + verdictMd : ''}`;
+      return { content: [{ type: 'text', text: text.slice(0, 38000) }], structuredContent: { results, ...(verdicts.length ? { variants: verdicts } : {}) } };
+    },
+  );
+
+  server.registerTool(
+    'triage_404s',
+    {
+      title: 'Triage 404s into a redirect map',
+      description: 'Turn the crawl\'s 404/410 list into a short redirect map. A GSC-seeded crawl reports every URL Google has seen, so real lost pages (traffic, backlinks) sit among many mangled variants of real slugs from scraped or AI-rewritten links. Each 404 gets its discovery sources (internal link / sitemap / GSC / backlink), clicks, impressions and last-seen date from search_analytics, backlinks and referring domains, and the closest live indexable URL by slug similarity (token overlap or edit distance, 0-1). Buckets: redirect (has clicks, ≥minImpressions impressions or referring domains, AND a match ≥minScore), ignore (no clicks, <10 impressions, no internal links, not in sitemap, no backlinks), review (everything else, e.g. internal links pointing at it: fix those at source). Needs a crawl; GSC and pull_backlinks data sharpen it. Verify a suggested target before shipping the 301 (probe_urls helps). Free, local data only.',
+      inputSchema: {
+        siteUrl: z.string(),
+        minImpressions: z.number().int().min(1).optional().describe('Impressions that count as real value (default 50)'),
+        minScore: z.number().min(0).max(1).optional().describe('Slug similarity needed for a confident redirect target (default 0.6)'),
+        limit: z.number().int().min(1).max(5000).optional().describe('Max 404s to triage (default 500)'),
+      },
+    },
+    async ({ siteUrl, minImpressions, minScore, limit }) => {
+      const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
+      try {
+        const rows = triage404s(db.db, { minImpressions, minScore, limit });
+        if (!rows.length) return { content: [{ type: 'text', text: `No crawled 404/410 URLs for ${siteUrl}. Run start_crawl (it seeds GSC-known URLs) first.` }], structuredContent: { rows: [] } };
+        const by = (b: string) => rows.filter(r => r.bucket === b);
+        const redirect = by('redirect'), review = by('review'), ignore = by('ignore');
+        const cell = (u: string | null) => (u ?? '—').replace(/\|/g, '\\|');
+        const redirectMd = redirect.length ? `\n\n**Redirect (${redirect.length})**\n| From | To | Score | Why |\n|---|---|---|---|\n${redirect.slice(0, 60).map(r => `| ${cell(r.url)} | ${cell(r.bestMatch)} | ${r.score} | ${r.reason} |`).join('\n')}\n\n301 map (from to):\n\`\`\`\n${redirect.map(r => `${r.url} ${r.bestMatch}`).join('\n')}\n\`\`\`` : '';
+        const reviewMd = review.length ? `\n\n**Review (${review.length})**\n${review.slice(0, 40).map(r => `- ${r.url}: ${r.reason}${r.bestMatch ? ` (closest: ${r.bestMatch}, ${r.score})` : ''}`).join('\n')}` : '';
+        const ignoreMd = ignore.length ? `\n\n**Ignore (${ignore.length})**: mangled or stray URLs with no value. Examples:\n${ignore.slice(0, 10).map(r => `- ${r.url}${r.bestMatch && r.score >= (minScore ?? 0.6) ? ` (variant of ${r.bestMatch})` : ''}`).join('\n')}` : '';
+        const text = `${rows.length} crawled 404/410 URL(s) for ${siteUrl}: ${redirect.length} to redirect, ${review.length} to review, ${ignore.length} to ignore.${redirectMd}${reviewMd}${ignoreMd}`;
+        return { content: [{ type: 'text', text: text.slice(0, 38000) }], structuredContent: { counts: { redirect: redirect.length, review: review.length, ignore: ignore.length }, rows } };
+      } finally { db.close(); }
     },
   );
 
@@ -989,18 +1153,10 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'check_crawl_status',
     {
       title: 'Check crawl status',
-      description: 'Poll a crawl job by id, or omit to list recent jobs.',
+      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A failed job\'s reason is in the text reply as well as in structuredContent.error.',
       inputSchema: { jobId: z.string().optional() },
     },
-    async ({ jobId }) => {
-      if (jobId) {
-        const job = jobs.get(jobId);
-        if (!job) return { content: [{ type: 'text', text: `No job ${jobId}` }], structuredContent: { error: 'not_found', jobId } };
-        return { content: [{ type: 'text', text: `Job ${jobId}: ${job.state}` }], structuredContent: job as unknown as Record<string, unknown> };
-      }
-      const all = jobs.list();
-      return { content: [{ type: 'text', text: `${all.length} jobs` }], structuredContent: { jobs: all } };
-    },
+    jobStatus,
   );
 
   // ── DataForSEO (cached 20 days, single-worker) ──────────────────────────
@@ -1088,7 +1244,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       const seen = new Set<string>();
       const articles: any[] = [];
       const add = (a: any): void => { const k = String(a.url || a.title || '').toLowerCase(); if (k && !seen.has(k)) { seen.add(k); articles.push(a); } };
-      let cost = 0, cached = true, googleCount = 0, dfsCount = 0, googleError: string | null = null;
+      let cost = 0, cached = false, googleCount = 0, dfsCount = 0, googleError: string | null = null;
       // Free Google News RSS.
       if (src === 'google' || src === 'both') {
         try {
@@ -1100,7 +1256,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       // Paid DataForSEO Google News SERP (only when explicitly asked, or 'both' AND a key is set).
       if (src === 'dataforseo' || (src === 'both' && !!dfs)) {
         const r = await requireDfs(dfs).serpNews(keyword, location, languageCode, n);
-        cost += r.cost; cached = cached && r.cached; dfsCount = r.articles.length;
+        cost += r.cost; cached = r.cached; dfsCount = r.articles.length;
         for (const a of r.articles) add({ ...a, via: 'dataforseo' });
       }
       // Top sources: which publishers are covering this topic, ranked by article count — the
@@ -1281,7 +1437,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
     async ({ siteUrl, limit, minImpressions, location, urls, scrapeCompetitors, competitorLimit, crawlAs }) => {
       const client = requireDfs(dfs); // fail fast if no DataForSEO creds, before starting the job
-      const count = urls?.length ?? limit ?? 5;
+      const count = urls?.length || limit || 5;
       // Async job: N live page-fetches + N serialised SERP calls exceed the ~60s MCP ceiling
       // past a handful of pages, so return a jobId and poll (like refresh_property).
       const jobId = jobs.start('recon', async (update, signal) => {
@@ -1449,10 +1605,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
           return { siteUrl, cost, window: gscWindow, serpDepth: SERP_DEPTH, targets: slimTargets, summary: md };
         } finally { db.close(); }
       });
-      return {
-        content: [{ type: 'text', text: `Content recon started for ${count} page(s) — job ${jobId}. Each page is a live page-fetch + a serialised SERP call (a few seconds each), so poll check_sync_status with jobId "${jobId}"; the finished job's result carries the per-page verdicts, to-dos and a summary.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Content recon started for ${count} page(s) — job ${jobId}. Each page is a live page-fetch + a serialised SERP call (a few seconds each), so poll check_sync_status with jobId "${jobId}"; the finished job's result carries the per-page verdicts, to-dos and a summary.`);
     },
   );
 
@@ -1522,9 +1675,10 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
           if (note) notes = (notes ? notes + '\n' : '') + `[${new Date().toISOString().slice(0, 10)}] ${note}`;
           let outcome = row.outcome;
           let outcomeNote = '';
-          if (status === 'shipped' && remeasure && dfs) {
+          if (status === 'shipped' && remeasure) {
+            const client = requireDfs(dfs); // remeasure is paid: fail loudly rather than silently skip it
             // Same depth + async-AIO handling as recon_targets, so before/after are comparable.
-            const serpResp = await dfs.serpOrganic(row.query, location, 'en', 20, { loadAsyncAiOverview: true });
+            const serpResp = await client.serpOrganic(row.query, location, 'en', 20, { loadAsyncAiOverview: true });
             const serp = parseSerpForRecon(serpResp, dfsHost(siteUrl), 20);
             const cited = (v: unknown) => (v == null ? 'unknown' : v ? 'yes' : 'no');
             outcome = JSON.stringify({ organicRank: serp.ourOrganicRank, serpDepth: 20, aioCitesUs: serp.aioCitesUs, aioResolved: serp.aioResolved, at: new Date().toISOString().slice(0, 10) });
@@ -1694,7 +1848,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
     async ({ target, location, languageCode, limit }) => {
       const client = requireDfs(dfs);
-      const cleaned = target.replace(/^sc-domain:/, '').replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '');
+      const cleaned = dfsHost(target);
       const r = await client.competitorsDomain(cleaned, location, languageCode, limit ?? 20);
       const items = (r.tasks[0]?.result?.[0]?.items ?? [])
         .filter((it: any) => it.domain && it.domain.replace(/^www\./, '') !== cleaned) // drop the target itself
@@ -1752,7 +1906,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   // Strip any scheme/sc-domain:/path down to a bare host for Labs domain targets.
   // Always strips leading www. — Labs treats www.example.com as a subdomain, not the domain.
   const dfsHost = (t: string): string =>
-    t.replace(/^sc-domain:/, '').replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '').trim();
+    t.trim().replace(/^sc-domain:/, '').replace(/^https?:\/\//, '').replace(/[/?#].*$/, '').replace(/^www\./, '').toLowerCase();
   // Cap a markdown table well under the ~40k model-facing ceiling: keep whole rows, note the rest.
   const capMdRows = (header: string, rows: string[], footer = '', maxChars = 30000): string => {
     let out = header;
@@ -2333,6 +2487,26 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
   );
 
+  // #38: one obvious verb for "show me the dashboard": starts the local server if needed and hands
+  // back the property's link. An explicit request, like serve_dashboard, so SAC_AUTOSERVE=0 (which
+  // only stops AUTOMATIC starts) doesn't apply; where a port can't be bound (e.g. the Docker gateway)
+  // it points at the in-chat get_dashboard instead.
+  server.registerTool(
+    'open_dashboard',
+    {
+      title: 'Open the dashboard for a property',
+      description: 'Return a link that opens the property\'s interactive dashboard in the browser, starting the localhost dashboard server if it isn\'t running. Offer this after a sync, crawl, refresh or audit finishes. Where no local port can be served (e.g. the Docker MCP gateway), it says to use get_dashboard, which renders the dashboard in chat.',
+      inputSchema: { siteUrl: z.string() },
+    },
+    async ({ siteUrl }) => {
+      let base = dashboardServerUrl();
+      if (!base) { try { base = (await startDashboardServer(buildWebOpts())).url; } catch { base = null; } }
+      if (!base) return { content: [{ type: 'text', text: `Couldn't start the local dashboard server here. Run get_dashboard for ${siteUrl} to see the dashboard in chat, or export_report for a shareable HTML file.` }], structuredContent: { url: null } };
+      const url = `${base}/dashboard?siteUrl=${encodeURIComponent(siteUrl)}`;
+      return { content: [{ type: 'text', text: `📊 Dashboard for ${siteUrl}: ${url}\nLive from the local database: summary, rank and clicks over time, top keywords, findings by priority, crawl health.` }], structuredContent: { url, base } };
+    },
+  );
+
   // pull_backlinks — on-demand backlink profile (DataForSEO, paid + 20-day cached). Powers
   // backlinks-to-404 (the big quick win), top-linked pages, and true-orphan detection.
   server.registerTool(
@@ -2345,10 +2519,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     async ({ siteUrl, limit, statusLimit }) => {
       const bl = requireDfs(backlinks);
       const jobId = jobs.start('backlinks', (update, signal) => bl.run(siteUrl, { limit, statusLimit }, update, signal));
-      return {
-        content: [{ type: 'text', text: `Backlink pull started for ${siteUrl} (job ${jobId}). Poll check_sync_status, then run_audit for backlinks-to-404.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Backlink pull started for ${siteUrl} (job ${jobId}). Poll check_sync_status, then run_audit for backlinks-to-404.`);
     },
   );
 
@@ -2458,10 +2629,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
     async ({ siteUrl, limit, language }) => {
       const jobId = jobs.start('entities', (update, signal) => entities.run(siteUrl, { ...(limit != null ? { limit } : {}), ...(language ? { language } : {}) }, update, signal));
-      return {
-        content: [{ type: 'text', text: `Entity resolution started for ${siteUrl} (job ${jobId}). Poll check_sync_status, then run_audit includeJudgement:true for entity-internal-link-gap.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Entity resolution started for ${siteUrl} (job ${jobId}). Poll check_sync_status, then run_audit includeJudgement:true for entity-internal-link-gap.`);
     },
   );
 
@@ -2522,10 +2690,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     async ({ siteUrl, location }) => {
       const tracker = requireDfs(rankTracker);
       const jobId = jobs.start('rank_history', (update, signal) => tracker.run(siteUrl, { location }, update, signal));
-      return {
-        content: [{ type: 'text', text: `Rank-history ingest started for ${siteUrl} (job ${jobId}). Poll check_sync_status.` }],
-        structuredContent: { jobId, status: 'running', siteUrl },
-      };
+      return jobStarted({ jobId, status: 'running', siteUrl }, `Rank-history ingest started for ${siteUrl} (job ${jobId}). Poll check_sync_status.`);
     },
   );
 

@@ -86,6 +86,15 @@ scripts/*
 !scripts/probe-boot.mjs
 !scripts/probe-majestic.mjs
 !scripts/build-mcpb.mjs
+!scripts/probe-jobs.mjs
+!scripts/probe-crawl-local.mjs
+!scripts/probe-checks-v2.mjs
+!scripts/probe-integrity.mjs
+!scripts/probe-probeurls.mjs
+!scripts/probe-triage404.mjs
+!scripts/probe-fts.mjs
+!scripts/probe-external.mjs
+!scripts/probe-blocking.mjs
 
 # --- secrets hardening (never commit) ---
 *.pem
