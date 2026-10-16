@@ -238,6 +238,10 @@ The interactive dashboard, rendered right in the chat: eight tabs - overview, fi
 The same dashboard, served on a localhost-only webserver so you can open it in a real browser tab: live data straight from the local database (always current, unlike an exported snapshot), a property switcher, and working CSV downloads. Localhost only - nothing is exposed to the network. `stop:true` shuts it down.
 > Serve the dashboard for mysite.com
 
+### `open_dashboard`
+One obvious way to say "show me the dashboard": it starts the local dashboard server if it isn't running and returns the property's link. Syncs, crawls, inspections and refreshes now do this themselves when they finish, so the completed job's status says the dashboard is updated and gives the link. Where no local port can be served (the Docker MCP gateway, or `SAC_AUTOSERVE=0`), it points you at `get_dashboard`, which renders the dashboard in chat.
+> Open the dashboard for mysite.com
+
 ### `get_dashboard_data`
 Internal - the widget fetches its own dataset through this so the full payload never hits the model's token limits. Not for direct use; listed here so you know what it is when you see it.
 

@@ -232,6 +232,7 @@ A technical-SEO audit that fuses **Search Console + a site crawl + DataForSEO**,
 - **query_data** — read-only queries over the raw tables; aggregates in the database (counts/percentages/sums), answers not rows. _"How do status codes break down on example.com?"_
 - **probe_urls** — fetch any URLs on the site live (status, redirect chain, canonical, cache headers); \`variantsOf\` tests case/slash/param/host variants. _"Does example.com serve the same page at /Page/ and /page/?"_
 - **triage_404s** — crawled 404s bucketed redirect / review / ignore, with the closest live URL and a 301 map. _"Triage the 404s on example.com"_
+- **open_dashboard** — the property's browser dashboard link (finished syncs/crawls offer it automatically). _"Open the dashboard for example.com"_
 - **list_checks** — _"What does the audit check for?"_
 
 ## 3. Fix (the moat)
@@ -631,20 +632,36 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   // One status handler, registered as both check_sync_status and check_crawl_status (#19). The
   // text carries the failure reason and latest progress, not just the state (#33): many clients
   // and models read only the text content.
-  const oneLineJob = (job: Job): string => {
+  // #38: a job that wrote property data starts the dashboard server when it finishes and carries
+  // the link in its result, so the completion reply can offer it (refresh_property already did).
+  const DATA_JOBS = new Set(['sync', 'crawl', 'inspect', 'refresh']);
+  const withDashboard = (siteUrl: string, fn: (update: (p: Record<string, unknown>) => void, signal: AbortSignal) => Promise<unknown>) =>
+    async (update: (p: Record<string, unknown>) => void, signal: AbortSignal): Promise<unknown> => {
+      const r = await fn(update, signal);
+      if (signal.aborted) return r;
+      await autoServeDashboard();
+      const base = dashboardServerUrl();
+      return base && r && typeof r === 'object' ? { ...(r as Record<string, unknown>), dashboardUrl: base, dashboard: `${base}/dashboard?siteUrl=${encodeURIComponent(siteUrl)}` } : r;
+    };
+  const oneLineJob = (job: Job, detail = false): string => {
     const head = `Job ${job.id} (${job.type}): ${job.state}`;
     if (job.state === 'failed') return `${head}: ${job.error ?? 'unknown error'}${corruptionHint(job.error)}`;
     const prog = Object.keys(job.progress).length ? ` ${JSON.stringify(job.progress).slice(0, 300)}` : '';
-    return head + prog;
+    if (!detail || job.state !== 'completed' || !DATA_JOBS.has(job.type)) return head + prog;
+    const link = (job.result as { dashboard?: string } | undefined)?.dashboard;
+    const siteUrl = (job.result as { siteUrl?: string } | undefined)?.siteUrl;
+    return head + prog + (link
+      ? `\n\n📊 The dashboard is updated with this data: ${link} (open it in your browser).`
+      : `\n\n📊 The data is in. See it with get_dashboard${siteUrl ? ` for ${siteUrl}` : ''} (in chat), open_dashboard (browser tab) or export_report.`);
   };
   const jobStatus = async ({ jobId }: { jobId?: string }) => {
     if (jobId) {
       const job = jobs.get(jobId);
       if (!job) return { content: [{ type: 'text' as const, text: `No job ${jobId}. Jobs live in the server process, so a job is lost if that process restarted.` }], structuredContent: { error: 'not_found', jobId } };
-      return { content: [{ type: 'text' as const, text: oneLineJob(job) }], structuredContent: job as unknown as Record<string, unknown> };
+      return { content: [{ type: 'text' as const, text: oneLineJob(job, true) }], structuredContent: job as unknown as Record<string, unknown> };
     }
     const all = jobs.list();
-    const lines = all.slice(0, 20).map(oneLineJob);
+    const lines = all.slice(0, 20).map(j => oneLineJob(j));
     return { content: [{ type: 'text' as const, text: `${all.length} jobs${lines.length ? '\n' + lines.join('\n') : ''}` }], structuredContent: { jobs: all } };
   };
 
@@ -965,7 +982,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         searchType,
       };
       const planned = syncer.plannedRange(siteUrl, options); // before the job can write
-      const jobId = jobs.start('sync', (update, signal) => syncer.run(siteUrl, options, update, signal));
+      const jobId = jobs.start('sync', withDashboard(siteUrl, (update, signal) => syncer.run(siteUrl, options, update, signal)));
       // Show the range this sync will actually fetch, not the requested default (#33). planned is
       // computed by the same rule as the job; a shape change can still widen it, and the finished
       // job reports the range used.
@@ -993,7 +1010,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
     async ({ siteUrl, limit }) => {
       const insp = requireGsc(inspector);
-      const jobId = jobs.start('inspect', (update, signal) => insp.run(siteUrl, { limit }, update, signal));
+      const jobId = jobs.start('inspect', withDashboard(siteUrl, (update, signal) => insp.run(siteUrl, { limit }, update, signal)));
       return jobStarted({ jobId, status: 'running', siteUrl }, `Inspection started for ${siteUrl} (job ${jobId}). Poll check_sync_status.`);
     },
   );
@@ -1018,9 +1035,9 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       },
     },
     async ({ siteUrl, maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources, checkExternal, externalCacheDays }) => {
-      const jobId = jobs.start('crawl', (update, signal) =>
+      const jobId = jobs.start('crawl', withDashboard(siteUrl, (update, signal) =>
         crawler.run(siteUrl, { maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources, checkExternal, externalCacheDays }, update, signal),
-      );
+      ));
       return jobStarted({ jobId, status: 'running', siteUrl }, `Crawl started for ${siteUrl} (job ${jobId}). Poll check_crawl_status.`);
     },
   );
@@ -2435,6 +2452,25 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         content: [{ type: 'text', text: `Dashboard server running — open ${open} in your browser${portNote}. Live data, all charts, CSV downloads, property switcher. Stays up while this MCP server runs; serve_dashboard stop=true to stop it.` }],
         structuredContent: { url: open, base: url },
       };
+    },
+  );
+
+  // #38: one obvious verb for "show me the dashboard": starts the local server if needed and hands
+  // back the property's link; where a port can't be bound (Docker gateway, SAC_AUTOSERVE=0) it
+  // points at the in-chat get_dashboard instead.
+  server.registerTool(
+    'open_dashboard',
+    {
+      title: 'Open the dashboard for a property',
+      description: 'Return a link that opens the property\'s interactive dashboard in the browser, starting the localhost dashboard server if it isn\'t running. Offer this after a sync, crawl, refresh or audit finishes. Where no local port can be served (e.g. the Docker MCP gateway), it says to use get_dashboard, which renders the dashboard in chat.',
+      inputSchema: { siteUrl: z.string() },
+    },
+    async ({ siteUrl }) => {
+      let base = dashboardServerUrl();
+      if (!base) { try { base = (await startDashboardServer(buildWebOpts())).url; } catch { base = null; } }
+      if (!base) return { content: [{ type: 'text', text: `Couldn't start the local dashboard server here. Run get_dashboard for ${siteUrl} to see the dashboard in chat, or export_report for a shareable HTML file.` }], structuredContent: { url: null } };
+      const url = `${base}/dashboard?siteUrl=${encodeURIComponent(siteUrl)}`;
+      return { content: [{ type: 'text', text: `📊 Dashboard for ${siteUrl}: ${url}\nLive from the local database: summary, rank and clicks over time, top keywords, findings by priority, crawl health.` }], structuredContent: { url, base } };
     },
   );
 

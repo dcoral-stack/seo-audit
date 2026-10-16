@@ -240,6 +240,7 @@ The one-line version - full descriptions, inputs and example prompts for every t
 | `check_sync_status` · `check_crawl_status` | Watch a long job's progress |
 | `run_audit` · `query_audit` · `list_checks` | The scored audit · one check with evidence · the catalogue |
 | `query_data` | Read-only queries over the raw tables - aggregates in the database, answers not rows |
+| `open_dashboard` | The property's live browser dashboard link; finished syncs and crawls offer it themselves |
 | `probe_urls` · `triage_404s` | Test any URL live (redirects, canonical, cache, case/slash/host variants) · the 404 list as a redirect map |
 | `fix_finding` | Paste-ready remediation (JSON-LD / 301 / internal links) |
 | `detect_changes` | What changed between the two most recent crawls |
