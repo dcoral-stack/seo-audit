@@ -56,6 +56,20 @@ export interface ExtractedLink {
   hrefForm: HrefForm;
 }
 
+/** A subresource the page loads (#37): recorded from the HTML parse, never downloaded. */
+export interface ExtractedResource {
+  url: string;
+  type: 'css' | 'js' | 'font' | 'img' | 'other';
+  party: 'first' | 'third';      // first = the site's host or any subdomain of it (e.g. cdn.example.com)
+  position: 'head' | 'body';
+  async: boolean;
+  defer: boolean;
+  preload: boolean;              // <link rel=preload|modulepreload>
+  module: boolean;               // <script type=module> / modulepreload
+  crossorigin: string | null;
+  media: string | null;          // stylesheet media (print-only CSS isn't render-blocking)
+}
+
 export type HrefForm = 'absolute' | 'protocol-relative' | 'root-relative' | 'relative';
 
 /** Classify a raw href by how it is written. Pure string test, no resolution. */
@@ -116,6 +130,7 @@ export interface ExtractedPage {
   bodyChunks: { heading: string; level: number; text: string }[]; // content segmented by heading (RAG layer)
   links: ExtractedLink[];
   imageSrcs: string[];             // distinct absolute <img> src URLs (capped) — image-weight sampling
+  resources: ExtractedResource[];  // subresources the page loads (css/js/fonts/images), capped at 200 (#37)
 }
 
 function placementOf($: cheerio.CheerioAPI, el: any): 'navigation' | 'footer' | 'body' {
@@ -361,6 +376,52 @@ export function extractPage(
     }
   });
 
+  // ── Subresource inventory (#37): what the page loads, from the parse already happening. ──────
+  const resources: ExtractedResource[] = [];
+  {
+    const seenRes = new Set<string>();
+    const apexOf = (h: string): string => h.toLowerCase().replace(/^www\./, '');
+    const siteApex = apexOf(baseHost);
+    const partyOf = (u: URL): 'first' | 'third' => { const h = apexOf(u.hostname); return h === siteApex || h.endsWith(`.${siteApex}`) ? 'first' : 'third'; };
+    const add = (el: any, raw: string | undefined, type: ExtractedResource['type'], extra: Partial<ExtractedResource> = {}): void => {
+      if (!raw || resources.length >= 200) return;
+      const v = raw.trim();
+      if (!v || v.startsWith('data:') || v.startsWith('blob:')) return;
+      let u: URL;
+      try { u = new URL(v, docBase); } catch { return; }
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+      const key = `${type} ${u.toString()}`;
+      if (seenRes.has(key)) return;
+      seenRes.add(key);
+      const $e = el ? $(el) : null;
+      resources.push({
+        url: u.toString(), type, party: partyOf(u), position: $e && !$e.closest('head').length ? 'body' : 'head',
+        async: !!$e && $e.attr('async') !== undefined, defer: !!$e && $e.attr('defer') !== undefined,
+        preload: false, module: !!$e && ($e.attr('type') ?? '').toLowerCase() === 'module',
+        crossorigin: $e?.attr('crossorigin') ?? null, media: $e?.attr('media')?.trim() || null, ...extra,
+      });
+    };
+    const relHas = (el: any, r: string): boolean => (($(el).attr('rel') ?? '').toLowerCase().split(/\s+/)).includes(r);
+    $('link[href]').each((_, el) => {
+      const href = $(el).attr('href');
+      if (relHas(el, 'stylesheet')) add(el, href, 'css');
+      else if (relHas(el, 'modulepreload')) add(el, href, 'js', { preload: true, module: true });
+      else if (relHas(el, 'preload')) {
+        const as = ($(el).attr('as') ?? '').toLowerCase();
+        add(el, href, as === 'font' ? 'font' : as === 'style' ? 'css' : as === 'script' ? 'js' : as === 'image' ? 'img' : 'other', { preload: true });
+      } else if (relHas(el, 'icon') || relHas(el, 'apple-touch-icon')) add(el, href, 'img');
+    });
+    $('script[src]').each((_, el) => add(el, $(el).attr('src'), 'js'));
+    $('img[src]').each((_, el) => add(el, $(el).attr('src'), 'img'));
+    // Fonts declared in inline <style> @font-face blocks ("where visible": external CSS isn't fetched).
+    $('style').each((_, el) => {
+      const css = $(el).text();
+      for (const face of css.matchAll(/@font-face\s*{([^}]*)}/gi)) {
+        for (const m of face[1].matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/gi)) add(el, m[1], 'font');
+      }
+    });
+  }
+
   const links: ExtractedLink[] = [];
   let internalLinks = 0;
   let externalLinks = 0;
@@ -442,5 +503,6 @@ export function extractPage(
     bodyChunks,
     links,
     imageSrcs: [...imageSrcSet],
+    resources,
   };
 }

@@ -352,6 +352,36 @@ export class AuditDatabase {
       CREATE INDEX IF NOT EXISTS idx_pbl_backlinks ON page_backlinks(backlinks DESC);
     `);
 
+    // ── Page subresources (latest crawl) — recorded from the HTML parse, never downloaded (#37) ──
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS page_resources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        crawl_id TEXT,
+        page_key TEXT NOT NULL,            -- url_key of the page that loads it
+        resource_url TEXT NOT NULL,
+        type TEXT,                         -- css | js | font | img | other
+        party TEXT,                        -- first (site host or a subdomain) | third
+        position TEXT,                     -- head | body
+        is_async INTEGER, is_defer INTEGER, is_preload INTEGER, is_module INTEGER,
+        crossorigin TEXT,
+        media TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_page_resources_page ON page_resources(page_key);
+      CREATE INDEX IF NOT EXISTS idx_page_resources_url ON page_resources(resource_url);
+      -- Optional header-only pass over css/js/font resources (start_crawl headResources:true);
+      -- images already have image_assets.
+      CREATE TABLE IF NOT EXISTS resource_assets (
+        url TEXT PRIMARY KEY,
+        type TEXT,
+        status INTEGER,
+        content_length INTEGER,
+        content_type TEXT,
+        cache_control TEXT,
+        used_on INTEGER,                   -- pages loading it
+        checked_at TEXT
+      );
+    `);
+
     // ── URL probes (probe_urls with persist:true) ────────────────────────────
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS probes (

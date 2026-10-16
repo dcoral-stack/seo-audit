@@ -57,6 +57,7 @@ export interface CrawlOptions {
   delayMs?: number;
   userAgent?: string;
   excludePatterns?: string[]; // extra URL regexes to never crawl (on top of the junk defaults)
+  headResources?: boolean;    // header-only pass over css/js/font subresources → resource_assets (#37)
 }
 
 export interface CrawlResult {
@@ -280,7 +281,7 @@ export class Crawler {
     let wipedPrior = false;
     const ensureWiped = (): void => {
       if (wipedPrior) return;
-      db.db.exec('DELETE FROM links; DELETE FROM pages; DELETE FROM redirect_sources;');
+      db.db.exec('DELETE FROM links; DELETE FROM pages; DELETE FROM redirect_sources; DELETE FROM page_resources;');
       wipedPrior = true;
     };
 
@@ -326,6 +327,13 @@ export class Crawler {
        ON CONFLICT(url_key) DO UPDATE SET url=excluded.url, status=excluded.status, final_url=excluded.final_url,
          final_key=excluded.final_key, hops=excluded.hops, crawl_id=excluded.crawl_id`,
     );
+    const resourceInsert = db.db.prepare(
+      `INSERT INTO page_resources (crawl_id, page_key, resource_url, type, party, position, is_async, is_defer, is_preload, is_module, crossorigin, media)
+       VALUES (@crawl_id,@page_key,@resource_url,@type,@party,@position,@is_async,@is_defer,@is_preload,@is_module,@crossorigin,@media)`,
+    );
+    const flushResources = db.db.transaction((rows: Record<string, unknown>[]) => { for (const r of rows) resourceInsert.run(r); });
+    const resourceBuf: Record<string, unknown>[] = [];
+    const resourceRefs = new Map<string, { type: string; usedOn: number }>(); // for the optional HEAD pass
     const flushPages = db.db.transaction((rows: Record<string, unknown>[]) => { for (const r of rows) pageInsert.run(r); });
     const flushLinks = db.db.transaction((rows: Record<string, unknown>[]) => { for (const r of rows) linkInsert.run(r); });
 
@@ -396,6 +404,7 @@ export class Crawler {
       if (pageBuf.length || linkBuf.length) ensureWiped();
       if (pageBuf.length && (final || pageBuf.length >= FLUSH_EVERY)) { flushPages(pageBuf.splice(0)); }
       if (linkBuf.length && (final || linkBuf.length >= FLUSH_EVERY)) { flushLinks(linkBuf.splice(0)); }
+      if (resourceBuf.length && (final || resourceBuf.length >= FLUSH_EVERY)) { ensureWiped(); flushResources(resourceBuf.splice(0)); }
     };
     const saveProgress = (): void => {
       db.db.prepare(`UPDATE crawl_metadata SET urls_discovered=?, urls_crawled=?, urls_failed=?, urls_skipped=? WHERE crawl_id=?`)
@@ -490,6 +499,11 @@ export class Crawler {
 
         if (ex) {
           for (const src of ex.imageSrcs) imageRefs.set(src, (imageRefs.get(src) ?? 0) + 1);
+          for (const res of ex.resources) {
+            resourceBuf.push({ crawl_id: crawlId, page_key: finalKey, resource_url: res.url, type: res.type, party: res.party, position: res.position,
+              is_async: res.async ? 1 : 0, is_defer: res.defer ? 1 : 0, is_preload: res.preload ? 1 : 0, is_module: res.module ? 1 : 0, crossorigin: res.crossorigin, media: res.media });
+            if (res.type !== 'img') { const ref = resourceRefs.get(res.url); if (ref) ref.usedOn++; else resourceRefs.set(res.url, { type: res.type, usedOn: 1 }); }
+          }
           for (const l of ex.links) {
             linkBuf.push({
               crawl_id: crawlId, source_url: r.finalUrl, source_key: finalKey,
@@ -587,6 +601,23 @@ export class Crawler {
         } else rows.push([url, null, 0, '', usedOn]);
       });
       db.db.transaction(() => { for (const r of rows) imgInsert.run(...r); })();
+    }
+
+    // Optional (#37): header-only pass over css/js/font subresources — status, size and caching —
+    // most-used first, capped, through the same paced pool. Bodies are never downloaded.
+    if (opts.headResources && !signal.aborted && wipedPrior && resourceRefs.size) {
+      const MAX_RESOURCES = 500;
+      const sample = [...resourceRefs.entries()]
+        .filter(([url]) => { try { const u = new URL(url); return !isInternalHost(u.hostname, baseHost) || robots.isAllowed(u.pathname); } catch { return false; } })
+        .sort((a, b) => b[1].usedOn - a[1].usedOn).slice(0, MAX_RESOURCES);
+      const rows: [string, string, number, number | null, string, string | null, number][] = [];
+      await probePool(sample, async ([url, ref]) => {
+        const r = await headProbe(url, {}, 'follow');
+        const len = r ? Number(r.header('content-length')) : NaN;
+        rows.push([url, ref.type, r?.status ?? 0, Number.isFinite(len) && len > 0 ? len : null, (r?.header('content-type') ?? '').split(';')[0].trim(), r?.header('cache-control') ?? null, ref.usedOn]);
+      });
+      const ins = db.db.prepare(`INSERT INTO resource_assets (url, type, status, content_length, content_type, cache_control, used_on, checked_at) VALUES (?,?,?,?,?,?,?,datetime('now'))`);
+      db.db.transaction(() => { db.db.exec('DELETE FROM resource_assets'); for (const r of rows) ins.run(...r); })();
     }
 
     // Post-crawl: in-degree (orphans), internal PageRank (iPR) + body-only click depth.

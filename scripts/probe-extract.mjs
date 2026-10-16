@@ -122,6 +122,26 @@ const keyOpts = { hostForm: 'https://www.example.com' };
   check('href forms classified', forms === 'absolute,protocol-relative,root-relative,relative,relative', forms);
 }
 
+// ── subresource inventory (#37) ─────────────────────────────────────────────
+{
+  const html = `<html><head>
+    <link rel="stylesheet" href="/wp-content/style.css"><link rel="stylesheet" href="/print.css" media="print">
+    <link rel="preload" as="font" href="https://cdn.example.com/f.woff2" crossorigin>
+    <script src="https://www.googletagmanager.com/gtm.js" async></script><script src="/jquery.js"></script>
+    <style>@font-face { font-family: X; src: url('/fonts/x.woff2') format('woff2'); }</style>
+  </head><body><img src="/a.png" alt="a"><script src="/app.js" defer type="module"></script><script src="data:text/javascript,1"></script></body></html>`;
+  const ex = extractPage(html, 'https://www.example.com/p', 'example.com', keyOpts, null);
+  const by = Object.fromEntries(ex.resources.map(r => [new URL(r.url).pathname, r]));
+  check('stylesheet recorded in head, first-party', by['/wp-content/style.css']?.type === 'css' && by['/wp-content/style.css'].position === 'head' && by['/wp-content/style.css'].party === 'first', JSON.stringify(by['/wp-content/style.css']));
+  check('print stylesheet keeps its media', by['/print.css']?.media === 'print', JSON.stringify(by['/print.css']));
+  check('font preload on a subdomain CDN is first-party, preload + crossorigin', by['/f.woff2']?.type === 'font' && by['/f.woff2'].preload && by['/f.woff2'].party === 'first' && by['/f.woff2'].crossorigin === '', JSON.stringify(by['/f.woff2']));
+  check('third-party async script', by['/gtm.js']?.party === 'third' && by['/gtm.js'].async, JSON.stringify(by['/gtm.js']));
+  check('render-blocking script: head, no async/defer', by['/jquery.js']?.position === 'head' && !by['/jquery.js'].async && !by['/jquery.js'].defer, JSON.stringify(by['/jquery.js']));
+  check('body module script with defer', by['/app.js']?.position === 'body' && by['/app.js'].defer && by['/app.js'].module, JSON.stringify(by['/app.js']));
+  check('inline @font-face url recorded as font', by['/fonts/x.woff2']?.type === 'font', JSON.stringify(by['/fonts/x.woff2']));
+  check('image recorded; data: URIs skipped', by['/a.png']?.type === 'img' && !ex.resources.some(r => r.url.startsWith('data:')), JSON.stringify(ex.resources.map(r => r.url)));
+}
+
 // ── checks over a seeded DB ─────────────────────────────────────────────────
 const dbPath = path.join(tmpdir(), `sac-extract-${process.pid}.db`);
 rmSync(dbPath, { force: true });

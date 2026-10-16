@@ -1003,7 +1003,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'start_crawl',
     {
       title: 'Crawl a site (just the crawl)',
-      description: 'Update just the crawl: fetch the site into the local database (async job — poll with check_crawl_status). HTTP crawl; respects robots.txt; asset file-types are HEAD-only (no body download); internal-search / cart / wp-json / builder junk URLs are skipped by default. For a full refresh use refresh_property. excludePatterns adds extra URL regexes to skip (e.g. ["/author/","/tag/","/page/"]) to keep big crawls light. Grain: one row per url_key, latest crawl. Joins: url_key → GSC/inspection/backlinks.',
+      description: 'Update just the crawl: fetch the site into the local database (async job — poll with check_crawl_status). HTTP crawl; respects robots.txt; asset file-types are HEAD-only (no body download); internal-search / cart / wp-json / builder junk URLs are skipped by default. For a full refresh use refresh_property. excludePatterns adds extra URL regexes to skip (e.g. ["/author/","/tag/","/page/"]) to keep big crawls light. Every crawl also records each page\'s subresources (CSS, JS, fonts, images: type, first/third party, head/body, async/defer/preload) into page_resources without downloading them; headResources:true adds a header-only pass over the CSS/JS/font ones. Grain: one row per url_key, latest crawl. Joins: url_key → GSC/inspection/backlinks.',
       inputSchema: {
         siteUrl: z.string(),
         maxPages: z.number().int().min(1).max(50000).optional(),
@@ -1012,11 +1012,12 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         delayMs: z.number().int().min(0).max(10000).optional(),
         userAgent: z.string().optional(),
         excludePatterns: z.array(z.string()).optional(),
+        headResources: z.boolean().optional().describe('Also run a header-only pass over the CSS/JS/font subresources pages load (status, size, cache-control) into resource_assets. Off by default; bodies are never downloaded.'),
       },
     },
-    async ({ siteUrl, maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns }) => {
+    async ({ siteUrl, maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources }) => {
       const jobId = jobs.start('crawl', (update, signal) =>
-        crawler.run(siteUrl, { maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns }, update, signal),
+        crawler.run(siteUrl, { maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources }, update, signal),
       );
       return jobStarted({ jobId, status: 'running', siteUrl }, `Crawl started for ${siteUrl} (job ${jobId}). Poll check_crawl_status.`);
     },
