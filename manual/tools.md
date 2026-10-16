@@ -22,7 +22,7 @@ Just the Search Console history. Grain: date × query × page (plus device/count
 > Sync Search Console data for mysite.com back to 2024-01-01
 
 ### `start_crawl`
-Just the crawl. Fetches the site into the local database: status, titles, H1s, metas, canonicals, robots, structured data, hreflang, redirect chains, body text by section, then computes internal PageRank, click depth and in-degree. Discovery is links + sitemaps + every URL Google already knows about from GSC. Respects robots.txt; assets are checked without downloading their bytes; search/cart/login junk is skipped. `excludePatterns` adds your own skip regexes, `maxPages` caps it. Grain: one row per `url_key`, latest crawl only (history lives in snapshots, see `detect_changes`).
+Just the crawl. Fetches the site into the local database: status, titles, H1s, metas, canonicals, robots, structured data, hreflang, redirect chains, body text by section, then computes internal PageRank, click depth and in-degree. Discovery is links + sitemaps + every URL Google already knows about from GSC. Respects robots.txt; assets are checked without downloading their bytes; search/cart/login junk is skipped. `excludePatterns` adds your own skip regexes, `maxPages` caps it. Each page's subresources (stylesheets, scripts, fonts, images: first or third party, head or body, async/defer/preload) are recorded without being downloaded; `headResources:true` adds a header-only size-and-caching pass over the CSS, JS and fonts. After the crawl every distinct outbound link is checked - politely, one request at a time per host, cached for a week - so the audit can report broken and permanently redirected external links; bot walls count as unverifiable, never broken. `checkExternal:false` skips that. Grain: one row per `url_key`, latest crawl only (history lives in snapshots, see `detect_changes`).
 > Crawl mysite.com, 500 pages max
 > Crawl mysite.com but exclude /author/ and /tag/
 
@@ -60,7 +60,7 @@ One named check, with every affected URL and its full evidence. The drill-down a
 > Run the keyword-cannibalisation check on mysite.com with evidence
 
 ### `list_checks`
-The whole check catalogue - all 109, with categories and labels. The same list, annotated, is [checks.md](checks.md).
+The whole check catalogue - all 111, with categories and labels. The same list, annotated, is [checks.md](checks.md).
 > What does the audit check for?
 
 ### `list_templates`
@@ -70,10 +70,12 @@ Clusters crawled pages into templates by URL shape and schema type, each with a 
 ## Raw data
 
 ### `query_data`
-Direct, read-only access to the property database, built around one principle: **aggregate in the database and return answers, not rows**. The default mode groups by the columns you name and returns counts, percentages and sum/avg/min/max metrics - "status codes by folder", "clicks by page", "coverage states by verdict" - each as one small table with an honest total line, however many rows sit underneath. Tables: `pages`, `links`, `search_analytics`, `url_inspection`, `sitemap_urls`, `findings`, `image_assets`, `page_backlinks`. Filters (equals, ranges, like, in) are always parameterised, and every column name is validated against the live schema - there's no way to smuggle SQL in. `mode:rows` returns raw rows when you genuinely need them, with a curated default column set, 120-character cells and a *showing X-Y of TOTAL; next offset N* footer.
+Direct, read-only access to the property database, built around one principle: **aggregate in the database and return answers, not rows**. The default mode groups by the columns you name and returns counts, percentages and sum/avg/min/max metrics - "status codes by folder", "clicks by page", "coverage states by verdict" - each as one small table with an honest total line, however many rows sit underneath. Tables: `pages`, `links`, `search_analytics`, `url_inspection`, `sitemap_urls`, `findings`, `image_assets`, `page_backlinks`, `redirect_sources`, `probes`, `page_resources`, `resource_assets`, `external_link_status`. Filters (equals, ranges, like, in, match) are always parameterised; `match` is full-text search (words, "phrases", prefix\*, AND/OR/NOT, NEAR) over GSC queries, page titles/H1s/body text and anchor text, and is far faster than `like` on big tables. and every column name is validated against the live schema - there's no way to smuggle SQL in. `mode:rows` returns raw rows when you genuinely need them, with a curated default column set, 120-character cells and a *showing X-Y of TOTAL; next offset N* footer.
 > How do status codes break down on mysite.com?
 > Top 10 pages by total clicks from the raw GSC data
 > Show me the 404 rows with their inlink counts
+> Total clicks for every query that mentions "crystal" near "light"
+> Which third-party scripts load on the most pages?
 
 ## Fixes
 

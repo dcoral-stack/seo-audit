@@ -10,7 +10,7 @@ import { matchPredicate, ftsIndexFor, ensureFtsSchema, ensureFtsBackfilled, type
 
 export const QUERYABLE_TABLES = [
   'pages', 'links', 'search_analytics', 'url_inspection', 'sitemap_urls',
-  'findings', 'image_assets', 'page_backlinks', 'redirect_sources', 'probes', 'page_resources', 'resource_assets',
+  'findings', 'image_assets', 'page_backlinks', 'redirect_sources', 'probes', 'page_resources', 'resource_assets', 'external_link_status',
 ] as const;
 export type QueryTable = (typeof QUERYABLE_TABLES)[number];
 
@@ -59,6 +59,7 @@ const DEFAULT_ROW_COLUMNS: Record<QueryTable, string[]> = {
   probes: ['url', 'variant_type', 'status', 'final_url', 'final_status', 'canonical', 'verdict', 'probed_at'],
   page_resources: ['page_key', 'resource_url', 'type', 'party', 'position', 'is_async', 'is_defer', 'is_preload'],
   resource_assets: ['url', 'type', 'status', 'content_length', 'cache_control', 'used_on'],
+  external_link_status: ['url', 'verdict', 'status', 'final_url', 'error', 'checked_at'],
 };
 
 const CELL_CAP = 120;

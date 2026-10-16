@@ -1,6 +1,6 @@
 # The check registry
 
-All 109 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
+All 111 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
 
 ## Reading the labels
 
@@ -53,7 +53,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `image-preview-restricted` | D | max-image-preview capped below large | Set max-image-preview:large - Discover strongly favours it - unless licensing forbids. |
 | `sitemap-lastmod-untrustworthy` | D | lastmod dates that are generator stamps, future-dated, or claim changes that didn't happen | Make lastmod reflect genuine content changes, or drop it - dishonest dates teach Google to ignore yours. |
 
-## On-page (20)
+## On-page (22)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -67,6 +67,8 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `multiple-h1` | D | More than one H1 | Use one per page. |
 | `title-h1-mismatch` | D | Title and H1 sharing no significant words | Align them - the mismatch blurs the page's topic signal. |
 | `image-alt` | D | Content images without alt text | Add descriptive alt text (empty alt only for decorative images). |
+| `external-broken` | D (0.9) | Outbound links whose target is dead (4xx/5xx, DNS, timeout, refused, TLS), per linking page. Bot walls (401/403/429, Cloudflare challenges) are "unverifiable" and never counted | Replace or remove each dead link: the current page on that site, a better source, or nothing. |
+| `external-redirected` | D (0.9) | Outbound links that permanently redirect, per linking page; a deep link now landing on the site's homepage is flagged as likely removed | Update each link to its final URL; find a replacement where the target page is gone. |
 | `images-missing-dimensions` | D | Images without width/height attributes | Add them (or CSS aspect-ratio) so the browser reserves space - but confirm with field CLS first; if your CSS already reserves space there's nothing to fix. |
 | `heading-hierarchy` | D | Skipped heading levels (h1 → h3) | Use headings in order - it keeps the outline accessible and parseable. |
 | `missing-social-tags` | D | No Open Graph or Twitter Card tags | Add them so shared links render a rich preview. |

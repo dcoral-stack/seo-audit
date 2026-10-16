@@ -13,7 +13,7 @@
 
 Almost every technical SEO audit I've been handed in twenty years is a crawler's opinion, and a crawler only ever sees half the picture. It tells you what your site *says*. It has nothing to say about what Google *did* about it: which queries you rank for, which pages earn the impressions, where the clicks land.
 
-This one brings the other half. SEO Audit Console runs inside Claude, pulls your **Google Search Console** history, crawls your site properly, and joins the two so every finding carries the traffic at stake. A hundred and nine checks, ranked by the clicks the fix could recover rather than how alarming the check sounds, and it writes the fix for you: the 301 rule, the JSON-LD, the internal links. The core audit needs nothing but your own Search Console; **DataForSEO** and **Majestic** slot in later, when your questions grow into competitors and link building. Your data stays on your machine.
+This one brings the other half. SEO Audit Console runs inside Claude, pulls your **Google Search Console** history, crawls your site properly, and joins the two so every finding carries the traffic at stake. A hundred and eleven checks, ranked by the clicks the fix could recover rather than how alarming the check sounds, and it writes the fix for you: the 301 rule, the JSON-LD, the internal links. The core audit needs nothing but your own Search Console; **DataForSEO** and **Majestic** slot in later, when your questions grow into competitors and link building. Your data stays on your machine.
 
 **Built by [Houtini](https://houtini.com).** We build automation for the grunt work of digital marketing - the data collection, the crawling, the merging, the checking - so your team's time goes on the thinking, the strategy and the client work that needs a human. This plugin is that idea applied to the technical SEO audit.
 
@@ -25,7 +25,7 @@ you  › run an SEO audit on mysite.com
      ⣾ search console  1.8M rows synced (19s - incremental)
      ⣾ crawl           868 pages · HTTP/2 · robots-polite · 8 parallel
      ⣾ link graph      internal PageRank · click depth · in-degree
-     ✓ 109 checks · 220 findings · ranked by expected clicks per dev-hour
+     ✓ 111 checks · 220 findings · ranked by expected clicks per dev-hour
 
      #1  CTR far below position-expected     /pricing                   XL
      #2  Page losing clicks (trend)          site-wide                  XL
@@ -47,7 +47,7 @@ This README is the story and the quick start. The detail lives in the manual:
 |---|---|
 | [Getting started](manual/getting-started.md) | Install, the GSC service-account setup (and the step everyone misses), Claude Desktop and Claude Code config, your first audit, troubleshooting |
 | [Tool reference](manual/tools.md) | Every tool: what it does, inputs, joins, an example prompt |
-| [The check registry](manual/checks.md) | All 109 checks with what each catches, its D/N label, and the fix |
+| [The check registry](manual/checks.md) | All 111 checks with what each catches, its D/N label, and the fix |
 | [Composition](manual/composition.md) | The join keys, the grains, and thirteen worked recipes for asking your own questions across the data |
 | [Competitive analysis](manual/competitive.md) | The Semrush-replacement workflows, DataForSEO setup, link intersect with the Majestic Trust Flow tier, and the real costs |
 | [SEO Recon](manual/recon.md) | Why a page is losing: the live SERP + AI-Overview citation verdict, the competitor diff, and the trackable to-do ledger |
@@ -85,7 +85,7 @@ Yes. The crawl-plus-GSC merge is not a novelty; it's the method. On one property
 
 ## What the audit checks
 
-`run_audit` executes **109 checks** over the joined data and returns a ranked list - not a wall of everything, a priority order with the traffic at stake attached to each finding. The families, briefly:
+`run_audit` executes **111 checks** over the joined data and returns a ranked list - not a wall of everything, a priority order with the traffic at stake attached to each finding. The families, briefly:
 
 | Family | What it catches |
 |---|---|

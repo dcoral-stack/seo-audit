@@ -190,6 +190,24 @@ export const CHECKS: CheckDef[] = [
     run: (c) => rows(c, `SELECT url_key urlKey, images_without_alt missing, image_count total FROM pages WHERE status_code=200 AND indexable=1 AND images_without_alt > 0`).map(r => ({ urlKey: r.urlKey, evidence: { missing: r.missing, total: r.total } })),
   },
   {
+    // #36: outbound links whose target is gone (4xx/5xx, DNS, timeout, refused, TLS). Keyed by the
+    // LINKING page (that's where the fix happens). Bot walls (401/403/429, Cloudflare challenges)
+    // are 'unverifiable' and never counted here. Needs the post-crawl external-link pass.
+    id: 'external-broken', category: 'onpage', severity: 'med', labels: ['D'], certainty: 0.9, effortBase: 2, fixType: 'per-page',
+    title: 'Broken outbound links', fix: 'Replace or remove each dead external link: point it at the current page on that site, a better source, or drop it. Dead outbound links read as neglect to users and to quality raters.',
+    run: (c) => externalByPage(c, `s.verdict = 'broken'`).map(p => ({ urlKey: p.urlKey, evidence: { broken: p.items.length, outboundLinks: p.outbound, examples: p.items.slice(0, 10).map(i => ({ target: i.target, status: i.status ?? i.error, anchor: i.anchor })) } })),
+  },
+  {
+    // #36: permanent redirects on outbound links ("update the link"). A deep link that now 301s to
+    // the target site's HOMEPAGE usually means the product or doc was removed — flagged per item.
+    id: 'external-redirected', category: 'onpage', severity: 'low', labels: ['D'], certainty: 0.9, effortBase: 1, fixType: 'per-page',
+    title: 'Outbound links that permanently redirect', fix: 'Update each link to its final URL. Where a deep link now lands on the site\'s homepage, the page it pointed at is probably gone: find the replacement or remove the link.',
+    run: (c) => externalByPage(c, `s.verdict = 'redirected' AND s.permanent = 1`).map(p => ({ urlKey: p.urlKey, evidence: {
+      redirected: p.items.length, toHomepage: p.items.filter(i => i.toHomepage).length,
+      examples: p.items.slice(0, 10).map(i => ({ target: i.target, finalUrl: i.finalUrl, ...(i.toHomepage ? { note: 'deep link now redirects to the homepage: likely removed' } : {}), anchor: i.anchor })),
+    } })),
+  },
+  {
     // Judgement (#21): alt="" is right for decorative images, so it can't be a deterministic
     // finding. But empty alt on images INSIDE the main content (main/article/figure, outside the
     // site chrome) is often a content image whose alt was never written — e.g. WordPress
@@ -1521,6 +1539,21 @@ const DISCOVER_PREFILTER = `status_code=200 AND indexable=1 AND ${HTML_CT} AND (
 // templates.nodeType() returns only the first entry, which misreads array types — so read them all here.
 // SQL prefilter for the article family. 'BlogPosting' / 'SocialMediaPosting' don't contain the word
 // 'Article', so a LIKE '%Article%' prefilter silently skipped BlogPosting-only pages.
+// Outbound links joined to their checked status (#36), grouped by linking page.
+function externalByPage(c: CheckContext, where: string): { urlKey: string; outbound: number; items: { target: string; status: number | null; error: string | null; finalUrl: string | null; anchor: string | null; toHomepage: boolean }[] }[] {
+  const pathOf = (u: string | null): string => { try { return new URL(u ?? '').pathname; } catch { return ''; } };
+  const byPage = new Map<string, { urlKey: string; outbound: number; items: any[] }>();
+  for (const r of rows(c, `SELECT l.source_key src, l.target_url target, l.anchor_text anchor, s.status, s.error, s.final_url finalUrl,
+      (SELECT external_links FROM pages p WHERE p.url_key = l.source_key) outbound
+    FROM links l JOIN external_link_status s ON s.url_key = l.target_key
+    WHERE l.is_internal = 0 AND ${where} ORDER BY l.source_key`)) {
+    const page = byPage.get(r.src) ?? byPage.set(r.src, { urlKey: r.src, outbound: r.outbound ?? 0, items: [] }).get(r.src)!;
+    if (page.items.some((i: any) => i.target === r.target)) continue;
+    page.items.push({ target: r.target, status: r.status, error: r.error, finalUrl: r.finalUrl, anchor: r.anchor || null,
+      toHomepage: pathOf(r.target).replace(/\/+$/, '') !== '' && pathOf(r.finalUrl).replace(/\/+$/, '') === '' });
+  }
+  return [...byPage.values()];
+}
 const ARTICLE_LIKE = `(json_ld LIKE '%Article%' OR json_ld LIKE '%Posting%')`;
 const ARTICLE_TYPES = /^(article|blogposting|newsarticle|techarticle|scholarlyarticle|reportagenewsarticle|analysisnewsarticle|opinionnewsarticle|reviewnewsarticle|backgroundnewsarticle|socialmediaposting|liveblogposting)$/;
 // Array-@type aware: Yoast emits @type ["Article","BlogPosting"].
