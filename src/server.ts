@@ -64,6 +64,7 @@ import { Entities } from './core/Entities.js';
 import { JobManager, corruptionHint, type Job } from './core/JobManager.js';
 import { checkIntegrity, repairIndexes, propertyDbFile } from './core/integrity.js';
 import { probeUrls, urlVariants, judgeVariants, type ProbeResult } from './core/probeUrls.js';
+import { triage404s } from './core/triage404.js';
 import { gscFreshness } from './core/gscFreshness.js';
 import { clusterKeywordList } from './audit/keywordList.js';
 import type { FetchOptions } from './core/types.js';
@@ -1061,6 +1062,35 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       const verdictMd = verdicts.map(v => `\n**${v.url}**: ${v.normalisesAll ? 'normalises every variant with a single redirect' : 'does NOT normalise every variant'}\n${v.variants.map(j => `- ${j.variantType}: ${j.verdict} (${j.detail})`).join('\n')}`).join('\n');
       const text = `Probed ${results.length} URL(s)${persist ? ' (saved to probes)' : ''}.\n\n| URL | Status | Redirects | Final | Canonical | Content hash | Cache | Error |\n|---|---|---|---|---|---|---|---|\n${rowsMd.join('\n')}${verdictMd ? '\n' + verdictMd : ''}`;
       return { content: [{ type: 'text', text: text.slice(0, 38000) }], structuredContent: { results, ...(verdicts.length ? { variants: verdicts } : {}) } };
+    },
+  );
+
+  server.registerTool(
+    'triage_404s',
+    {
+      title: 'Triage 404s into a redirect map',
+      description: 'Turn the crawl\'s 404/410 list into a short redirect map. A GSC-seeded crawl reports every URL Google has seen, so real lost pages (traffic, backlinks) sit among many mangled variants of real slugs from scraped or AI-rewritten links. Each 404 gets its discovery sources (internal link / sitemap / GSC / backlink), clicks, impressions and last-seen date from search_analytics, backlinks and referring domains, and the closest live indexable URL by slug similarity (token overlap or edit distance, 0-1). Buckets: redirect (has clicks, ≥minImpressions impressions or referring domains, AND a match ≥minScore), ignore (no clicks, <10 impressions, no internal links, not in sitemap, no backlinks), review (everything else, e.g. internal links pointing at it: fix those at source). Needs a crawl; GSC and pull_backlinks data sharpen it. Verify a suggested target before shipping the 301 (probe_urls helps). Free, local data only.',
+      inputSchema: {
+        siteUrl: z.string(),
+        minImpressions: z.number().int().min(1).optional().describe('Impressions that count as real value (default 50)'),
+        minScore: z.number().min(0).max(1).optional().describe('Slug similarity needed for a confident redirect target (default 0.6)'),
+        limit: z.number().int().min(1).max(5000).optional().describe('Max 404s to triage (default 500)'),
+      },
+    },
+    async ({ siteUrl, minImpressions, minScore, limit }) => {
+      const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
+      try {
+        const rows = triage404s(db.db, { minImpressions, minScore, limit });
+        if (!rows.length) return { content: [{ type: 'text', text: `No crawled 404/410 URLs for ${siteUrl}. Run start_crawl (it seeds GSC-known URLs) first.` }], structuredContent: { rows: [] } };
+        const by = (b: string) => rows.filter(r => r.bucket === b);
+        const redirect = by('redirect'), review = by('review'), ignore = by('ignore');
+        const cell = (u: string | null) => (u ?? '—').replace(/\|/g, '\\|');
+        const redirectMd = redirect.length ? `\n\n**Redirect (${redirect.length})**\n| From | To | Score | Why |\n|---|---|---|---|\n${redirect.slice(0, 60).map(r => `| ${cell(r.url)} | ${cell(r.bestMatch)} | ${r.score} | ${r.reason} |`).join('\n')}\n\n301 map (from to):\n\`\`\`\n${redirect.map(r => `${r.url} ${r.bestMatch}`).join('\n')}\n\`\`\`` : '';
+        const reviewMd = review.length ? `\n\n**Review (${review.length})**\n${review.slice(0, 40).map(r => `- ${r.url}: ${r.reason}${r.bestMatch ? ` (closest: ${r.bestMatch}, ${r.score})` : ''}`).join('\n')}` : '';
+        const ignoreMd = ignore.length ? `\n\n**Ignore (${ignore.length})**: mangled or stray URLs with no value. Examples:\n${ignore.slice(0, 10).map(r => `- ${r.url}${r.bestMatch && r.score >= (minScore ?? 0.6) ? ` (variant of ${r.bestMatch})` : ''}`).join('\n')}` : '';
+        const text = `${rows.length} crawled 404/410 URL(s) for ${siteUrl}: ${redirect.length} to redirect, ${review.length} to review, ${ignore.length} to ignore.${redirectMd}${reviewMd}${ignoreMd}`;
+        return { content: [{ type: 'text', text: text.slice(0, 38000) }], structuredContent: { counts: { redirect: redirect.length, review: review.length, ignore: ignore.length }, rows } };
+      } finally { db.close(); }
     },
   );
 
