@@ -1,4 +1,5 @@
 import { AuditDatabase } from './AuditDatabase.js';
+import { addQueries } from './fts.js';
 import { GscClient } from './GscClient.js';
 import { dbPathFor } from './paths.js';
 import { urlKey, hostFormForProperty } from './url-key.js';
@@ -67,8 +68,17 @@ export class GscSync {
            clicks = excluded.clicks, impressions = excluded.impressions, search_type = excluded.search_type,
            ctr = excluded.ctr, position = excluded.position, page_key = excluded.page_key`,
       );
+      // Distinct-query FTS index (#35): each batch's NEW distinct queries go in inside the batch's
+      // own transaction. seenQueries spans the run so repeat queries across batches cost nothing.
+      const seenQueries = new Set<string>();
+      const indexQueries = (records: Record<string, unknown>[]): void => {
+        const fresh: string[] = [];
+        for (const r of records) { const q = r.query; if (typeof q === 'string' && !seenQueries.has(q)) { seenQueries.add(q); fresh.push(q); } }
+        if (fresh.length) addQueries(db.db, fresh);
+      };
       const insertMany = db.db.transaction((records: Record<string, unknown>[]) => {
         for (const r of records) insert.run(r);
+        indexQueries(records);
       });
 
       let total = 0;
@@ -107,10 +117,12 @@ export class GscSync {
       const wipeAndInsert = db.db.transaction((records: Record<string, unknown>[]) => {
         db.db.exec('DELETE FROM search_analytics');
         for (const r of records) insert.run(r);
+        indexQueries(records);
       });
       const replaceAndInsert = db.db.transaction((from: string, records: Record<string, unknown>[]) => {
         db.db.prepare('DELETE FROM search_analytics WHERE date >= ?').run(from);
         for (const r of records) insert.run(r);
+        indexQueries(records);
       });
 
       // ── Incremental resume ─────────────────────────────────────────────────────────────────

@@ -64,6 +64,7 @@
     "probe:integrity": "node scripts/probe-integrity.mjs",
     "probe:probeurls": "node scripts/probe-probeurls.mjs",
     "probe:triage404": "node scripts/probe-triage404.mjs",
+    "probe:fts": "node scripts/probe-fts.mjs",
     "probe:extract2": "node scripts/probe-extract2.mjs",
     "probe:charset": "node scripts/probe-charset-fixture.mjs",
     "probe:a11y": "node scripts/probe-a11y.mjs",

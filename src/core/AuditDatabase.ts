@@ -9,6 +9,7 @@
  *
  * Never console.log — MCP speaks JSON-RPC over stdio; use console.error for debug.
  */
+import { ensureFtsSchema } from './fts.js';
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -554,6 +555,7 @@ export class AuditDatabase {
     `);
 
     this.migrate();
+    ensureFtsSchema(this.db); // after migrate: triggers reference columns migrate may add
   }
 
   /** Idempotent column additions for DBs created before a column existed. */
