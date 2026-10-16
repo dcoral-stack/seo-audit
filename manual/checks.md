@@ -1,6 +1,6 @@
 # The check registry
 
-All 107 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
+All 109 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
 
 ## Reading the labels
 
@@ -22,7 +22,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `internal-links-to-redirects` | D | Internal links that travel through a redirect | Repoint to the final URL - saves crawl budget and equity. |
 | `meta-nofollow` | D | Pages with meta robots nofollow | Remove it unless you mean to drop all link equity from the page. |
 | `deep-pages` | D | Pages 4+ body-link clicks from the homepage | Add in-content links from higher-level pages. |
-| `backlinks-to-404` | D | External backlinks hitting a dead page (needs `pull_backlinks`) | 301 the URL to its best live equivalent - that equity is already earned. |
+| `backlinks-to-404` | D | External backlinks hitting a dead page (needs `pull_backlinks`). Status comes from the latest crawl first (backlinked URLs are seeded); a URL that now redirects to a live page isn't flagged | 301 the URL to its best live equivalent - that equity is already earned. |
 | `orphan-no-links` | D | Indexable pages with zero inlinks and no backlinks | Add internal links; the page currently depends on the sitemap alone. |
 | `ipr-bleed-by-status` | D | Internal PageRank flowing into non-200 URLs | Repoint or 301 the links - high-authority pages are wasting equity on dead targets. |
 | `faceted-spider-trap` | D+G | Indexable multi-parameter filter URLs earning zero search traffic | noindex, disallow or canonicalise them - they burn crawl budget for nothing. |
@@ -89,7 +89,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `content-bloat` | D+N (0.6) | Very long unbroken sections | Split into focused, headed passages - AI grounding has sharp diminishing returns past a certain length, and density beats length. |
 | `ai-slop-signals` | N (0.5) | Copy tripping statistical tells of generic AI text (stock filler, uniform sentence lengths, identical section openers) | Rewrite the flagged sections with specifics only you can supply - and verify by reading first; competent human writing can trip these tells. |
 
-## Structured data (12)
+## Structured data (13)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -102,7 +102,8 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `breadcrumb-schema-inconsistent` | D | Breadcrumb schema on most of the site but missing from some pages | Add BreadcrumbList to the stragglers. |
 | `rich-result-issues` | D+G | Rich-result issues Google itself reports via URL Inspection | Fix the listed issues - this is Google's own validation, not ours, so it's authoritative. |
 | `article-date-illogical` | D | Article dateModified earlier than datePublished | Fix the dates - an impossible pair undermines trust in the markup. |
-| `article-no-author` | D | Article schema with no author | Add a Person author and a visible byline - AI-search guidance rewards a demonstrable first-hand point of view. |
+| `article-no-author` | D | Article schema where no Article node names an author (an `@id` reference to a named Person counts) | Add a Person author and a visible byline - AI-search guidance rewards a demonstrable first-hand point of view. |
+| `duplicate-article-entities` | D (0.9) | More than one Article entity on one URL, typically an SEO plugin's graph plus a theme- or block-embedded Article | Emit one Article per page: remove the second source or merge it into the graph with the same `@id`. |
 | `discover-generic-article-type` | D+N (0.5) | Article schema using only the generic `Article` type where a more specific one fits | Use `NewsArticle` / `LiveBlogPosting` / `ProfilePage` where it genuinely applies - it unlocks richer Discover/News treatment. |
 | `discover-image-schema` | D | Article schema that declares no `image` (Discover cards need a large image) | Add an `image` (≥1200px wide, ideally 16:9 / 4:3 / 1:1 crops), matching the main visible image. |
 
@@ -125,7 +126,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `high-yield-cwv-fail` | D+G | Pages earning real clicks while failing lab Core Web Vitals (needs `page_lighthouse`) | Prioritise CWV work here - this is where engineering effort has measurable ROI. |
 | `discover-slow-response` | D+N (0.5) | Article-template pages whose fetch wall-time exceeds ~600ms (a proxy, not a measured TTFB) | Aim for server response under 600ms - ideal under 200ms - since Discover favours freshly-crawlable content; confirm with a real TTFB before prioritising. |
 
-## Accessibility (6)
+## Accessibility (7)
 
 A deterministic subset of the [axe-core](https://github.com/dequelabs/axe-core) rules - the ones decidable from the raw HTML, no render needed (the full rule set rides on `render_pages`). These sit alongside the on-page `image-alt`, `heading-hierarchy` and `missing-lang` checks.
 
@@ -137,6 +138,7 @@ A deterministic subset of the [axe-core](https://github.com/dequelabs/axe-core) 
 | `a11y-viewport-zoom-disabled` | D | `<meta viewport>` blocking pinch-zoom (`user-scalable=no` / `maximum-scale<2`) | Remove the zoom restriction - a WCAG 1.4.4 failure (axe meta-viewport). |
 | `a11y-duplicate-id` | D | `id` values used more than once | Make every id unique - duplicates break label/for, aria-labelledby and in-page anchors (axe duplicate-id). |
 | `a11y-positive-tabindex` | D | Elements with `tabindex` greater than 0 | Use `tabindex="0"`/`-1` and order the DOM instead - positive values break keyboard focus order (axe tabindex). |
+| `image-empty-alt-content` | N (0.5) | Images with `alt=""` inside the main content (main/article/figure, outside nav/header/footer) | Give content images descriptive alt text; keep `alt=""` only for genuinely decorative ones. |
 
 ## The merged checks (23)
 

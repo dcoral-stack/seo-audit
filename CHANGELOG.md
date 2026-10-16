@@ -4,6 +4,33 @@ All notable changes to **@houtini/seo-audit-console**. The format loosely follow
 [Keep a Changelog](https://keepachangelog.com); the check registry is the source of truth
 (`list_checks` always returns the live list).
 
+## [Unreleased]
+
+Fixes and features from the 0.13.1 code review and the first field test (issues #10-#34, except the Docker gateway item in #9). 107 → 109 checks.
+
+### Added
+- **`probe_urls`** (#30): fetch any URLs on your own host - including ones the model generates to test a hypothesis - and get status, the full redirect chain, canonical, meta robots / X-Robots-Tag, title, a content fingerprint and cache headers. `variantsOf` generates case, slash, `index.php`, unknown-param, scheme and www/apex variants of a URL and judges whether the site normalises each (one redirect), contains it (200 + canonical: indexing safe, but crawled and usually cache-bypassing) or serves a duplicate. Max 50 URLs a call inside a 45-second budget; `persist:true` saves to a `probes` table.
+- **`triage_404s`** (#31): crawled 404s get discovery sources, clicks, impressions, last-seen date, backlinks and the closest live URL by slug similarity, bucketed redirect / review / ignore, with a paste-ready 301 map.
+- **Integrity check and index repair** (#34): `data_storage {siteUrl, check:true}` runs SQLite's full `integrity_check` (or `check:"quick"`) as a background job in a worker thread and names damaged indexes; `prune {action:"repair"}` with `confirm:true` backs up the file, REINDEXes only the damaged indexes and re-checks. A failed job whose error is SQLite corruption now points at this.
+- **`duplicate-article-entities`** check (#28): more than one Article entity on one URL, e.g. an SEO plugin's graph plus a theme-embedded Article.
+- **`image-empty-alt-content`** judgement check (#21): `alt=""` images inside the main content, which are often content images whose alt was never written.
+- New columns: `pages.images_empty_alt` / `images_empty_alt_content` (#21, #23), `links.href_form` - absolute / protocol-relative / root-relative / relative as written (#26). New tables: `redirect_sources` (every crawled URL that redirected) and `probes`, both queryable via `query_data`.
+
+### Fixed
+- **`backlinks-to-404` raised false crit findings** (#32): it used the status stored at backlink-pull time. It now takes status from the latest crawl first, judges a redirected URL by where it lands, and only falls back to the pull status (labelled with its age) when the crawl never reached the URL. The crawler seeds the top 200 backlinked URLs and records every redirect source, even when the target page was already crawled.
+- **`article-no-author`** fired when one of several Article nodes lacked an author, and didn't follow an `author` given as an `@id` reference (#28). It now fires only when no Article node names an author. Article checks also no longer skip `BlogPosting`-only pages, which a `LIKE '%Article%'` prefilter silently excluded.
+- **Sitemap discovery missed children of an undeclared `sitemap_index.xml`** (#25): the conventional locations are now probed on every crawl, not only when robots.txt lists none; the crawl result names undeclared sitemaps.
+- **`data_storage.lastCrawl` counted crawls that never completed** (#20, #29): it's now the last completed crawl, and an incomplete latest run is listed separately.
+- **Incremental GSC sync now replaces the lag days** (#22): the last 4 stored days are re-pulled and replaced inside the first batch's transaction, so a partial final day, or rows Google later drops, are corrected.
+- **Job tools** (#19, #27, #33): job-starting tools return their JSON in the text reply too; `check_sync_status` / `check_crawl_status` are one handler whose text includes a failed job's reason and latest progress; failures are logged to stderr; `sync_gsc` labels the window it echoes as requested rather than fetched.
+- **`og:image`, URL-valued `og:` / `twitter:` tags and `rel=amphtml` now honour `<base href>`** (#12), completing the 0.13.1 fix.
+- **Missing meta description stored as NULL** rather than 0, so it's distinguishable from an empty one (#24).
+- `list_checks` / `run_audit` accept the `accessibility` category (#10); an empty `SAC_DATA_DIR` no longer resolves databases against the process cwd (#11); `recon_todos` remeasure fails loudly without DataForSEO (#13); `recon_targets` with `urls: []` no longer reports 0 pages (#14); `competitors_domain` uses the shared host cleaner (#15); `news_discovery` reports `cached` only when a source was cached (#16); the DataForSEO cache default is 20 days everywhere (#17); the mcpb manifest's check count and license are corrected and now synced from package.json at pack time (#18).
+
+### Notes
+- Re-crawl to populate the new columns and `redirect_sources`; existing rows keep working (new columns are NULL until then).
+- New regression probes: `probe:jobs`, `probe:crawl-local` (end-to-end crawl against a local fixture server), `probe:checks-v2`, `probe:integrity`, `probe:probeurls`, `probe:triage404`.
+
 ## [0.13.1] — 2026-10-16
 
 ### Fixed

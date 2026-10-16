@@ -35,8 +35,17 @@ Ingests the DataForSEO monthly rank distribution and estimated traffic value int
 > Track ranks for mysite.com in the UK
 
 ### `check_sync_status` / `check_crawl_status`
-Poll a job by id, or list recent jobs. Sync, inspection, backlinks and entity jobs report through `check_sync_status`; crawls through `check_crawl_status`.
+Poll any job by id, or list recent jobs - the two names are the same tool. A failed job's reason is in the reply text, with a repair pointer when it's database corruption. Every job-starting tool also returns its `jobId` as JSON in the text, so clients that only read text can poll it.
 > Check the crawl status
+
+### `probe_urls`
+Fetch any URLs on your own host, including ones you make up to test a hypothesis, and see the status, the full redirect chain, canonical, robots directives, title, a content fingerprint (same hash, same page) and cache headers. `variantsOf` generates uppercase, title-case, slash, `index.php`, unknown-parameter, `http` and www/apex variants of a URL and says for each whether the site normalises it with one redirect, contains it with a canonical (safe for indexing, but every variant is crawled and usually skips the page cache), or serves a duplicate. Up to 50 URLs a call; `persist:true` keeps the results in a `probes` table for `query_data`.
+> Does mysite.com serve the same page at different capitalisations?
+> Probe these five old URLs and show me where they redirect
+
+### `triage_404s`
+Turns the crawl's 404 list into a short redirect map. Each dead URL gets where it was found (internal link, sitemap, GSC, backlink), its clicks, impressions and last-seen date, its backlinks, and the closest live URL by slug similarity. Then it's bucketed: **redirect** (real value and a confident match), **ignore** (mangled or stray URLs with no value) or **review** (everything else, such as 404s you still link to internally). The reply ends with a paste-ready from/to 301 map. Check a target with `probe_urls` before shipping it.
+> Triage the 404s on mysite.com
 
 ## The audit
 
@@ -51,7 +60,7 @@ One named check, with every affected URL and its full evidence. The drill-down a
 > Run the keyword-cannibalisation check on mysite.com with evidence
 
 ### `list_checks`
-The whole check catalogue - all 99, with categories and labels. The same list, annotated, is [checks.md](checks.md).
+The whole check catalogue - all 109, with categories and labels. The same list, annotated, is [checks.md](checks.md).
 > What does the audit check for?
 
 ### `list_templates`
@@ -253,7 +262,9 @@ Reports where the per-property databases live, or sets a new location (persisted
 > Where is my audit data stored?
 
 ### `data_storage`
-The data-hygiene view: every property database with its size, key row counts (GSC rows, pages, links, snapshots, findings) and last sync/crawl dates, plus each `link_intersect` prospect set with its capture date (flagged once it's past 20 days - rivals keep earning links, so an old prospect list is a misleading one), the per-service caches (DataForSEO, Majestic, Firecrawl, Supadata, Wikidata) and the reports folder. When something's grown too big, `prune` offers three actions per property: `vacuum` (compact the file, reports bytes reclaimed), `clear-crawl-history` (drop snapshots and audit runs older than the five most recent, then vacuum), and `delete-property` (remove the database entirely). The destructive two require `confirm:true` and refuse loudly without it, naming exactly what would go; nothing runs while a sync or crawl job is in flight.
+The data-hygiene view: every property database with its size, key row counts (GSC rows, pages, links, snapshots, findings) and last sync/crawl dates, plus each `link_intersect` prospect set with its capture date (flagged once it's past 20 days - rivals keep earning links, so an old prospect list is a misleading one), the per-service caches (DataForSEO, Majestic, Firecrawl, Supadata, Wikidata) and the reports folder. When something's grown too big, `prune` offers three actions per property: `vacuum` (compact the file, reports bytes reclaimed), `clear-crawl-history` (drop snapshots and audit runs older than the five most recent, then vacuum), and `delete-property` (remove the database entirely). The destructive two require `confirm:true` and refuse loudly without it, naming exactly what would go; nothing runs while a sync or crawl job is in flight. `lastCrawl` is the last *completed* crawl; a run that failed or died is listed separately.
+
+**Integrity and repair.** If a sync keeps failing with "database disk image is malformed", run `data_storage` with `check:true` for the property. It runs SQLite's full `integrity_check` as a background job (minutes on a multi-GB file; `check:"quick"` is faster but misses damaged index rows) and names any damaged index. `prune` with `action:"repair"` and `confirm:true` then backs up the file, rebuilds only the damaged indexes and re-checks. Damage in table data rather than an index is reported, never papered over.
 > How much disk is my audit data using?
 > Vacuum the mysite.com database
 > Clear the old crawl history for mysite.com

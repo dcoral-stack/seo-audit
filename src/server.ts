@@ -230,6 +230,8 @@ A technical-SEO audit that fuses **Search Console + a site crawl + DataForSEO**,
 - **run_audit** — score all checks; returns a prioritised markdown report. _"Run an SEO audit on sc-domain:example.com"_ · \`scope:full\`, \`categories\`, \`includeJudgement:true\`.
 - **query_audit** — one named check with evidence (\`columns\`/\`offset\` for big sets). _"Show striking-distance for example.com"_
 - **query_data** — read-only queries over the raw tables; aggregates in the database (counts/percentages/sums), answers not rows. _"How do status codes break down on example.com?"_
+- **probe_urls** — fetch any URLs on the site live (status, redirect chain, canonical, cache headers); \`variantsOf\` tests case/slash/param/host variants. _"Does example.com serve the same page at /Page/ and /page/?"_
+- **triage_404s** — crawled 404s bucketed redirect / review / ignore, with the closest live URL and a 301 map. _"Triage the 404s on example.com"_
 - **list_checks** — _"What does the audit check for?"_
 
 ## 3. Fix (the moat)
@@ -262,7 +264,7 @@ A technical-SEO audit that fuses **Search Console + a site crawl + DataForSEO**,
 
 ## 7. Utilities
 - **data_location** — where DBs are stored (set with a path). · **normalize_url** — the join key for a URL.
-- **data_storage** — per-property disk usage + row counts; prune (vacuum / clear-crawl-history / delete-property, destructive ones need \`confirm:true\`). _"How much disk is my audit data using?"_
+- **data_storage** — per-property disk usage + row counts; prune (vacuum / clear-crawl-history / delete-property / repair, destructive ones and repair need \`confirm:true\`); \`check:true\` runs an integrity check. _"How much disk is my audit data using?"_
 
 _Tip: first time on a property → \`refresh_property\` then \`run_audit\`._
 _Composing your own analysis? Call \`composition_cookbook\` first — the data-surface map (grain + join keys per source) and worked multi-source recipes._`;
