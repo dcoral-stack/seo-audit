@@ -62,6 +62,7 @@ import { fetchGoogleNews } from './core/googleNews.js';
 import { WikidataClient } from './core/WikidataClient.js';
 import { Entities } from './core/Entities.js';
 import { JobManager, corruptionHint, type Job } from './core/JobManager.js';
+import { checkIntegrity, repairIndexes, propertyDbFile } from './core/integrity.js';
 import { gscFreshness } from './core/gscFreshness.js';
 import { clusterKeywordList } from './audit/keywordList.js';
 import type { FetchOptions } from './core/types.js';
@@ -414,20 +415,42 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'data_storage',
     {
       title: 'Data storage summary + pruning',
-      description: 'Data hygiene. No args: list every per-property database in the data dir — size (incl. WAL), key row counts (search_analytics, pages, links, page_snapshots, findings), last sync and last crawl, and any link_intersect prospect set with its capture date (flagged when it is going stale) — plus the DataForSEO/Majestic caches and reports folder sizes. Optional siteUrl narrows to one property. Pruning via `prune:{siteUrl, action}`: "vacuum" (compact the DB, reports bytes reclaimed), "clear-crawl-history" (delete page_snapshots + audit runs/findings older than the 5 most recent, then vacuum), "delete-property" (remove the DB files entirely). Destructive actions (clear-crawl-history, delete-property) REQUIRE confirm:true and refuse loudly without it, naming what would be deleted. Refuses to prune while any job is running.',
+      description: 'Data hygiene. No args: list every per-property database in the data dir — size (incl. WAL), key row counts (search_analytics, pages, links, page_snapshots, findings), last sync and last crawl, and any link_intersect prospect set with its capture date (flagged when it is going stale) — plus the DataForSEO/Majestic caches and reports folder sizes. Optional siteUrl narrows to one property. Pruning via `prune:{siteUrl, action}`: "vacuum" (compact the DB, reports bytes reclaimed), "clear-crawl-history" (delete page_snapshots + audit runs/findings older than the 5 most recent, then vacuum), "delete-property" (remove the DB files entirely). Destructive actions (clear-crawl-history, delete-property) REQUIRE confirm:true and refuse loudly without it, naming what would be deleted. Refuses to prune while any job is running. Integrity: `check:true` (with siteUrl) starts an async job running SQLite\'s full integrity_check (minutes on a multi-GB DB; check:"quick" is faster but misses missing-index-row damage) and reports damaged indexes. `prune:{siteUrl, action:"repair"}` with confirm:true backs up the DB file, REINDEXes the damaged indexes and re-checks (async job) — the fix for a sync failing with "database disk image is malformed".',
       inputSchema: {
         siteUrl: z.string().optional(),
         prune: z.object({
           siteUrl: z.string(),
-          action: z.enum(['vacuum', 'clear-crawl-history', 'delete-property']),
+          action: z.enum(['vacuum', 'clear-crawl-history', 'delete-property', 'repair']),
         }).optional(),
         confirm: z.boolean().optional(),
+        check: z.union([z.boolean(), z.enum(['quick', 'full'])]).optional().describe('Run an integrity check on siteUrl\'s DB (async job). true = full integrity_check.'),
       },
     },
-    async ({ siteUrl, prune, confirm }) => {
+    async ({ siteUrl, prune, confirm, check }) => {
+      if (check) {
+        if (!siteUrl) throw new Error('check needs a siteUrl.');
+        const mode = check === 'quick' ? 'quick' : 'full';
+        propertyDbFile(dataDir(), siteUrl); // fail fast on an unknown property
+        const jobId = jobs.start('integrity', () => checkIntegrity(dataDir(), siteUrl, mode));
+        return jobStarted({ jobId, status: 'running', siteUrl, mode },
+          `Integrity check (${mode === 'full' ? 'full integrity_check — can take minutes on a large DB' : 'quick_check — misses missing-index-row damage'}) started for ${siteUrl}. Poll check_sync_status; the result lists damaged indexes. If any are reported, run data_storage prune:{siteUrl, action:"repair"} confirm:true.`);
+      }
+      if (prune?.action === 'repair') {
+        const running = jobs.list().filter(j => j.state === 'running');
+        if (running.length) {
+          return { content: [{ type: 'text', text: `Refusing to repair while ${running.length} job(s) are running (${running.map(j => `${j.type}#${j.id}`).join(', ')}). Wait for them to finish and retry.` }], structuredContent: { ok: false, refused: 'jobs_running' } };
+        }
+        const dbFile = propertyDbFile(dataDir(), prune.siteUrl);
+        if (!confirm) {
+          const bytes = storageSummary(dataDir(), prune.siteUrl).properties[0]?.bytes ?? 0;
+          return { content: [{ type: 'text', text: `REFUSED: repair needs confirm:true. It will run a full integrity_check, copy ${dbFile} to a timestamped .bak file alongside it (${fmtBytes(bytes)} of extra disk), REINDEX only the damaged indexes, then re-check. Table data is never modified; damage that isn't in an index is reported, not "fixed".` }], structuredContent: { ok: false, refused: 'confirm_required', dbFile, bytes } };
+        }
+        const jobId = jobs.start('repair', () => repairIndexes(dataDir(), prune.siteUrl));
+        return jobStarted({ jobId, status: 'running', siteUrl: prune.siteUrl }, `Repair started for ${prune.siteUrl}: integrity check, backup, REINDEX of damaged indexes, re-check. Poll check_sync_status.`);
+      }
       if (prune) {
         const running = jobs.list().filter(j => j.state === 'running').map(j => ({ id: j.id, type: j.type }));
-        const r = pruneProperty(dataDir(), prune.siteUrl, prune.action, confirm === true, running);
+        const r = pruneProperty(dataDir(), prune.siteUrl, prune.action as 'vacuum' | 'clear-crawl-history' | 'delete-property', confirm === true, running);
         if (!r.ok) {
           return { content: [{ type: 'text', text: r.refused ?? `Could not ${prune.action}.` }], structuredContent: r as unknown as Record<string, unknown> };
         }
@@ -468,7 +491,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         `${liLines ? `Link-intersect prospects (may be stale — competitors keep earning links):\n${liLines}\n\n` : ''}` +
         `${cacheLines ? `Caches:\n${cacheLines}\n` : ''}Reports folder: ${fmtBytes(s.reportsBytes)}` +
         `${s.other.length ? `\nOther .db files: ${s.other.map(o => `${o.file} (${fmtBytes(o.bytes)})`).join(', ')}` : ''}\n\n` +
-        `Prune with data_storage prune:{siteUrl, action:"vacuum" | "clear-crawl-history" | "delete-property"} (destructive actions need confirm:true).`;
+        `Prune with data_storage prune:{siteUrl, action:"vacuum" | "clear-crawl-history" | "delete-property" | "repair"} (destructive actions and repair need confirm:true). Check integrity with data_storage {siteUrl, check:true}.`;
       return { content: [{ type: 'text', text: md }], structuredContent: s as unknown as Record<string, unknown> };
     },
   );
