@@ -1,6 +1,6 @@
 # SEO Recon: why a page is losing, and what to do about it
 
-Most audit tools tell you *what* is wrong on a page. Recon answers a harder question: **why is this page losing, and is that even a content problem?** It takes your declining pages, pulls the live Google SERP for each, reads whether the **AI Overview** cites you, checks what your own crawl says about the URL, and returns a verdict with the honest bit attached - because *"you rank but the AI Overview won't quote you"* is a data-accuracy problem, not a reason to rewrite the page.
+Most audit tools tell you *what* is wrong on a page. Recon answers a harder question: **why is this page losing, and is that even a content problem?** It takes your striking-distance pages, pulls the live Google SERP for each, reads whether the **AI Overview** cites you, checks what your own crawl says about the URL, and returns a verdict with the honest bit attached - because *"you rank but the AI Overview won't quote you"* is a data-accuracy problem, not a reason to rewrite the page.
 
 It's the most data-intensive thing this MCP does, so it's on-demand and it costs a little (live SERP calls). You point it at a property, it does the legwork, and you get back a prioritised to-do board you can annotate and re-measure after you ship the fix.
 
