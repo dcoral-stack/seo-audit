@@ -9,9 +9,10 @@
  * thresholds come from Google's documentation or are stated in the check. Missing data means no
  * finding, never a zero. Appended to CHECKS in checks.ts.
  */
-import type { CheckContext, CheckDef } from './checks.js';
+import type { CheckContext, CheckDef, RawFinding } from './checks.js';
 import { latestRobotsTxt } from '../core/robotsStore.js';
-import { robotsVerdict } from '../core/robots.js';
+import { robotsVerdict, rulesFromText } from '../core/robots.js';
+import { AI_BOTS } from '../core/aiBots.js';
 
 const rows = (c: CheckContext, sql: string, ...args: unknown[]): any[] => c.db.prepare(sql).all(...args);
 const one = (c: CheckContext, sql: string, ...args: unknown[]): any => c.db.prepare(sql).get(...args);
@@ -72,6 +73,58 @@ function indexingTriggers(c: CheckContext): Record<string, unknown>[] {
   return triggers;
 }
 
+// ── Item 2: snippet-restricted ───────────────────────────────────────────────────────────────
+// Robots directive names that take a value after a colon (so "max-snippet: 0" is not a UA prefix).
+const VALUED = new Set(['max-snippet', 'max-image-preview', 'max-video-preview', 'unavailable_after']);
+/**
+ * The snippet restrictions that apply to Google in a meta robots value and an X-Robots-Tag header.
+ * X-Robots-Tag may scope directives to a crawler ("otherbot: nosnippet"); only unscoped or
+ * googlebot-scoped ones count. Returns the restricting directives with where each was found.
+ */
+export function snippetRestrictions(metaRobots: string | null, xRobotsTag: string | null): { directive: string; source: 'meta' | 'header' }[] {
+  const out: { directive: string; source: 'meta' | 'header' }[] = [];
+  const scan = (value: string, source: 'meta' | 'header'): void => {
+    let scope: string | null = null; // null = all crawlers
+    for (const raw of value.toLowerCase().split(',')) {
+      let tok = raw.trim();
+      const m = /^([a-z0-9_-]+)\s*:\s*(.*)$/.exec(tok);
+      if (m && !VALUED.has(m[1]) && source === 'header') { scope = m[1]; tok = m[2].trim(); }
+      if (scope && scope !== 'googlebot') continue;
+      if (tok === 'nosnippet') out.push({ directive: 'nosnippet', source });
+      else if (/^max-snippet\s*:\s*0$/.test(tok)) out.push({ directive: 'max-snippet:0', source });
+    }
+  };
+  if (metaRobots) scan(metaRobots, 'meta');
+  if (xRobotsTag) scan(xRobotsTag, 'header');
+  return out;
+}
+
+// ── Item 2: ai-search-bot-blocked ────────────────────────────────────────────────────────────
+/** How many of the top pages by GSC clicks are tested per search bot for a partial block. */
+export const AI_BOT_TOP_PAGES = 50;
+
+function aiSearchBotFindings(c: CheckContext): RawFinding[] {
+  const rb = storedRobots(c);
+  if (!rb) return [];
+  // Top pages by clicks (28 finalised days) - a block on these costs the most citations.
+  const top: string[] = c.gscMaxDate
+    ? rows(c, `SELECT page_key FROM search_analytics WHERE page_key IS NOT NULL AND date > date(?, '-28 days') AND date <= ? GROUP BY page_key HAVING SUM(clicks) > 0 ORDER BY SUM(clicks) DESC LIMIT ?`, c.gscMaxDate, c.gscMaxDate, AI_BOT_TOP_PAGES).map(r => r.page_key)
+    : [];
+  const pathOf = (u: string): string | null => { try { const x = new URL(u); return x.pathname + x.search; } catch { return null; } };
+  const blocked: Record<string, unknown>[] = [];
+  for (const b of AI_BOTS.filter(x => x.group === 'search')) {
+    const v = robotsVerdict(rb.body, b.token);
+    if (!v.allowed) { blocked.push({ bot: b.token, operator: b.operator, use: b.note, scope: 'site', group: v.named ? b.token : '*' }); continue; }
+    const rules = rulesFromText(rb.body, b.token);
+    const paths = top.map(pathOf).filter((p): p is string => !!p && !rules.isAllowed(p));
+    if (paths.length) blocked.push({ bot: b.token, operator: b.operator, use: b.note, scope: 'pages', group: v.named ? b.token : '*', topPagesBlocked: paths.length, of: top.length, sample: paths.slice(0, 10) });
+  }
+  if (!blocked.length) return [];
+  // Training bots are reported for context only: blocking them is a choice, not an issue.
+  const trainingBlocked = AI_BOTS.filter(x => x.group === 'training' && !robotsVerdict(rb.body, x.token).allowed).map(x => x.token);
+  return [{ urlKey: null, evidence: { robotsTxt: `${rb.origin}/robots.txt`, fetchedAt: rb.fetchedAt, searchBotsBlocked: blocked, trainingBotsBlocked: trainingBlocked, note: 'search/citation bots only; training-bot blocks are listed for context and are not an issue' } }];
+}
+
 // ── The registry entries ─────────────────────────────────────────────────────────────────────
 export const SIGNAL_CHECKS: CheckDef[] = [
   {
@@ -82,5 +135,22 @@ export const SIGNAL_CHECKS: CheckDef[] = [
       const triggers = indexingTriggers(c);
       return triggers.length ? [{ urlKey: null, evidence: { triggers, note: 'one site-level finding; each trigger cites the stored rows it came from' } }] : [];
     },
+  },
+  {
+    id: 'snippet-restricted', category: 'indexation', severity: 'high', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'per-page',
+    title: 'Snippets blocked (nosnippet / max-snippet:0)',
+    fix: 'This indexable page tells Google to show no text snippet (nosnippet, or max-snippet:0) in its robots meta tag or X-Robots-Tag header. Google documents that the same directives also keep the page\'s content out of AI Overviews and AI Mode, so it is listed without a description and cannot be quoted. Remove the directive (or set max-snippet:-1), unless there is a legal reason to restrict it; to hide one passage only, wrap it in data-nosnippet instead.',
+    run: (c) => rows(c, `SELECT url_key urlKey, robots, x_robots_tag xrt FROM pages WHERE status_code=200 AND indexable=1
+        AND (LOWER(robots) LIKE '%snippet%' OR LOWER(x_robots_tag) LIKE '%snippet%')`)
+      .flatMap(r => {
+        const hits = snippetRestrictions(r.robots, r.xrt);
+        return hits.length ? [{ urlKey: r.urlKey, evidence: { directives: hits, metaRobots: r.robots ?? null, xRobotsTag: r.xrt ?? null } }] : [];
+      }),
+  },
+  {
+    id: 'ai-search-bot-blocked', category: 'crawlability', severity: 'high', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'global',
+    title: 'AI search bots blocked in robots.txt',
+    fix: 'robots.txt stops one or more AI SEARCH crawlers (the ones that fetch pages to cite in answers: OAI-SearchBot and ChatGPT-User for ChatGPT, Claude-SearchBot and Claude-User for Claude, PerplexityBot for Perplexity) from the site or from your top pages, so those assistants cannot cite you. Training crawlers (GPTBot, ClaudeBot, CCBot, Google-Extended...) are a separate choice and blocking them does not affect citations. To be cited while still opting out of training, allow the search bots and keep the training-bot Disallow lines.',
+    run: aiSearchBotFindings,
   },
 ];
