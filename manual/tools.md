@@ -46,7 +46,7 @@ Fetch any URLs on your own host, including ones you make up to test a hypothesis
 > Probe these five old URLs and show me where they redirect
 
 ### `triage_404s`
-Turns the crawl's 404 list into a short redirect map. Each dead URL gets where it was found (internal link, sitemap, GSC, backlink), its clicks, impressions and last-seen date, its backlinks, and the closest live URL by slug similarity. Then it's bucketed: **redirect** (real value and a confident match), **ignore** (mangled or stray URLs with no value) or **review** (everything else, such as 404s you still link to internally). The reply ends with a paste-ready from/to 301 map. Check a target with `probe_urls` before shipping it.
+Turns the crawl's 404 list into a short redirect map. Each dead URL gets where it was found (internal link, sitemap, GSC, backlink), its clicks, impressions and last-seen date, its backlinks, and the closest live URL by slug similarity. Then it's bucketed: **redirect** (real value and a confident match), **ignore** (mangled or stray URLs with no value) or **review** (everything else, such as 404s you still link to internally). Before bucketing, the redirect and review candidates are checked live: a URL that already redirects to a live page is listed as **already redirected** with its real destination, and one that answers 200 today as **live now**, so a stale crawl never produces a wrong 301. Slug matching weights rare tokens (a brand, a model) over ones the whole site shares (buyers-guide, review), and archive targets like `/tag/` are discounted and flagged. The reply ends with a paste-ready from/to 301 map. Check a target with `probe_urls` before shipping it.
 > Triage the 404s on mysite.com
 
 ## The audit

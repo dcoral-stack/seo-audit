@@ -6,6 +6,7 @@
  * closest live URL by slug similarity, and buckets it: redirect / review / ignore.
  */
 import type Database from 'better-sqlite3';
+import { probeUrls, type ProbeResult } from './probeUrls.js';
 
 export interface Triage404Row {
   urlKey: string;
@@ -20,12 +21,17 @@ export interface Triage404Row {
   backlinks: number;
   referringDomains: number;
   bestMatch: string | null;          // closest live, indexable URL
-  score: number;                     // 0..1 slug similarity
-  bucket: 'redirect' | 'review' | 'ignore';
+  score: number;                     // 0..1 slug similarity (token weights discount shared suffixes like buyers-guide)
+  weakTarget?: boolean;              // bestMatch is a /tag/, /category/, /author/ or paginated archive
+  bucket: 'redirect' | 'review' | 'ignore' | 'already-redirected' | 'live-now';
   reason: string;
+  /** From verifyLive(): what the URL does right now. */
+  live?: { status: number | null; finalUrl: string | null; chain: number[] };
 }
 
 export interface TriageOptions { minImpressions?: number; minScore?: number; limit?: number }
+
+const WEAK_TARGET = /\/(tag|tags|category|categories|author|page)\/|\/page\/\d+\/?$/i;
 
 const tokens = (path: string): string[] => path.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 0);
 const pathOf = (u: string): string => { try { return decodeURIComponent(new URL(u).pathname).toLowerCase(); } catch { return u.toLowerCase(); } };
@@ -43,13 +49,33 @@ function levenshtein(a: string, b: string): number {
   return prev[b.length];
 }
 
-/** Slug similarity: the better of token Dice overlap (reordered/extra words) and edit similarity (typos).
- *  Dice rather than Jaccard: a renamed post that gained or lost a couple of words keeps a fair score. */
-export function slugSimilarity(a: string, b: string): number {
+/** Token weights: how many live URLs each token appears in. Built once per site by tokenWeights(). */
+export type TokenWeights = { df: Map<string, number>; n: number };
+export function tokenWeights(liveUrls: string[]): TokenWeights {
+  const df = new Map<string, number>();
+  for (const u of liveUrls) for (const t of new Set(tokens(pathOf(u)))) df.set(t, (df.get(t) ?? 0) + 1);
+  return { df, n: liveUrls.length };
+}
+// A token shared by many live URLs (buyers, guide, review, settings) says little about WHICH page a
+// slug meant; a token on one or two pages (a brand, a model) says a lot. Smoothed IDF, floored so a
+// token common to the whole site still counts a little. (#40)
+const weightOf = (t: string, w?: TokenWeights): number => {
+  if (!w || !w.n) return 1;
+  const df = w.df.get(t) ?? 0;
+  // Normalised so a token on one live page weighs 1 and a token on every page weighs the floor.
+  const denom = Math.log((1 + w.n) / 2) || 1;
+  return Math.min(1, Math.max(0.15, Math.log((1 + w.n) / (1 + df)) / denom));
+};
+
+/** Slug similarity: the better of weighted token overlap (reordered/extra words, rare tokens count
+ *  more) and edit similarity (typos). Dice form: a renamed post that gained or lost a word keeps a fair score. */
+export function slugSimilarity(a: string, b: string, w?: TokenWeights): number {
   const pa = pathOf(a).replace(/\/+$/, ''), pb = pathOf(b).replace(/\/+$/, '');
   const ta = new Set(tokens(pa)), tb = new Set(tokens(pb));
-  const inter = [...ta].filter(t => tb.has(t)).length;
-  const dice = ta.size + tb.size ? (2 * inter) / (ta.size + tb.size) : 0;
+  let inter = 0, sa = 0, sb = 0;
+  for (const t of ta) { const x = weightOf(t, w); sa += x; if (tb.has(t)) inter += x; }
+  for (const t of tb) sb += weightOf(t, w);
+  const dice = sa + sb ? (2 * inter) / (sa + sb) : 0;
   const lev = 1 - levenshtein(pa, pb) / Math.max(pa.length, pb.length, 1);
   return Math.max(dice, lev);
 }
@@ -64,6 +90,7 @@ export function triage404s(db: Database.Database, opts: TriageOptions = {}): Tri
   const dead = db.prepare(`SELECT url_key, url, status_code FROM pages WHERE is_internal=1 AND status_code IN (404, 410)`).all() as { url_key: string; url: string; status_code: number }[];
   if (!dead.length) return [];
   const live = db.prepare(`SELECT url FROM pages WHERE status_code=200 AND indexable=1`).all() as { url: string }[];
+  const weights = tokenWeights(live.map(p => p.url));
 
   // Inverted index on meaningful tokens (≥3 chars) so only plausible candidates get edit distance.
   const byToken = new Map<string, number[]>();
@@ -92,10 +119,12 @@ export function triage404s(db: Database.Database, opts: TriageOptions = {}): Tri
     for (const t of new Set(tokens(pathOf(d.url)))) if (t.length >= 3) for (const i of byToken.get(t) ?? []) counts.set(i, (counts.get(i) ?? 0) + 1);
     let bestMatch: string | null = null, score = 0;
     for (const [i] of [...counts].sort((x, y) => y[1] - x[1]).slice(0, 300)) {
-      const s = slugSimilarity(d.url, live[i].url);
+      // Archives (/tag/, /category/, /author/, paginated) are weak 301 targets: thin, often noindexed.
+      const s = slugSimilarity(d.url, live[i].url, weights) * (WEAK_TARGET.test(pathOf(live[i].url)) ? 0.75 : 1);
       if (s > score) { score = s; bestMatch = live[i].url; }
     }
     score = Math.round(score * 100) / 100;
+    const weakTarget = !!bestMatch && WEAK_TARGET.test(pathOf(bestMatch));
 
     const sources = [internalLinks ? 'internal-link' : '', inSitemap ? 'sitemap' : '', g.i > 0 ? 'gsc' : '', backlinks > 0 ? 'backlink' : ''].filter(Boolean);
     const valuable = g.c > 0 || g.i >= minImpressions || referringDomains > 0;
@@ -103,7 +132,7 @@ export function triage404s(db: Database.Database, opts: TriageOptions = {}): Tri
     let bucket: Triage404Row['bucket'], reason: string;
     if (valuable && bestMatch && score >= minScore) {
       bucket = 'redirect';
-      reason = `${[g.c ? `${g.c} clicks` : '', g.i ? `${g.i} impressions` : '', referringDomains ? `${referringDomains} referring domains` : ''].filter(Boolean).join(', ')}; confident match (${score})`;
+      reason = `${[g.c ? `${g.c} clicks` : '', g.i ? `${g.i} impressions` : '', referringDomains ? `${referringDomains} referring domains` : ''].filter(Boolean).join(', ')}; confident match (${score})${weakTarget ? '; target is an archive page, prefer a content page if one fits' : ''}`;
     } else if (!valuable && !linked && backlinks === 0 && g.i < 10) {
       bucket = 'ignore';
       reason = `${g.i} impressions, no clicks, no internal links, not in sitemap, no backlinks${score >= minScore ? `: likely a mangled variant of ${bestMatch}` : ''}`;
@@ -111,6 +140,35 @@ export function triage404s(db: Database.Database, opts: TriageOptions = {}): Tri
       bucket = 'review';
       reason = valuable ? `has value but no confident match (best ${score})` : linked ? `${internalLinks ? `${internalLinks} internal link(s) point here: fix them at source` : 'listed in the sitemap: remove it'}` : 'some signal; check by hand';
     }
-    return { urlKey: d.url_key, url: d.url, status: d.status_code, sources, internalLinks, inSitemap, clicks: g.c, impressions: g.i, lastSeen: g.last, backlinks, referringDomains, bestMatch, score, bucket, reason };
+    return { urlKey: d.url_key, url: d.url, status: d.status_code, sources, internalLinks, inSitemap, clicks: g.c, impressions: g.i, lastSeen: g.last, backlinks, referringDomains, bestMatch, score, ...(weakTarget ? { weakTarget } : {}), bucket, reason };
   }).sort((a, b) => (b.clicks - a.clicks) || (b.referringDomains - a.referringDomains) || (b.impressions - a.impressions));
+}
+
+/**
+ * Live check (#40): the crawl's 404 list is as old as the crawl, and redirects get added between
+ * crawls. Probe the redirect and review candidates now; a URL that already 3xx's to a live page
+ * moves to `already-redirected` (with its live destination, so a wrong suggestion never replaces a
+ * right redirect), and one that now answers 200 moves to `live-now`. Capped and time-boxed; URLs
+ * not reached keep their stored bucket.
+ */
+export async function verifyLive(rows: Triage404Row[], baseHost: string, opts: { max?: number; budgetMs?: number; probe?: typeof probeUrls } = {}): Promise<{ rows: Triage404Row[]; probed: number }> {
+  const candidates = rows.filter(r => r.bucket === 'redirect' || r.bucket === 'review').slice(0, opts.max ?? 50);
+  if (!candidates.length) return { rows, probed: 0 };
+  const results = await (opts.probe ?? probeUrls)(candidates.map(c => ({ url: c.url })), baseHost, { followRedirects: true, concurrency: 4, budgetMs: opts.budgetMs ?? 30000 });
+  const byUrl = new Map<string, ProbeResult>(results.map(r => [r.url, r]));
+  let probed = 0;
+  const out = rows.map(r => {
+    const p = byUrl.get(r.url);
+    if (!p || p.error || p.finalStatus == null) return r;
+    probed++;
+    const live = { status: p.status, finalUrl: p.finalUrl, chain: p.redirectChain.map(h => h.status) };
+    if (p.redirectChain.length && p.finalStatus < 400) {
+      return { ...r, live, bucket: 'already-redirected' as const, reason: `already redirects live (${live.chain.join('→')}) to ${p.finalUrl}; the crawl predates it. Nothing to do unless that destination is wrong.` };
+    }
+    if (!p.redirectChain.length && p.finalStatus < 400) {
+      return { ...r, live, bucket: 'live-now' as const, reason: `answers ${p.finalStatus} live now; the crawl is stale. Re-crawl to clear it.` };
+    }
+    return { ...r, live };
+  });
+  return { rows: out, probed };
 }
