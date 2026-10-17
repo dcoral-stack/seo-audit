@@ -227,6 +227,19 @@ Every environment variable the server reads, in one block - the first is require
 
 Then: *"list properties"* to check it's connected, *"refresh"*, *"run an SEO audit"*.
 
+### Docker and the Docker MCP gateway
+
+Crawls, syncs and refreshes run as background jobs: the tool returns a job id at once and the work carries on inside the server process while you poll `check_crawl_status`. So the process has to stay alive between calls.
+
+The Docker MCP gateway, by default, starts a fresh container for each tool call and removes it afterwards. The job dies with that container. To keep the server alive:
+
+- set `longLived: true` on this server's entry in your gateway catalog, or start the gateway with `--long-lived`;
+- mount named volumes for the data directory and the credentials, so audits and the job list survive a container restart: for example `-v seo-audit-data:/data -e SAC_DATA_DIR=/data` and `-v seo-audit-creds:/creds:ro -e GOOGLE_APPLICATION_CREDENTIALS=/creds/service-account.json`.
+
+Plain `docker run -i --rm` with those volumes works too: it is one long-lived stdio process for the whole session.
+
+Jobs are also recorded in `_jobs.db` in the data directory. If the process running a job exits before it finishes, the job reads as `interrupted` (with this advice) rather than disappearing, and a finished job's result can still be read after a restart.
+
 ---
 
 ## The tools, at a glance
