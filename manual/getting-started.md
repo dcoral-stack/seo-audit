@@ -298,7 +298,7 @@ docker run -d --init --name seo-audit-runner --restart unless-stopped \
 
 Then add `SAC_JOB_RUNNER=external` to the env of the server's gateway catalog entry, and take `longLived: true` off it.
 
-A job now reads `queued: waiting for the job runner` until the runner claims it. If it stays queued for over a minute with no runner checking in, the status tells you no runner seems to be running, with the command above. The runner does one job at a time; `SAC_RUNNER_CONCURRENCY=2` (or more) on the runner lets jobs for different properties run side by side. To update, remove the runner container and run the command again, so npx fetches the new release; a job that was running at that moment reads `interrupted`, so start it again.
+A job now reads `queued: waiting for the job runner` until the runner claims it. If it stays queued for over a minute with no runner checking in, the status tells you no runner seems to be running, with the command above. After about two minutes without a runner heartbeat it reads `queued (no runner)`, and it no longer blocks `data_storage` prune or repair. The runner does one job at a time; `SAC_RUNNER_CONCURRENCY=2` (or more) on the runner lets jobs for different properties run side by side. To update, remove the runner container and run the command again, so npx fetches the new release; a job that was running at that moment reads `interrupted`, so start it again.
 
 ## Troubleshooting
 
