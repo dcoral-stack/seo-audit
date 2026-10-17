@@ -14,12 +14,18 @@
 //   - The CRAWL is genuine: the real Crawler fetches that site (its undici connections are routed
 //     to the in-process server), so pages / links / redirects / sitemap / images / the link graph
 //     are the crawler's own output.
-//   - The GSC history is synthetic: ~120 days of segmented (device x country) rows with seasonality,
-//     a growth trend, decay, cannibalisation and striking-distance stories.
+//   - The GSC history is synthetic: ~16 months of segmented (device x country) rows with annual
+//     seasonality and a growth trend, and in the last 120 days the decay, cannibalisation and
+//     striking-distance stories. Sixteen months give the Summary tab its monthly trend and
+//     year-on-year comparison.
+//   - The CRAWL HISTORY is genuine: three real crawls of the site (backdated 29 days, 15 days and one
+//     day), with the site edited between them, each followed by a real audit. That's what feeds the
+//     Summary's health trend, the opened / resolved issue deltas and "changed since the last crawl".
 //   - Agent readiness is genuine (the real probe, run against the in-process server). Passage
 //     scores are genuine when the local cross-encoder is cached (skip with --no-ml).
 //   - DataForSEO / Google-only enrichments (URL inspection, backlinks, link prospects, rank
-//     history, CWV, keyword intent) are synthetic but derived from the crawl so they agree with it.
+//     history, CWV, keyword intent, content-recon AI Overview reads) are synthetic but derived from
+//     the crawl so they agree with it.
 //   - The AUDIT is genuine: runAudit runs every check over the result.
 //
 // Run:  npm run build && npm run demo:property -- [--out <dir>] [--end YYYY-MM-DD] [--no-ml]
@@ -41,7 +47,8 @@ const DAY = 86_400_000;
 const isoDate = (ms) => new Date(ms).toISOString().slice(0, 10);
 const END = arg('--end') ?? isoDate(Date.now() - 2 * DAY);
 const NO_ML = argv.includes('--no-ml');
-const DAYS = 120;
+const DAYS = 500;       // ~16 months of GSC: the Summary's monthly trend + year-on-year
+const STORY_DAYS = 120; // the decay / fade / drift stories play out over the last 120 days
 const VOL_SCALE = 0.55; // overall demand: ~40k clicks per 28 days
 
 const SITE = 'sc-domain:larchmere.example';
@@ -554,15 +561,19 @@ const startMs = endMs - (DAYS - 1) * DAY;
       const key = k(url);
       const phase = rand(0, 7);
       for (let d = 0; d < DAYS; d++) {
-        const t = d / (DAYS - 1);
+        const t = d / (DAYS - 1);                                              // the whole history: growth
+        const ts = Math.max(0, (d - (DAYS - STORY_DAYS)) / (STORY_DAYS - 1));  // the last 120 days: stories
         const ms = startMs + d * DAY;
         const dow = new Date(ms).getUTCDay();
-        const season = pr.season === 'summer' ? 1.3 - 0.75 * t : pr.season === 'winter' ? 0.7 + 0.75 * t : 1 - 0.05 * Math.sin(t * 3);
+        const doy = (ms - Date.UTC(new Date(ms).getUTCFullYear(), 0, 1)) / DAY;
+        // Annual seasonality: summer kit peaks mid-July, winter kit mid-January.
+        const season = pr.season === 'summer' ? 1 + 0.4 * Math.cos((2 * Math.PI * (doy - 196)) / 365)
+          : pr.season === 'winter' ? 1 + 0.4 * Math.cos((2 * Math.PI * (doy - 15)) / 365) : 1 - 0.05 * Math.sin(t * 9);
         const week = dow === 0 || dow === 6 ? 1.12 : dow === 5 ? 0.9 : 1;
-        let vol = VOL_SCALE * pr.vol * season * week * (1 + 0.1 * t) * Math.exp(gauss() * 0.16) * (1 + 0.06 * Math.sin(d / 3.5 + phase));
-        let pos = pr.pos + pr.drift * t + gauss() * 0.5;
+        let vol = VOL_SCALE * pr.vol * season * week * (0.8 + 0.3 * t) * Math.exp(gauss() * 0.16) * (1 + 0.06 * Math.sin(d / 3.5 + phase));
+        let pos = pr.pos + pr.drift * ts + gauss() * 0.5;
         if (pr.story === 'decay' && d > DAYS - 40) { vol *= 0.62; pos += 3.2; }
-        if (pr.story === 'fade') vol *= Math.max(0, 1 - t * 1.25);
+        if (pr.story === 'fade') vol *= Math.max(0, 1 - ts * 1.25);
         if (pr.story === 'fresh' && d < DAYS - 45) continue;
         if (pr.story === 'braid') pos += (Math.floor(d / 7) % 2 === 0 ? -2.4 : 2.6);
         const impr = poisson(vol);
@@ -586,33 +597,30 @@ const startMs = endMs - (DAYS - 1) * DAY;
   log(`GSC: ${pairs.length} query/page pairs, ${rows.toLocaleString()} rows, ${totC.toLocaleString()} clicks / ${totI.toLocaleString()} impressions over ${DAYS} days to ${END}`);
 }
 
-// ── 2. The crawl (the real crawler, against the demo server) ─────────────────
-{
+// ── 2. The first crawl (the real crawler, against the demo server) ───────────
+async function crawlOnce(label) {
   const res = await new Crawler(OUT).run(SITE, { maxConcurrency: 8, delayMs: 0, checkExternal: false, chromeFallback: false }, () => {}, new AbortController().signal);
-  log(`crawl: ${res.crawled} crawled, ${res.failed} failed, ${res.skipped} skipped; sitemaps ${JSON.stringify(res.sitemaps ?? {})}`);
+  log(`crawl ${label}: ${res.crawled} crawled, ${res.failed} failed, ${res.skipped} skipped; sitemaps ${JSON.stringify(res.sitemaps ?? {})}`);
+  return res.crawlId;
 }
+const crawlA = await crawlOnce('A');
 
 // ── 3. Agent readiness (the real probe, against the demo server) ─────────────
 {
   const r = await checkAgentReadiness(SITE);
   const adb = new AuditDatabase(dbPath);
-  adb.db.prepare(`INSERT INTO agent_readiness (origin,score,level,checks,by_category,checked_at) VALUES (?,?,?,?,?,?)
-    ON CONFLICT(origin) DO UPDATE SET score=excluded.score, level=excluded.level, checks=excluded.checks, by_category=excluded.by_category, checked_at=excluded.checked_at`)
-    .run(r.origin, r.score, r.level, JSON.stringify(r.checks), JSON.stringify(r.byCategory), sqlTs(nowMs - 23 * 3600_000));
+  adb.db.prepare(`INSERT INTO agent_readiness (origin,score,level,checks,by_category,bots,checked_at) VALUES (?,?,?,?,?,?,?)
+    ON CONFLICT(origin) DO UPDATE SET score=excluded.score, level=excluded.level, checks=excluded.checks, by_category=excluded.by_category, bots=excluded.bots, checked_at=excluded.checked_at`)
+    .run(r.origin, r.score, r.level, JSON.stringify(r.checks), JSON.stringify(r.byCategory), r.bots ? JSON.stringify(r.bots) : null, sqlTs(nowMs - 23 * 3600_000));
   adb.close();
   log(`agent readiness: ${r.score}/100 (${r.level})`);
 }
-server.close();
 
 // ── 4. Enrichments that normally need Google / DataForSEO / Majestic ─────────
 {
   const adb = new AuditDatabase(dbPath);
   const db = adb.db;
-  const crawl = db.prepare(`SELECT crawl_id FROM crawl_metadata ORDER BY started_at DESC LIMIT 1`).get();
-  // Backdate the crawl to "yesterday", after the sync, so the freshness panel reads naturally.
-  const crawlStart = nowMs - 25 * 3600_000;
-  db.prepare(`UPDATE crawl_metadata SET started_at=?, finished_at=? WHERE crawl_id=?`).run(new Date(crawlStart).toISOString(), new Date(crawlStart + 4 * 60_000).toISOString(), crawl.crawl_id);
-  db.prepare(`UPDATE sitemap_urls SET fetched_at=?`).run(sqlTs(crawlStart));
+  db.prepare(`UPDATE sitemap_urls SET fetched_at=?`).run(sqlTs(nowMs - 25 * 3600_000));
 
   const pagesRows = db.prepare(`SELECT url, url_key, status_code, indexable, indexable_reason, noindex, canonical_key, click_depth FROM pages WHERE is_internal=1`).all();
   const impr = new Map(db.prepare(`SELECT page_key, SUM(impressions) i FROM search_analytics WHERE date > date(?, '-90 days') GROUP BY page_key`).all(END).map(r => [r.page_key, r.i]));
@@ -708,23 +716,69 @@ server.close();
       : /^best|review|lightweight|packable/.test(query) ? 'commercial' : 'transactional';
     insK.run(query, intent, Math.round(rand(0.62, 0.98) * 100) / 100, sqlTs(nowMs - 6 * DAY));
   }
+  // Content recon (synthetic): the AI Overview read for the top guides' main queries. One citation
+  // never resolved (NULL = unknown), which the Summary must show as unknown, not as "not cited".
+  const insRecon = db.prepare(`INSERT OR REPLACE INTO recon_page (url_key,query,verdict,verdict_note,organic_rank,gsc_position,gsc_impressions,aio_present,aio_cites_us,video_present,has_product_schema,schema_types,competitors,researched_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  GUIDES.slice(0, 12).forEach((g, i) => {
+    const [q, vol, pos] = g[3][0];
+    const present = i % 4 !== 3 ? 1 : 0;
+    const cites = !present ? 0 : i === 5 ? null : i % 3 === 0 ? 1 : 0;
+    insRecon.run(k(`${ORIGIN}/guides/${g[0]}`), q, cites === 1 ? 'defend-and-deepen' : present ? 'accuracy-or-freshness' : 'competitive-gap', '', Math.max(1, Math.round(pos - 1)), pos, Math.round(vol * 18), present, cites, i % 5 === 0 ? 1 : 0, 0, '["Article"]', '{}', sqlTs(nowMs - (4 + i) * 3600_000));
+  });
   adb.close();
   log(`enrichments: ${inspected} URLs inspected, ${blTargets.length + blProducts.length} backlinked pages, ${PROSPECTS.length} link prospects, 13 months of rank history, ${cwvPages.length} CWV pages`);
 }
 
-// ── 5. Passage scores (the local cross-encoder, when cached) ─────────────────
-if (!NO_ML) {
+// ── 5. Passage scores + the audit history (three crawls, three real audits) ──
+// The site is edited between crawls, so the Summary has a health trend, opened / resolved deltas
+// between comparable audits, and a real "changed since the last crawl" diff. Every crawl and audit
+// is genuine; only their timestamps are moved back afterwards.
+async function scorePassages() {
+  if (NO_ML) return;
   try {
     const { scoreSitePassages } = await import('../dist/core/passageScore.js');
     const r = await scoreSitePassages(OUT, SITE, { limit: 40, minImpressions: 50 });
     log(`passage scores: ${r.scored} pages scored, ${r.flagged} weak`);
   } catch (e) { log(`passage scoring skipped: ${e.message}`); }
 }
-
-// ── 6. The audit (every check, genuine output) ───────────────────────────────
-{
+function audit(label) {
   const res = runAudit(OUT, SITE, { scope: 'full', includeJudgement: true });
-  log(`audit: ${res.total} findings across ${res.byCheck.length} checks`);
+  log(`audit ${label}: ${res.total} findings across ${res.byCheck.length} checks`);
+  return res.runId;
 }
+/** Move a crawl (and its snapshot, and its audit) back to `at`, keeping their order and spacing. */
+function backdate(crawlId, runId, at) {
+  const adb = new AuditDatabase(dbPath);
+  adb.db.prepare(`UPDATE crawl_metadata SET started_at=?, finished_at=? WHERE crawl_id=?`).run(new Date(at).toISOString(), new Date(at + 4 * 60_000).toISOString(), crawlId);
+  adb.db.prepare(`UPDATE page_snapshots SET captured_at=? WHERE crawl_id=?`).run(sqlTs(at + 4 * 60_000), crawlId);
+  if (runId) adb.db.prepare(`UPDATE audit_runs SET started_at=?, finished_at=? WHERE run_id=?`).run(sqlTs(at + 30 * 60_000), sqlTs(at + 31 * 60_000), runId);
+  adb.close();
+}
+
+await scorePassages();
+backdate(crawlA, audit('A'), nowMs - 29 * DAY);
+
+// Between A and B, fixes: the gift-card balance page stops erroring and two thin brand pages get
+// their own titles.
+pages.get('/gift-cards/balance').status = 200;
+for (const b of BRANDS.slice(5, 7)) { const bp = pages.get(`/brands/${b.slug}`); if (bp) bp.title = `${b.name} outdoor gear | ${STORE}`; }
+const crawlB = await crawlOnce('B');
+await scorePassages();
+backdate(crawlB, audit('B'), nowMs - 15 * DAY);
+
+// Between B and C, the regressions the Summary's "changed since the last crawl" shows: two products
+// dropped without a redirect (now 404), a guide noindexed by mistake, a collection's canonical
+// pointed at another collection, and three product titles rewritten.
+for (const p of [productsByCat.get('tents')[5], productsByCat.get('sleeping-bags')[3]]) gone.add(p.path);
+pages.get('/guides/how-to-pack-a-rucksack').noindex = true;
+pages.get('/collections/base-layers').canonical = '/collections/waterproof-jackets';
+for (const p of productsByCat.get('backpacks').slice(0, 3)) { const pg = pages.get(p.path); if (pg) pg.title = `${p.name} - free UK delivery | ${STORE}`; }
+const crawlC = await crawlOnce('C');
+server.close();
+// Crawl C ran "yesterday", after the sync, so the freshness strip reads naturally; its audit is now.
+backdate(crawlC, null, nowMs - 25 * 3600_000);
+await scorePassages();
+audit('C');
 console.log(OUT);
 process.exit(0);

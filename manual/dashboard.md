@@ -6,11 +6,26 @@ The dashboard uses a neutral light or dark theme: it follows the host's theme in
 
 Run `refresh_property` first, and `run_audit` if you want the findings populated. The DataForSEO panels (visibility over time, agent readiness) fill in when you've run the corresponding tools; everything else works from GSC and the crawl alone.
 
-## Overview
+## Summary
 
-![The Overview tab - KPI strip, search performance over time, findings by priority, crawl health and the site network](../assets/dashboard-overview.png)
+![The Summary tab - freshness, the verdict, five tiles, 16 months of clicks, health per audit, what's broken and what to fix first, what changed, AI search and data coverage](../assets/dashboard-summary.png)
 
-A **Site Health Score** (0-100, banded Weak / Fair / Good / Excellent) sits in the KPI strip across the top, next to clicks, impressions, CTR and average position - the share of crawled pages with no critical or high finding, defined in plain sight rather than as a black box. Further down, the executive summary: clicks and impressions for the last 28 days against the prior period, the headline finding counts, and the top issues by impact. It's the tab you'd screenshot for a stakeholder - the state of the property in one screen. Between the KPI strip and the summary sit search performance over time, findings by priority, crawl health, a site-network preview, top keywords and pages, and a jobs and data-freshness panel; the sidebar takes you to any tab.
+The landing tab, and the one to hand someone who has never seen the property. It answers, top to bottom: how fresh is this, how is the site doing, is it better or worse, what's broken, what to do first, and what we don't measure. Every number on it comes from your database; nothing is estimated or written by a model, and anything missing says so in words instead of showing a zero.
+
+- **Freshness** - one line per source (Search Console, crawl, audit, URL inspection, ranks) with its age. A source turns amber on a stated rule, shown in its tooltip: Search Console more than 7 days behind, a crawl or audit older than 30 days, or an audit that ran before the latest crawl (so its findings describe the previous crawl).
+- **The verdict** - one sentence built from a template, e.g. *"Organic clicks are down 12% on the prior 28 days (non-brand down 18%); 3 critical issues are open, 14 resolved since the last audit; 27 pages changed since the last crawl."* "Flat" means within ±5%. A clause is left out when its data is missing, so you'll never read "0 critical issues" before an audit has run.
+- **Five tiles** - organic clicks (28 days vs the prior 28, year-on-year once you hold 13 months, and a sparkline of complete months), non-brand share, **site health** (the share of crawled pages with no critical or high issue, with its definition; the Weak / Fair / Good / Excellent bands are our convention, not an industry benchmark), indexed pages as *n of M inspected* (URL Inspection is a sample, never a share of the site), and AI readiness.
+- **Organic clicks by month** - up to 16 months. The current month is a hollow bar until it's complete, the dashed line is the same month last year (only where both months are complete), and each crawl and audit is ticked under the axis.
+- **Health and audit change** - the health score at each audit, and the issues opened and resolved between audits. Two audits are only compared when they ran the same checks over the same scope; otherwise the reason is printed (for example, a release added checks).
+- **What's broken, by area** and **Do this first** - the latest audit by category (pages with a critical, high, medium or low issue, and the change since the last comparable audit), next to the five highest-impact fixes with the pages affected, the clicks those pages earn now (not a forecast), the size of the fix and whether the evidence is deterministic (D), judgement (N) or from Search Console (G). Click either to open Issues & fixes filtered to it.
+- **Changed since the last crawl** - pages now erroring, noindex added, canonicals and titles changed, pages added or no longer reached: `detect_changes`, summarised. With one crawl it says it needs two; if a newer crawl was never snapshotted, it says the comparison isn't current instead of showing old numbers.
+- **Ranking mix** and **gaining and losing pages** - where your impressions sit by average position now vs the prior 28 days, and the biggest click movers among pages with at least 10 clicks in the prior 28 days.
+- **AI search** - the agent-readiness score, which AI crawlers your robots.txt lets in (grouped into search and citation bots vs training crawlers: blocking GPTBot, a training crawler, doesn't take you out of ChatGPT search), AI Overview presence as *n of M checked queries* from content recon, and a plain "not measured" for answer share in chat assistants, because we don't query them.
+- **Data coverage** - what's held (months of Search Console, crawled pages, URL inspection, lab Core Web Vitals, backlinks) and what isn't collected (field Core Web Vitals, server logs). The CSV exports sit below it.
+
+It works crawl-only: before Search Console is connected, the traffic panels ask you to connect it and everything else still works. If your Search Console history holds two row shapes for the same days (all-country and per-country rows, which double-counts clicks), the Summary says so and counts each day once.
+
+![The Summary tab on a phone](../assets/dashboard-summary-mobile.png)
 
 ## Issues & fixes
 
@@ -24,7 +39,7 @@ Each finding shows an **impact score (0-100, normalised to the run's biggest fin
 
 ![The Crawl health tab - the canonical, redirect and not-found breakdown and classic crawl diagnostics as stat bars](../assets/crawl-health.png)
 
-If you grew up on desktop crawlers, this tab is home. The classic crawl diagnostics as clean stat bars: **response codes**, **indexability reasons** (with the *why* for every non-indexable URL), **response-time** and **HTML-size buckets** (measured on estimated transfer, not raw bytes), **crawl depth**, and title/meta issue counts. Below the bars, the lists: server errors (5xx), pages over a second, and the heaviest images your pages load - sampled from response headers during the crawl, so the image bytes are never downloaded.
+If you grew up on desktop crawlers, this tab is home. Under the KPI strip, the **status mix** (2xx / 3xx / 4xx / 5xx across the crawl, and the share that's indexable, canonicalised, redirected or not found), then the canonical, redirect and not-found breakdown with the most-linked example of each. Then the classic crawl diagnostics as clean stat bars: **response codes**, **indexability reasons** (with the *why* for every non-indexable URL), **response-time** and **HTML-size buckets** (measured on estimated transfer, not raw bytes), **crawl depth**, and title/meta issue counts. Below the bars, the lists: server errors (5xx), pages over a second, and the heaviest images your pages load - sampled from response headers during the crawl, so the image bytes are never downloaded.
 
 It also carries the thematic reports a dedicated crawler would, each appearing when its data is present: **Security & HTTPS** (the share of pages carrying HSTS, CSP, X-Frame, X-Content-Type and Referrer-Policy), **Structured-data coverage** (the JSON-LD rich-result types across your pages), **Redirect chains** (multi-hop redirects captured during the crawl), **Core Web Vitals** (after `page_lighthouse`), and **Hreflang** (declared languages, on multilingual sites).
 
@@ -47,6 +62,8 @@ Where the growth work lives:
 
 The Search Console view you wish Google shipped - and because the history lives in your own database, it isn't capped at 16 months:
 
+- **Search performance over time** - daily clicks, impressions and average position as three small charts on one timeline.
+- **Top keywords and top pages** - 28 days against the prior 28, by clicks.
 - **Branded vs non-branded** clicks split.
 - **Ranking distribution over time** - impressions by position bucket, the honest "are we improving" chart.
 - **Search visibility over time** - the DataForSEO monthly rank distribution, reconciled with your GSC dates (needs `track_ranks`).

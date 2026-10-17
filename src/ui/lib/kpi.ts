@@ -9,11 +9,13 @@ export interface StatBlockOpts {
   spark?: number[];        // series behind the number
 }
 
-/** Inline SVG sparkline - no axes, single muted line. */
-export function sparkline(series: number[], lowerIsBetter = false): string {
+/** Inline SVG sparkline - no axes, single muted line. `domain` fixes the vertical scale (e.g. a
+ *  0-100 score), so a 71 -> 72 -> 71 wobble isn't drawn as a peak; default = the series' own range. */
+export function sparkline(series: number[], lowerIsBetter = false, domain?: [number, number]): string {
   const pts = series.filter(v => Number.isFinite(v));
   if (pts.length < 2) return '';
-  const w = 96, h = 26, min = Math.min(...pts), max = Math.max(...pts), span = max - min || 1;
+  const w = 96, h = 26;
+  const min = domain ? domain[0] : Math.min(...pts), max = domain ? domain[1] : Math.max(...pts), span = max - min || 1;
   // For position (lower = better) invert Y so an improving trend still rises visually.
   const norm = (v: number): number => (lowerIsBetter ? (v - min) / span : 1 - (v - min) / span);
   const step = w / (pts.length - 1);

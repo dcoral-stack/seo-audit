@@ -1,7 +1,10 @@
-// Overview + crawl-health + freshness renderers for the Stitch-direction dashboard
-// (design/stitch/). Pure HTML-string + ECharts builders; dashboard.ts owns the data load,
-// the chart registry and the tab shell, and passes them in.
-import { esc, fmtNum, sparkline, delta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
+// Shared panel renderers for the Stitch-direction dashboard (design/stitch/): the sidebar
+// freshness block, the crawl-health header and status mix, the Search performance trend and top
+// keyword / page tables, and the network graph. Several of these were the Overview tab's panels;
+// the Summary tab (summary.ts) replaced the Overview as the landing view and they moved to the tabs
+// they belong to. Pure HTML-string + ECharts builders; dashboard.ts owns the data load, the chart
+// registry and the tab shell, and passes them in.
+import { esc, fmtNum, fmtCompact, fmtDate, delta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
 
 const fmt = fmtNum;
 import type { DashboardData } from './dashboard.js';
@@ -30,7 +33,6 @@ const SEV = [
 
 /** Percentage change from baseline b to a (0 when there is no baseline). Shared with dashboard.ts. */
 export const pctChg = (a: number, b: number): number => (b ? ((a - b) / b) * 100 : 0);
-const pct = pctChg;
 
 /** "3h ago" / "2d ago" from a SQLite datetime ('YYYY-MM-DD HH:MM:SS', UTC) or ISO string. */
 export function ago(at: string | null | undefined, now = Date.now()): string {
@@ -42,53 +44,35 @@ export function ago(at: string | null | undefined, now = Date.now()): string {
   if (s < 3600) return `${Math.round(s / 60)}m ago`;
   if (s < 86400 * 2) return `${Math.round(s / 3600)}h ago`;
   if (s < 86400 * 60) return `${Math.round(s / 86400)}d ago`;
-  return at.slice(0, 10);
+  return fmtDate(at);
 }
 
 const stateDot = (state: string): string =>
   state === 'completed' ? 'dot-ok' : state === 'running' ? 'dot-run' : state === 'never' ? 'dot-never' : 'dot-bad';
 const KIND_LABEL: Record<string, string> = { sync: 'Sync', crawl: 'Crawl', audit: 'Audit', inspect: 'Inspect', ranks: 'Ranks', sitemap: 'Sitemap' };
 
-// ── KPI strip ─────────────────────────────────────────────────────────────
-interface Tile { label: string; value: string; change?: number; lowerIsBetter?: boolean; spark?: number[]; sub?: string; color?: string }
+// ── KPI tile (the crawl-health strip) ──
+interface Tile { label: string; value: string; sub?: string; color?: string }
 const tile = (t: Tile): string =>
   `<div class="metric-card"><div class="label">${esc(t.label)}</div>` +
   `<div class="value"${t.color ? ` style="color:${t.color}"` : ''}>${t.value}</div>` +
-  ((t.change !== undefined || t.spark) ? `<div class="metric-foot">${t.change !== undefined ? delta(t.change, t.lowerIsBetter) : '<span></span>'}${t.spark ? sparkline(t.spark, t.lowerIsBetter) : ''}</div>` : '') +
   (t.sub ? `<div class="metric-sub">${t.sub}</div>` : '') + `</div>`;
-
-function overviewKpis(d: Dash): string {
-  const c = d.summary.current, p = d.summary.prior;
-  const spark = (d.rankTrend ?? []).slice(-28);
-  const hs = d.healthScore;
-  const hsColor = !hs ? '' : (hs.band === 'Excellent' || hs.band === 'Good') ? 'var(--intent-success)' : hs.band === 'Fair' ? 'var(--intent-warning)' : 'var(--intent-danger)';
-  const tiles: Tile[] = [
-    { label: 'Clicks', value: fmt(c.clicks), change: pct(c.clicks, p.clicks), spark: spark.map((x: any) => x.clicks), sub: 'last 28d vs prior' },
-    { label: 'Impressions', value: fmt(c.impressions), change: pct(c.impressions, p.impressions), spark: spark.map((x: any) => x.impressions), sub: 'last 28d vs prior' },
-    { label: 'CTR', value: `${(c.ctr * 100).toFixed(1)}%`, change: pct(c.ctr, p.ctr), spark: spark.map((x: any) => (x.impressions ? x.clicks / x.impressions : 0)), sub: 'clicks ÷ impressions' },
-    { label: 'Avg position', value: c.position.toFixed(1), change: pct(c.position, p.position), lowerIsBetter: true, spark: spark.map((x: any) => x.position).filter((v: number) => v > 0), sub: 'lower is better' },
-    hs
-      ? { label: 'Site health', value: `${hs.score}<span class="kpi-of">/100</span>`, color: hsColor, sub: `${esc(hs.band)} · <span class="redact-n">${fmt(hs.errorPages)} of ${fmt(hs.totalPages)}</span> pages flagged` }
-      : { label: 'Site health', value: '–', sub: 'run a crawl + run_audit' },
-  ];
-  return tiles.map(tile).join('');
-}
 
 // ── Small multiples: clicks / impressions / position on one shared x (never dual-axis) ──
 function trendMultiples(d: Dash, ctx: OverviewCtx): void {
   const { col } = ctx;
   const t = d.rankTrend ?? [];
-  if (!document.getElementById('ovTrendChart')) return;
-  if (!t.length) { ctx.wrap('ovTrendChart').setEmpty('No Search Console data yet - run sync_gsc', col); return; }
+  if (!document.getElementById('spTrendChart')) return;
+  if (!t.length) { ctx.wrap('spTrendChart').setEmpty('No Search Console data yet - run sync_gsc', col); return; }
   const dates = t.map((x: any) => x.date);
   const series = [
-    { name: 'Clicks', data: t.map((x: any) => x.clicks), color: col.accent, inverse: false, fmtV: (v: number) => fmt(v) },
-    { name: 'Impressions', data: t.map((x: any) => x.impressions), color: col.categorical[0], inverse: false, fmtV: (v: number) => fmt(v) },
+    { name: 'Clicks', data: t.map((x: any) => x.clicks), color: col.accent, inverse: false, fmtV: (v: number) => fmtCompact(v) },
+    { name: 'Impressions', data: t.map((x: any) => x.impressions), color: col.categorical[0], inverse: false, fmtV: (v: number) => fmtCompact(v) },
     { name: 'Avg position', data: t.map((x: any) => (x.position > 0 ? Math.round(x.position * 10) / 10 : null)), color: col.categorical[1], inverse: true, fmtV: (v: number) => v.toFixed(1) },
   ];
   const H = 23, GAP = 9, TOP = 7;
   const ax = axisDefaults(col, { numeric: true });
-  ctx.wrap('ovTrendChart').setOption({
+  ctx.wrap('spTrendChart').setOption({
     aria: { enabled: true },
     animation: false,
     axisPointer: { link: [{ xAxisIndex: 'all' }], lineStyle: { color: col.border } },
@@ -99,7 +83,7 @@ function trendMultiples(d: Dash, ctx: OverviewCtx): void {
     xAxis: series.map((_, i) => ({
       type: 'category', gridIndex: i, data: dates, boundaryGap: false,
       axisLine: { lineStyle: { color: col.border } }, axisTick: { show: false },
-      axisLabel: i === series.length - 1 ? { color: col.axisText, fontSize: 10.5, fontFamily: monoFont(), formatter: (v: string) => v.slice(5) } : { show: false },
+      axisLabel: i === series.length - 1 ? { color: col.axisText, fontSize: 10.5, fontFamily: monoFont(), formatter: (v: string) => fmtDate(v, true), hideOverlap: true } : { show: false },
     })),
     yAxis: series.map((s, i) => ({
       type: 'value', gridIndex: i, inverse: s.inverse, scale: s.inverse, splitNumber: 2,
@@ -114,36 +98,10 @@ function trendMultiples(d: Dash, ctx: OverviewCtx): void {
     })),
   });
   const last = t[t.length - 1];
-  const sum = document.getElementById('ovTrendSummary');
+  const sum = document.getElementById('spTrendSummary');
   if (sum) sum.textContent = `${t.length} days of Search Console data; latest day ${fmt(last.clicks)} clicks, ${fmt(last.impressions)} impressions, average position ${last.position ? last.position.toFixed(1) : 'n/a'}.`;
-  const src = document.getElementById('ovTrendSrc');
+  const src = document.getElementById('spTrendSrc');
   if (src) src.textContent = `GSC · ${t.length}d`;
-}
-
-// ── Findings by priority: severity spine + legend + top issues ──
-function findingsCard(d: Dash, ctx: OverviewCtx): string {
-  const fc = d.findings;
-  if (!fc || !fc.byCheck?.length) return '<div class="empty-state">No audit yet - run <code>run_audit</code> to rank the issues.</div>';
-  const counts: Record<string, number> = {};
-  for (const b of fc.byCheck) { const k = b.severity === 'info' ? 'low' : b.severity; counts[k] = (counts[k] ?? 0) + b.count; }
-  const spine = `<div class="spine" role="img" aria-label="Findings by severity">${SEV.filter(x => counts[x.key]).map(x =>
-    `<span style="flex:${counts[x.key]};background:${x.bar}" title="${x.label}: ${counts[x.key]}"></span>`).join('')}</div>`;
-  const legend = `<div class="sev-legend">${SEV.map(x => `<span class="sev-key"><span class="dot ${x.dot}"></span>${x.label} <b>${fmt(counts[x.key] ?? 0)}</b></span>`).join('')}</div>`;
-  const seen = new Set<string>(); const top: any[] = [];
-  for (const f of fc.top ?? []) { if (top.length >= 6) break; if (seen.has(f.check_id)) continue; seen.add(f.check_id); top.push(f); }
-  const maxImpact = Math.max(...top.map(f => Number(f.impact) || 0), 1);
-  const sevOf = (s: string) => SEV.find(x => x.key === (s === 'info' ? 'low' : s)) ?? SEV[3];
-  const items = top.map(f => {
-    const rec = ctx.safeJson(f.recommendation);
-    const sv = sevOf(f.severity);
-    const w = Math.max(4, Math.round(((Number(f.impact) || 0) / maxImpact) * 100));
-    return `<li><span class="dot ${sv.dot}" title="${sv.label}"></span><span class="ti-title" title="${esc(rec.title || f.check_id)}">${esc(rec.title || f.check_id)}</span>` +
-      `<span class="ti-bar" title="Impact ${f.impact ?? ''}"><span style="width:${w}%;background:${sv.bar}"></span></span><span class="ti-size">${esc(String(f.size ?? ''))}</span></li>`;
-  }).join('');
-  const src = document.getElementById('ovFindingsSrc');
-  if (src) src.textContent = fc.finishedAt ? `Audit · ${ago(fc.finishedAt)}` : 'Audit';
-  return spine + legend + `<ul class="top-issues">${items}</ul>` +
-    `<div style="margin-top:10px"><button class="link-btn" type="button" data-goto="issues">All ${fmt(fc.total)} findings →</button></div>`;
 }
 
 // ── Crawl health summary: 100% status mix + leak rows ──
@@ -176,8 +134,7 @@ function crawlCard(d: Dash): string {
     const w = total ? Math.max(r.n ? 1 : 0, (r.n / total) * 100) : 0;
     return `<div class="stat-row"><div class="sr-top"><span>${r.label}</span><span><b>${fmt(r.n)}</b><em>${total ? Math.round((r.n / total) * 100) : 0}%</em></span></div><div class="stat-track"><span style="width:${w.toFixed(1)}%;background:${r.c}"></span></div></div>`;
   }).join('');
-  return bar + legend + `<div class="stat-rows">${statRows}</div>` +
-    `<div style="margin-top:12px"><button class="link-btn" type="button" data-goto="health">Crawl health →</button></div>`;
+  return bar + legend + `<div class="stat-rows">${statRows}</div>`;
 }
 
 /** The network force graph - shared by the Overview preview (compact) and the Network tab (full). */
@@ -189,11 +146,13 @@ export function drawNetwork(d: Dash, ctx: OverviewCtx, id: string, opts: { compa
   const keep = new Set(nodes.map((n: any) => n.id));
   const catOf = (n: any): number => ((n.status == null || n.status >= 300) ? 2 : (n.indexable ? 0 : 1));
   const maxIpr = Math.max(...nodes.map((n: any) => n.ipr), 1);
-  const labelCut = opts.compact ? 0.85 : 0.8;
+  // Label only the highest-PageRank hubs (the rest are in the tooltip): more labels overlap.
+  const narrow = (document.getElementById(id)?.clientWidth ?? 800) < 500;
+  const labelled = new Set([...nodes].sort((a: any, b: any) => b.ipr - a.ipr).slice(0, opts.compact || narrow ? 6 : 10).map((n: any) => n.id));
   const gnodes = nodes.map((n: any) => ({
     id: n.id, name: n.id, value: n.ipr, category: catOf(n),
     symbolSize: (opts.compact ? 4 : 5) + Math.round((n.ipr / maxIpr) * (opts.compact ? 18 : 26)),
-    label: (n.ipr / maxIpr >= labelCut && !ctx.redacted)
+    label: (labelled.has(n.id) && !ctx.redacted)
       ? { show: true, formatter: ctx.shortPath(n.id, 22), color: col.muted, fontSize: 10, fontFamily: monoFont() } : { show: false },
     _s: n.status, _d: n.depth,
   }));
@@ -201,7 +160,9 @@ export function drawNetwork(d: Dash, ctx: OverviewCtx, id: string, opts: { compa
   ctx.wrap(id).setOption({
     aria: { enabled: true },
     tooltip: { ...tooltipDefaults(col, 'item'), formatter: (p: any) => p.dataType === 'edge' ? '' : `${esc(ctx.shortPath(p.data.id, 48))}<br/>iPR ${p.data.value} · status ${p.data._s ?? '-'} · depth ${p.data._d ?? '-'}` },
-    legend: opts.compact ? undefined : { top: 10, left: 12, data: ['Healthy', 'Non-indexable', 'Broken / redirected'], textStyle: { color: col.text, fontSize: 12 }, itemWidth: 9, itemHeight: 9, icon: 'circle' },
+    // No in-canvas legend: force-placed nodes ignore the layout box and ran under it. The card's
+    // hint names the three colours.
+    legend: undefined,
     series: [{
       type: 'graph', layout: 'force', roam: !opts.compact, draggable: !opts.compact,
       categories: [
@@ -209,13 +170,15 @@ export function drawNetwork(d: Dash, ctx: OverviewCtx, id: string, opts: { compa
         { name: 'Non-indexable', itemStyle: { color: col.amber } },
         { name: 'Broken / redirected', itemStyle: { color: col.red } },
       ],
-      force: opts.compact ? { repulsion: 60, edgeLength: [18, 60], gravity: 0.14 } : { repulsion: 95, edgeLength: [30, 110], gravity: 0.08 },
+      force: opts.compact ? { repulsion: 60, edgeLength: [18, 60], gravity: 0.14 } : { repulsion: 90, edgeLength: [30, 100], gravity: 0.16 },
       data: gnodes,
       links: sg.edges.filter((e: any) => keep.has(e.source) && keep.has(e.target)).map((e: any) => ({ source: e.source, target: e.target })),
       lineStyle: { color: edgeColor, width: 0.7, opacity: 1, curveness: 0.06 },
       itemStyle: { borderColor: col.surface, borderWidth: 1.5 },
       emphasis: { focus: 'adjacency', lineStyle: { color: col.accent, width: 1.4, opacity: 1 }, label: { show: !ctx.redacted } },
       label: { position: 'right' },
+      labelLayout: { hideOverlap: true },
+      top: 12, bottom: 12, left: 12, right: 12,
     }],
   });
   return true;
@@ -239,16 +202,6 @@ function pageTable(d: Dash, ctx: OverviewCtx): string {
   return `<table><thead><tr><th>Page</th><th class="num">Clicks</th><th class="num">Change</th><th class="num">Pos</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
-// ── Jobs & data freshness (from the DB, not the MCP's in-memory jobs) ──
-export function jobsHtml(d: Dash): string {
-  const src: any[] = d.freshness?.sources ?? [];
-  if (!src.length) return '<div class="empty-state">No data sources recorded yet.</div>';
-  return `<div class="jobs">${src.map(s => `<div class="job"><span class="job-tag">${esc(KIND_LABEL[s.kind] ?? s.kind)}</span>` +
-    `<span class="job-state"><span class="dot ${stateDot(s.state)}"></span>${esc(s.state)}</span>` +
-    `<span class="job-detail" title="${esc(s.detail)}">${esc(s.detail)}${s.error ? ` <span class="job-err">- ${esc(String(s.error).slice(0, 120))}</span>` : ''}</span>` +
-    `<span class="job-at" title="${esc(s.at ?? '')}">${esc(ago(s.at))}</span></div>`).join('')}</div>`;
-}
-
 export function renderSideFreshness(d: Dash): void {
   const el = document.getElementById('sideFresh');
   if (!el) return;
@@ -268,8 +221,18 @@ export function renderHealthTop(d: Dash, ctx: OverviewCtx): void {
   if (!ch?.totalPages) {
     if (k) k.innerHTML = '';
     if (flowCard) flowCard.style.display = 'none';
+    const mixCard = document.getElementById('healthMixCard');
+    if (mixCard) mixCard.style.display = 'none';
     return;
   }
+  // The status mix + leak rows (formerly the Overview's crawl-health card).
+  const mixCard = document.getElementById('healthMixCard');
+  if (mixCard) mixCard.style.display = '';
+  const mix = document.getElementById('healthMix');
+  if (mix) mix.innerHTML = crawlCard(d);
+  const cs = document.getElementById('healthMixSrc');
+  const shown = x(d).freshness?.shownCrawl;
+  if (cs) cs.textContent = shown?.at ? `Crawl · ${ago(shown.at)}${shown.partial ? ' (partial)' : ''}` : 'Crawl';
   const rc: any[] = ch.responseCodes ?? [];
   // HTTP statuses only: 'Blocked by robots' is an indexability reason and 'Fetch failed' comes from
   // the errors table, neither is a crawled page's status (they'd inflate the share past 100%).
@@ -293,25 +256,14 @@ export function renderHealthTop(d: Dash, ctx: OverviewCtx): void {
   if (flowEl && flow.length) {
     const tone: Record<string, string> = { bad: 'dot-bad', warn: 'dot-high', muted: 'dot-never' };
     flowEl.innerHTML = `<table><thead><tr><th>Type</th><th class="num">URLs</th><th class="num">Share</th><th>Most-linked example</th></tr></thead><tbody>${flow.map(r =>
-      `<tr><td><span class="dot ${tone[r.tone] ?? 'dot-never'}" style="margin-right:8px"></span>${esc(r.label)}</td><td class="num">${fmt(r.count)}</td><td class="num">${Math.round((r.count / ch.totalPages) * 100)}%</td><td class="url" title="${esc(r.example ?? '')}">${esc(r.example ? ctx.shortPath(r.example, 60) : '-')}</td></tr>`).join('')}</tbody></table>`;
+      `<tr><td><span class="lbl-dot"><span class="dot ${tone[r.tone] ?? 'dot-never'}"></span>${esc(r.label)}</span></td><td class="num">${fmt(r.count)}</td><td class="num">${Math.round((r.count / ch.totalPages) * 100)}%</td><td class="url" title="${esc(r.example ?? '')}">${esc(r.example ? ctx.shortPath(r.example, 60) : '-')}</td></tr>`).join('')}</tbody></table>`;
   }
 }
 
-export function renderOverview(d: Dash, ctx: OverviewCtx): void {
+/** Search performance tab, top: the daily small multiples and the top keyword / page tables. */
+export function renderSearchTop(d: Dash, ctx: OverviewCtx): void {
   const set = (id: string, html: string): void => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
-  set('ovKpis', overviewKpis(d));
   trendMultiples(d, ctx);
-  set('ovFindings', findingsCard(d, ctx));
-  set('ovCrawl', crawlCard(d));
-  // Stamp the crawl whose pages the card shows, not merely the newest run (a failed run that wrote
-  // nothing leaves the previous crawl's pages on screen).
-  const cs = document.getElementById('ovCrawlSrc');
-  const shown = x(d).freshness?.shownCrawl;
-  if (cs) cs.textContent = shown?.at ? `Crawl · ${ago(shown.at)}${shown.partial ? ' (partial)' : ''}` : 'Crawl';
-  const drawn = drawNetwork(d, ctx, 'ovNetChart', { compact: true });
-  const ns = document.getElementById('ovNetSummary');
-  if (ns) ns.textContent = drawn ? `Preview of the internal link network: the top ${Math.min(90, d.structureGraph.nodes.length)} pages by internal PageRank.` : 'No crawl network yet.';
-  set('ovKeywords', kwTable(d));
-  set('ovPages', pageTable(d, ctx));
-  set('ovJobs', jobsHtml(d));
+  set('spKeywords', kwTable(d));
+  set('spPages', pageTable(d, ctx));
 }

@@ -8,7 +8,9 @@
 //   node scripts/demo-screenshots.mjs --data <dir> [--out assets] [--theme light|dark] [--only name,name]
 //
 // Serves the built dashboard in-process against <dir> (which must hold ONLY the demo database),
-// drives it with Playwright at 1440px wide, and writes palette-optimised PNGs into assets/.
+// drives it with Playwright at 1440px wide (the Summary also at 390, the phone layout), and writes
+// palette-optimised PNGs into assets/. A shot with height 'auto' is captured at the page's full
+// height; the phone shot also fails the run if the page scrolls sideways.
 // Needs `playwright` (npx playwright install chromium) or a local Chrome; `sharp` for optimisation.
 //
 // The Content research tab makes live lookups (Google News / DataForSEO). Those handlers are
@@ -75,19 +77,27 @@ page.on('response', r => { if (r.status() >= 400) consoleErrors.push(`HTTP ${r.s
 let sharp = null;
 try { sharp = (await import('sharp')).default; } catch { console.error('[shots] sharp not available - writing unoptimised PNGs'); }
 
-async function open(tab, height) {
+async function open(tab, height, width = WIDTH) {
   // The sidebar is viewport-tall and sticky, so size the viewport to the capture rather than
   // stitching a full-page screenshot (which would leave the sidebar short).
-  await page.setViewportSize({ width: WIDTH, height });
+  await page.setViewportSize({ width, height: height === 'auto' ? 1000 : height });
   await page.goto(pageUrl, { waitUntil: 'networkidle' });
-  await page.waitForSelector('#ovTrendChart canvas', { timeout: 30_000 });
-  if (tab !== 'overview') await page.click(`.nav-item[data-panel="${tab}"]`);
+  await page.waitForSelector('#sumTrendChart canvas', { timeout: 30_000 });
+  if (tab !== 'summary') await page.click(`.nav-item[data-panel="${tab}"]`);
   await page.waitForTimeout(tab === 'architecture' ? 6000 : 2200); // force-layout graphs need to settle
+  if (height === 'auto') {
+    const full = await page.evaluate(() => Math.ceil(document.documentElement.scrollHeight));
+    await page.setViewportSize({ width, height: full });
+    await page.waitForTimeout(1200); // charts re-lay out on resize
+    return await page.evaluate(() => Math.ceil(document.documentElement.scrollHeight));
+  }
+  return height;
 }
 
 // shot: { name, tab, height, selector?, extend? (visible sibling cards to include), cap?, before? }
 const SHOTS = [
-  { name: 'dashboard-overview', tab: 'overview', height: 1500 },
+  { name: 'dashboard-summary', tab: 'summary', height: 'auto' },
+  { name: 'dashboard-summary-mobile', tab: 'summary', height: 'auto', width: 390, lightOnly: true },
   { name: 'tab-issues', tab: 'issues', height: 1400 },
   { name: 'crawl-health', tab: 'health', height: 1300 },
   { name: 'network', tab: 'architecture', height: 1700 },
@@ -107,7 +117,9 @@ mkdirSync(OUT, { recursive: true });
 const report = [];
 for (const s of SHOTS) {
   if (ONLY && !ONLY.includes(s.name)) continue;
-  await open(s.tab, s.height);
+  if (s.lightOnly && THEME !== 'light') continue;
+  const width = s.width ?? WIDTH;
+  const height = await open(s.tab, s.height, width);
   if (s.before) await s.before();
   const overflowX = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   let clip;
@@ -127,13 +139,14 @@ for (const s of SHOTS) {
     const pad = 16;
     clip = { x: Math.max(0, r.x - pad), y: Math.max(0, r.y - pad), width: r.width + pad * 2, height: Math.min(r.height + pad * 2, s.cap ?? Infinity) };
   } else {
-    clip = { x: 0, y: 0, width: WIDTH, height: s.height };
+    clip = { x: 0, y: 0, width, height };
   }
   let buf = await page.screenshot({ fullPage: !!s.selector, clip });
   if (sharp) buf = await sharp(buf).png({ palette: true, quality: 90, effort: 10, compressionLevel: 9 }).toBuffer();
   const file = path.join(OUT, `${s.name}${THEME === 'dark' ? '-dark' : ''}.png`);
   writeFileSync(file, buf);
   report.push({ file: path.relative(root, file), kb: Math.round(buf.length / 1024), overflowX });
+  if (overflowX && width < 900) consoleErrors.push(`${s.name}: the page scrolls sideways at ${width}px`);
 }
 await browser.close();
 console.table(report);

@@ -22,9 +22,28 @@ export function h<K extends keyof HTMLElementTagNameMap>(
   return el;
 }
 
-/** Compact number: 1234 -> 1,234 · 56700 -> 56.7k · 14200000 -> 14.2M. */
+// One number rule for the whole dashboard: tables, lists and sentences print the full grouped
+// figure (14,659); only headline KPI values and chart labels use the compact form (14.7K), via
+// fmtCompact. Mixing the two in one column read as two different kinds of number.
+/** Full grouped number: 14659 -> 14,659 · 2.25 -> 2.3. */
 export const fmtNum = (n: number): string =>
-  new Intl.NumberFormat('en', { notation: n >= 10000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(n);
+  new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(n);
+/** Compact number for headline values and chart labels: 56700 -> 56.7K · 1234 -> 1,234. */
+export const fmtCompact = (n: number): string =>
+  new Intl.NumberFormat('en-GB', { notation: Math.abs(n) >= 10000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(n);
+
+// One date rule: prose and labels "15 Oct 2026"; axes and compact chips "15 Oct"; months "Jul 26".
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** 'YYYY-MM-DD…' -> "15 Oct 2026" (or "15 Oct" with short). Unparseable input is returned as-is. */
+export const fmtDate = (iso: string | null | undefined, short = false): string => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso ?? '');
+  if (!m) return iso ?? '';
+  return `${Number(m[3])} ${MON[Number(m[2]) - 1]}${short ? '' : ` ${m[1]}`}`;
+};
+/** 'YYYY-MM' -> "Jul 26". */
+export const fmtMonth = (ym: string): string => { const m = /^(\d{4})-(\d{2})/.exec(ym); return m ? `${MON[Number(m[2]) - 1]} ${m[1].slice(2)}` : ym; };
+/** 'YYYY-WW' (SQLite %W) -> "W28". */
+export const fmtWeek = (w: string): string => w.replace(/^\d{4}-/, 'W');
 
 /** Axis-discipline formatter (brief pattern #4): 14M not 14,000,000. */
 export const fmtAxis = (n: number): string => {

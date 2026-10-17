@@ -35,7 +35,7 @@ you  › run an SEO audit on mysite.com
 you  › generate the fix for #1 ▍
 ```
 
-[![The dashboard overview - the KPI strip with the Site Health Score, search performance over time, findings by priority, crawl health and the site-network preview](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/dashboard-overview.png)](https://github.com/houtini-ai/seo-audit)
+[![The Summary tab - data freshness, a one-line verdict, the headline tiles, 16 months of clicks, health per audit, what's broken and what to fix first, what changed since the last crawl, AI search and data coverage](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/dashboard-summary.png)](https://github.com/houtini-ai/seo-audit)
 
 [![The Network tab - the site-network map of your internal link skeleton, equity vs traffic by template, and the folder-to-folder equity flow](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/network.png)](https://github.com/houtini-ai/seo-audit)
 

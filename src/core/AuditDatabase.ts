@@ -228,6 +228,7 @@ export class AuditDatabase {
         level TEXT,
         checks TEXT,        -- JSON [{id,category,label,present,detail,fix}]
         by_category TEXT,   -- JSON [{category,passed,total}]
+        bots TEXT,          -- JSON per-AI-bot robots verdicts (aiBots.ts)
         checked_at TEXT
       );
     `);
@@ -617,6 +618,7 @@ export class AuditDatabase {
     ensure('audit_runs', 'health_basis', 'health_basis TEXT');   // audit | snapshot:<crawlId> | none:<reason>
     ensure('audit_runs', 'check_ids', 'check_ids TEXT');         // JSON array of the check ids that ran (sorted)
     ensure('audit_runs', 'server_version', 'server_version TEXT');
+    ensure('agent_readiness', 'bots', 'bots TEXT');           // JSON [{bot,operator,group,verdict,inherits}] (aiBots.ts); NULL before it existed
     ensure('pages', 'images_missing_dimensions', 'images_missing_dimensions INTEGER DEFAULT 0');
     ensure('pages', 'canonical_count', 'canonical_count INTEGER DEFAULT 0');
     ensure('pages', 'canonical_relative', 'canonical_relative INTEGER DEFAULT 0');
