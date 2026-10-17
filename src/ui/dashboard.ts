@@ -4,7 +4,7 @@ import {
   attachSort, accordionItem, accordionSection, accordionControls,
   EChartWrapper, chartPalette, axisDefaults, tooltipDefaults, emptyState, countDelta, rankDelta,
 } from './lib/index.js';
-import { shareText, sharePct } from '../core/displayRules.js';
+import { shareText, sharePct, quickWinsEmptyReason, trappedEmptyReason } from '../core/displayRules.js';
 import { renderSearchTop, renderHealthTop, renderSideFreshness, drawNetwork, pctChg, SEV_ORDER, SEV_LABEL, type OverviewCtx } from './panels.js';
 import { renderSummary, type SummaryCtx } from './summary.js';
 import { renderFieldCwv } from './cwv.js';
@@ -381,7 +381,7 @@ function renderTopicClusters(d: DashboardData): void {
 // Audit-deliverable view: issues grouped by category, each sub-headed with a real example + fix.
 function renderRecommendations(fc: DashboardData['findings']): void {
   const el = $('recs');
-  if (!fc || !fc.recommendations?.length) { el.innerHTML = '<p class="muted">No audit yet - run run_audit.</p>'; return; }
+  if (!fc || !fc.recommendations?.length) { el.innerHTML = `<p class="muted">${fc ? 'The latest audit found nothing to fix.' : 'No audit yet - run run_audit.'}</p>`; return; }
   const exampleRow = (ex: { urlKey: string | null; evidence: Record<string, unknown>; clicks: number; impressions: number }): string => {
     const fullPath = ex?.urlKey ? (ex.urlKey.replace(/^https?:\/\/[^/]+/, '') || '/') : '';
     const path = esc(ex?.urlKey ? shortPath(ex.urlKey) : '');
@@ -418,9 +418,9 @@ let issuesFilter: ((f: { area?: string; check?: string }) => void) | null = null
 function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof palette>): void {
   const chipsEl = $('sevChips'), tableEl = $('findingsTable');
   if (!fc || !fc.byCheck.length) {
-    chipsEl.innerHTML = '<span class="muted">No audit yet - run run_audit.</span>';
+    chipsEl.innerHTML = `<span class="muted">${fc ? 'The latest audit found nothing to fix.' : 'No audit yet - run run_audit.'}</span>`;
     tableEl.innerHTML = '';
-    $('findingsSummary').textContent = 'No audit findings yet.';
+    $('findingsSummary').textContent = fc ? 'The latest audit found nothing to fix.' : 'No audit findings yet.';
     return;
   }
   const sevCounts: Record<string, number> = {};
@@ -573,6 +573,7 @@ function render(data: DashboardData): void {
   buildExportBar(data);
 
   // 0) Equity vs reality - template mismatch (bars) + per-URL scatter (the architecture flagship)
+  const crawled = (data.crawlHealth?.totalPages ?? 0) > 0;
   const mm = data.templateMismatch ?? [];
   if (mm.length) {
     const labels = mm.map(m => m.template).reverse();
@@ -593,7 +594,7 @@ function render(data: DashboardData): void {
       ? `/${sink.template}/ absorbs ${sink.iprPct}% of internal equity but drives ${sink.trafficPct}% of traffic - equity flowing into a dead end.`
       : 'Internal equity share vs organic traffic share, by template.';
   } else {
-    wrap('mismatchChart').setEmpty('Run a crawl to map equity flow', col);
+    wrap('mismatchChart').setEmpty(crawled ? 'No indexable 200 page in the crawl to group by template' : 'Run a crawl to map equity flow', col);
     $('mismatchSummary').textContent = 'Run a crawl (refresh_property) to see equity flow by template.';
   }
 
@@ -645,7 +646,7 @@ function render(data: DashboardData): void {
     wrap('scatterChart').on('click', (p: any) => { if (p?.data?.id) window.open(p.data.id, '_blank', 'noopener'); });
     $('scatterSummary').textContent = `${sc.length} URLs by internal PageRank and impressions; bottom-right = high-authority pages earning no traffic. Scroll to zoom, click a point to open the page.`;
   } else {
-    wrap('scatterChart').setEmpty('Run a crawl to map equity vs traffic', col);
+    wrap('scatterChart').setEmpty(crawled ? 'No page has iPR 15+ or 5+ impressions in the last 28 days to plot' : 'Run a crawl to map equity vs traffic', col);
     $('scatterSummary').textContent = 'Run a crawl (refresh_property) to see the equity map.';
   }
 
@@ -884,7 +885,7 @@ function render(data: DashboardData): void {
   $('topLinkedTable').innerHTML = tlp.length
     ? tableHtml(['URL', 'Internal links in', 'Status', 'Indexable'], tlp.map(p =>
       `<tr><td class="url" title="${esc(p.url)}">${esc(shortPath(p.url))}</td><td class="num">${fmt(p.inlinks)}</td><td>${statusBadge(p.status)}</td><td>${p.indexable ? icons.check : `${icons.x} ${esc(p.reason || '')}`}</td></tr>`))
-    : emptyState('Run a crawl to see the internal-link hierarchy.', 'refresh_property');
+    : (crawled ? '<p class="muted">No internal page in the crawl has an internal link in.</p>' : emptyState('Run a crawl to see the internal-link hierarchy.', 'refresh_property'));
   // status null = not fetched (rate limited, #54) or robots-blocked: unknown, not a broken page.
   const tlpBroken = tlp.filter(p => p.status != null && p.status !== 200).length;
   $('topLinkedSummary').textContent = `Top ${tlp.length} internally-linked pages by inlink count; ${tlpBroken} return a non-200 status.`;
@@ -896,11 +897,12 @@ function render(data: DashboardData): void {
     // Tone (bar colour) rides on each data row - assigned in dashboardData where the bucket's
     // meaning is known, never inferred from label text here.
     const toneColor: Record<string, string> = { ok: col.green, warn: col.amber, bad: col.red, muted: col.grey };
-    const sfBars = (id: string, rows: { label: string; count: number; tone?: string }[] | undefined, base: number): void => {
+    const sfBars = (id: string, rows: { label: string; count: number; tone?: string }[] | undefined, base: number, none = 'None in this crawl.'): void => {
       const el = $(id);
       if (!rows?.length || base <= 0) {
         chartsReg.get(id)?.dispose(); chartsReg.delete(id);
-        el.innerHTML = '<div class="sf-empty">Nothing to show - run a crawl first.</div>';
+        el.style.height = '';
+        el.innerHTML = `<div class="sf-empty">${base > 0 ? none : 'Nothing to show - run a crawl first.'}</div>`;
         return;
       }
       if (el.querySelector('.sf-empty')) el.innerHTML = '';
@@ -938,9 +940,9 @@ function render(data: DashboardData): void {
     sfBars('sfSpeed', ch?.speed, total);
     sfBars('sfSize', ch?.htmlSize, total);
     sfBars('sfDepth', ch?.depth, total);
-    sfBars('sfOnPage', ch?.onPage, total);
-    sfBars('sfTitles', ch?.titles, total);
-    sfBars('sfMetas', ch?.metas, total);
+    sfBars('sfOnPage', ch?.onPage, total, 'No on-page issue on any indexable page.');
+    sfBars('sfTitles', ch?.titles, total, 'No indexable page has a missing, duplicate, long or short title.');
+    sfBars('sfMetas', ch?.metas, total, 'No indexable page has a missing, duplicate, long or short meta description.');
     const card = (id: string, show: boolean): HTMLElement => { const c = $(id); c.style.display = show ? '' : 'none'; return c; };
     card('sfServerErrorsCard', !!ch?.serverErrors?.length);
     if (ch?.serverErrors?.length) $('sfServerErrors').innerHTML = tableHtml(['URL', 'Status'],
@@ -1084,7 +1086,7 @@ function render(data: DashboardData): void {
       ],
     });
   } else {
-    wrap('quickWinsChart').setEmpty('No query data yet - sync Search Console.', col);
+    wrap('quickWinsChart').setEmpty(quickWinsEmptyReason({ hasGsc: !!data.summary, plotted: 0, wins: 0 })!, col);
   }
 
   // Biggest quick wins table - ranked by recoverable clicks
@@ -1096,9 +1098,11 @@ function render(data: DashboardData): void {
     `<td class="num">${q.position.toFixed(1)}</td><td class="num">${fmt(q.impressions)}</td>` +
     `<td class="num">${q.ctr.toFixed(1)}% <span class="muted">/ ${q.expectedCtr.toFixed(1)}%</span></td>` +
     `<td class="num">${fmt(q.potential)}</td></tr>`).join('');
+  // With nothing plotted the matrix's empty state already gives the reason: don't repeat it here.
+  $('quickWinsTableCard').style.display = qw.length ? '' : 'none';
   $('quickWinsTable').innerHTML = qwTop.length
     ? `<table><thead><tr><th>Query</th><th>Opportunity</th><th class="num">Pos</th><th class="num">Impr</th><th class="num">CTR / exp.</th><th class="num">Clicks recoverable</th></tr></thead><tbody>${qwRows}</tbody></table>`
-    : '<p class="muted">No quick wins surfaced - run a sync + audit, or this property is already clicking to potential.</p>';
+    : `<p class="muted">${esc(quickWinsEmptyReason({ hasGsc: !!data.summary, plotted: qw.length, wins: 0 }) ?? '')}</p>`;
 
   // Content decay - pages to refresh, ranked by clicks lost
   const decay = data.contentDecay ?? [];
@@ -1213,13 +1217,13 @@ function render(data: DashboardData): void {
   const pp = data.pagePerformance ?? [];
   $('pagePerfTable').innerHTML = pp.length
     ? tableHtml(['Trend', 'Page', 'Clicks', 'Clicks change', 'Impressions', 'Position'], pp.map(p => `<tr><td><span class="cat ${catClass(p.category)}">${p.category}</span></td><td class="url" title="${esc(p.urlKey)}">${esc(shortPath(p.urlKey))}</td><td class="num" data-sort="${p.clicks}">${fmt(p.clicks)}</td><td class="num" data-sort="${p.clicks - p.prevClicks}">${countDelta(p.clicks, p.prevClicks)}</td><td class="num" data-sort="${p.impressions}">${fmt(p.impressions)}</td><td class="num">${Number(p.position).toFixed(1)}</td></tr>`))
-    : '<div class="hint">No GSC data.</div>';
+    : '<div class="hint">No page appears in Search Console in the last 28 days.</div>';
   $('pagePerfSummary').textContent = `${pp.length} pages categorised by 28-day trend.`;
 
   const mv = data.keywordMovement ?? [];
   $('movementTable').innerHTML = mv.length
     ? tableHtml(['Movement', 'Query', 'First pos', 'Latest pos', 'Pos change'], mv.map(m => `<tr><td><span class="cat ${catClass(m.category)}">${m.category}</span></td><td>${esc(m.query)}</td><td class="num">${Number(m.firstPos).toFixed(1)}</td><td class="num">${Number(m.lastPos).toFixed(1)}</td><td class="num" data-sort="${m.delta}">${rankDelta(m.lastPos, m.firstPos, { short: true })}</td></tr>`))
-    : '<div class="hint">No movement data.</div>';
+    : '<div class="hint">No query moved: none with 50+ impressions in the last 90 days moved 3+ positions, or into or out of the top 3, between its first and latest day.</div>';
   $('movementSummary').textContent = `${mv.length} queries with rank movement.`;
 
   const dv = data.deviceBreakdown ?? [];
@@ -1418,7 +1422,7 @@ function renderBacklinkProfile(data: DashboardData): void {
   }
   const s = bp.summary;
   const when = (iso: string | null | undefined): string => iso ? esc(String(iso).slice(0, 10)) : 'unknown date';
-  const nc = (what: string): string => `<div class="empty-state">${what} not collected — re-run <code>pull_backlinks</code> (0.16+ stores it).</div>`;
+  const nc = (what: string): string => `<div class="empty-state">${what} not collected: this profile was pulled before the dashboard stored it. Re-run <code>pull_backlinks</code> to add it.</div>`;
   const kpis = s ? kpiGrid([
     { label: 'Backlinks', value: fmtNum(s.backlinks) },
     { label: 'Referring domains', value: fmtNum(s.referringDomains) },
@@ -1490,7 +1494,8 @@ function renderLinks(data: DashboardData): void {
   renderBacklinkProfile(data);
   const el = document.getElementById('linksPanel');
   if (!el) return;
-  if (data.apiKeys && !data.apiKeys.dataforseo) {
+  // Stored prospects show whatever the key state: the key gates new pulls, not data already held.
+  if (data.apiKeys && !data.apiKeys.dataforseo && !(data.linkProspects ?? []).length) {
     el.innerHTML = upsellCard({ title: 'Link intersect — the links your competitors have that you don’t', lead: 'Find the domains linking to your competitors but not to you, ranked by authority — a ready-made outreach list. Needs a DataForSEO account (with the Backlinks subscription). An optional Majestic key re-sorts by Trust Flow.', provider: 'dataforseo', cta: 'Get DataForSEO' });
     return;
   }
@@ -1547,8 +1552,8 @@ async function runResearch(kind: string, keyword: string, out: HTMLElement): Pro
       const arts: any[] = ((await callServer('news_discovery', { keyword })) as any)?.structuredContent?.articles ?? [];
       out.innerHTML = arts.length ? tbl('<tr><th>Article</th><th>Source</th><th>When</th></tr>', arts.slice(0, 20).map(a => `<tr><td><a class="rec-url" href="${esc(a.url ?? '#')}" target="_blank" rel="noopener">${esc(a.title ?? '(untitled)')}</a></td><td>${esc(a.source ?? '–')}</td><td>${esc(a.timestamp ?? '–')}</td></tr>`).join('')) : `<div class="empty-state">No news for “${esc(keyword)}”.</div>`;
     }
-  } catch {
-    out.innerHTML = `<div class="empty-state">Lookup failed — a DataForSEO key is required for live research.</div>`;
+  } catch (e) {
+    out.innerHTML = `<div class="empty-state">Lookup failed: ${esc(e instanceof Error ? e.message : String(e))}</div>`;
   }
 }
 
@@ -1559,7 +1564,9 @@ function renderTrapped(data: DashboardData): void {
   if (!el) return;
   const rows = data.trappedAuthority ?? [];
   if (!rows.length) {
-    el.innerHTML = `<div class="empty-state">No trapped-authority pages found${data.apiKeys && !data.apiKeys.dataforseo ? ' — DataForSEO backlink data isn’t connected.' : ' — run pull_backlinks to bring in referring-domain counts (with a Majestic key set, pages are also scored by on-topic Trust Flow), then re-open the dashboard.'}</div>`;
+    // From the STORED backlink rows (the Links tab and the Summary coverage read the same), not the key.
+    const stored = Math.max(data.backlinkProfile?.pagesTotal ?? 0, (data as any).coverage?.backlinkPages ?? 0);
+    el.innerHTML = `<div class="empty-state">${esc(trappedEmptyReason({ backlinkPages: stored, hasKey: data.apiKeys ? data.apiKeys.dataforseo : null }))}</div>`;
     return;
   }
   // Majestic-enriched view shows Trust Flow + the page's top topic; otherwise the DataForSEO view.
@@ -1589,8 +1596,8 @@ async function loadRelated(keyword: string): Promise<void> {
       (paa.length ? `<div class="group-label">People also ask</div>${tags(paa)}` : '') +
       (rel.length ? `<div class="group-label">Related searches</div>${tags(rel)}` : '') +
       (!paa.length && !rel.length && !vol ? `<div class="group-label">No DataForSEO data for “${esc(keyword)}”.</div>` : '');
-  } catch {
-    el.innerHTML = `<div class="group-label">DataForSEO credentials needed for keyword lookups.</div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="group-label">Lookup failed: ${esc(e instanceof Error ? e.message : String(e))}</div>`;
   }
 }
 

@@ -83,6 +83,7 @@ export class EChartWrapper {
 
   /** (Re)build the chart with a full option. Re-init keeps theme-change simple. */
   setOption(option: echarts.EChartsCoreOption): void {
+    this.el.classList.remove('chart-is-empty');
     this.chart?.dispose();
     this.chart = echarts.init(this.el);
     this.chart.setOption(option);
@@ -99,8 +100,9 @@ export class EChartWrapper {
   /** Centered muted message for the no-data case (chart canvas kept for layout). */
   setEmpty(text: string, col: ChartPalette): void {
     this.setOption({
-      title: { text, left: 'center', top: 'center', textStyle: { color: col.muted, fontSize: 13, fontWeight: 'normal' } },
+      title: { text, left: 'center', top: 'center', textStyle: { color: col.muted, fontSize: 13, fontWeight: 'normal', width: Math.min(640, (this.el.clientWidth || window.innerWidth - 80) - 48), overflow: 'break', lineHeight: 19 } },
     });
+    this.el.classList.add('chart-is-empty');
   }
 
   on(event: string, handler: (p: any) => void): void {

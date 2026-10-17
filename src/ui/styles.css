@@ -860,3 +860,6 @@ select, select.sel, #cannSelect {
   .fcwv-grid { grid-template-columns: minmax(0, 1fr); }
   .fcwv-col + .fcwv-col { border-left: 0; padding-left: 0; border-top: 1px solid var(--border-subtle); margin-top: 14px; padding-top: 12px; }
 }
+
+/* An empty chart collapses to its message (EChartWrapper.setEmpty) instead of a tall blank canvas. */
+.chart.chart-is-empty { height: 120px !important; }

@@ -9,7 +9,7 @@ import path from 'node:path';
 import { rmSync } from 'node:fs';
 import {
   countChange, shareText, sharePct, capHealth, rankChange, SMALL_BASE_MIN,
-  assessField, fieldValue, fieldWindowLagDays,
+  assessField, fieldValue, fieldWindowLagDays, quickWinsEmptyReason, trappedEmptyReason,
 } from '../dist/core/displayRules.js';
 import { cwvFieldPayload } from '../dist/core/CruxSync.js';
 import { AuditDatabase } from '../dist/core/AuditDatabase.js';
@@ -101,6 +101,20 @@ console.log('field CWV (CrUX)');
   ok(ph?.metrics?.inp === null && ph?.history?.inp?.length === 0, 'no INP rows: inp is null and its history empty (not zeros)');
   ok(cf?.lastChecked === '2026-10-17 16:20:57', 'the last check date ships, so the UI can say how old the window is');
   adb.close();
+}
+
+// ── 6. Empty states name the true reason ──────────────────────────────────────────────────────
+console.log('empty-state reasons');
+{
+  const noRows = quickWinsEmptyReason({ hasGsc: true, plotted: 0, wins: 0 });
+  ok(!/sync/i.test(noRows) && /50 impressions/.test(noRows) && /20 or better/.test(noRows), `GSC held, nothing qualifies: names the rule, never "sync Search Console" (${noRows})`);
+  ok(/sync_gsc/.test(quickWinsEmptyReason({ hasGsc: false, plotted: 0, wins: 0 })), 'no GSC at all: asks for sync_gsc');
+  ok(/each of the 7 queries/.test(quickWinsEmptyReason({ hasGsc: true, plotted: 7, wins: 0 })), 'queries plotted but no win: says they click at the expected rate');
+  ok(quickWinsEmptyReason({ hasGsc: true, plotted: 7, wins: 3 }) === null, 'with wins there is no empty state');
+  const stored = trappedEmptyReason({ backlinkPages: 2, hasKey: false });
+  ok(/2 backlinked pages stored/.test(stored) && !/connect|key/i.test(stored), `backlinks stored but no key: reads the stored data, not the key (${stored})`);
+  ok(/DataForSEO key/.test(trappedEmptyReason({ backlinkPages: 0, hasKey: false })), 'nothing stored and no key: says a key is needed');
+  ok(/pull_backlinks/.test(trappedEmptyReason({ backlinkPages: 0, hasKey: true })), 'nothing stored, key set: asks for pull_backlinks');
 }
 
 rmSync(dataDir, { recursive: true, force: true });

@@ -7,7 +7,7 @@ import { dbPathFor, jobScopeFor } from './paths.js';
 import { gscFreshness } from './gscFreshness.js';
 import { expectedCtr } from './ctrModel.js';
 import { loadBrandQueries, brandPredicate } from './brand.js';
-import { SMALL_BASE_MIN } from './displayRules.js';
+import { SMALL_BASE_MIN, QUICK_WIN_MIN_IMPRESSIONS, QUICK_WIN_MAX_POSITION, TRAPPED_MIN_REF_DOMAINS, TRAPPED_MIN_DEPTH } from './displayRules.js';
 import { HTML_CT } from './sql.js';
 import { gscMixedShape } from './gscRows.js';
 import { latestSerpFootprint, ensureFootprintTable, type SerpFootprint } from './serpFootprint.js';
@@ -387,7 +387,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const quickWins = (db.db.prepare(
       `SELECT query, SUM(impressions) impr, SUM(clicks) clicks, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
        FROM gsc_rows WHERE query IS NOT NULL AND ${UB} AND date > date(?, '-28 days')
-       GROUP BY query HAVING SUM(impressions) >= 50 AND pos <= 20
+       GROUP BY query HAVING SUM(impressions) >= ${QUICK_WIN_MIN_IMPRESSIONS} AND pos <= ${QUICK_WIN_MAX_POSITION}
        ORDER BY SUM(impressions) DESC LIMIT 300`).all(maxDate) as { query: string; impr: number; clicks: number; pos: number }[])
       .map(r => {
         const ctr = r.impr ? r.clicks / r.impr : 0;
@@ -937,8 +937,8 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
                 COALESCE(b.referring_domains,0) rd, COALESCE(b.backlinks,0) bl,
                 b.trust_flow tf, b.topical_trust_flow ttf
          FROM page_backlinks b JOIN pages p ON p.url_key = b.url_key
-         WHERE p.status_code = 200 AND COALESCE(b.referring_domains,0) >= 2
-           AND (p.click_depth IS NULL OR p.click_depth >= 3)`,
+         WHERE p.status_code = 200 AND COALESCE(b.referring_domains,0) >= ${TRAPPED_MIN_REF_DOMAINS}
+           AND (p.click_depth IS NULL OR p.click_depth >= ${TRAPPED_MIN_DEPTH})`,
       ).all() as { url: string; ipr: number; cd: number | null; rd: number; bl: number; tf: number | null; ttf: string | null }[];
       trappedAuthority = taRows
         .map(r => {
