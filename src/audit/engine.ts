@@ -7,6 +7,7 @@ import { brandToken } from '../core/url-key.js';
 import { snapshotCrawl } from './drift.js';
 import { checkIdsJson, computeHealth, serverVersion } from './history.js';
 import { CHECKS, expectedCtr, type CheckContext, type CheckDef } from './checks.js';
+import { PAGE_EXPERIENCE_STAKE_SHARE } from './stakes.js';
 
 const MAX_PER_CHECK = 500; // bound findings/check so a huge site can't balloon the table
 
@@ -26,6 +27,25 @@ function yieldOf(chk: CheckDef): number {
 }
 // Site-wide (null-url) findings: stake = a severity-scaled fraction of total site clicks.
 const SITEWIDE_FRACTION: Record<Severity, number> = { crit: 0.25, high: 0.12, med: 0.04, low: 0.01, info: 0.005 };
+/**
+ * Clicks at stake for page-experience findings (0.16.1). An asset or accessibility finding is keyed to
+ * the page that loads the asset with the most GSC clicks, so T used to be that page's FULL click count:
+ * an oversized image on the site's top page outranked a high-severity CTR or decay finding on the
+ * same page, because both claimed all 23k clicks. But fixing one image, one render-blocking set or one
+ * cache header doesn't put a page's clicks at stake the way a snippet, indexation or content fix does:
+ * page experience (Core Web Vitals) is a light ranking signal next to relevance, accessibility isn't
+ * one, and the asset is one of many the page loads (LCP only if it is the LCP element, which a
+ * header-only crawl can't tell). The principled stake would be the share of the page's weight or LCP
+ * the asset accounts for, but bodies and the LCP element aren't recorded, so the share is a stated
+ * assumption: a tenth of the page's clicks. It changes ordering only; every finding still exists, and
+ * a perf issue on a genuinely big page still ranks (10% of a 20k-click page beats most of a small one).
+ * Field-data CWV failures (high-yield-cwv-fail) are measured per page and keep the full stake.
+ */
+export { PAGE_EXPERIENCE_STAKE_SHARE };
+export function stakeShareOf(chk: CheckDef): number {
+  if (chk.stakeShare != null) return Math.max(0, Math.min(1, chk.stakeShare));
+  return chk.category === 'accessibility' ? PAGE_EXPERIENCE_STAKE_SHARE : 1;
+}
 // Floor so a high-severity finding on a zero-GSC page (e.g. backlinks-to-404) never scores 0.
 const SEVERITY_FLOOR: Record<Severity, number> = { crit: 5, high: 2, med: 0.5, low: 0.1, info: 0.05 };
 
@@ -186,6 +206,7 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
         if (all.length > MAX_PER_CHECK) truncated.set(chk.id, all.length);
         const E = Math.max(chk.effortBase * scale, 0.0001); // effort in ~hours
         const Y = yieldOf(chk);
+        const share = stakeShareOf(chk);
         for (const f of findings) {
           const ev = (f.evidence ?? {}) as any;
           const evImpr = Number(ev.impressions) || 0;
@@ -226,13 +247,14 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
           } else {
             T = 0; // floored below
           }
+          T *= share; // page-experience findings stake a share of the page's clicks, not all of them
           T = Math.max(T, SEVERITY_FLOOR[chk.severity]); // floor so zero-GSC findings aren't lost
           const priority = (T * Y * chk.certainty) / E; // expected clicks per dev-hour
           insert.run({
             run_id: runId, check_id: chk.id, category: chk.category, severity: chk.severity,
             labels: JSON.stringify(chk.labels), certainty: chk.certainty, url_key: f.urlKey ?? null,
             evidence: JSON.stringify(f.evidence), traffic_at_risk: JSON.stringify(traf),
-            effort: JSON.stringify({ base: chk.effortBase, scale: Math.round(scale * 100) / 100, fixType: chk.fixType, hours: Math.round(E * 10) / 10, expectedClicks: Math.round(T * 10) / 10, yield: Math.round(Y * 100) / 100 }),
+            effort: JSON.stringify({ base: chk.effortBase, scale: Math.round(scale * 100) / 100, fixType: chk.fixType, hours: Math.round(E * 10) / 10, expectedClicks: Math.round(T * 10) / 10, yield: Math.round(Y * 100) / 100, ...(share !== 1 ? { stakeShare: share } : {}) }),
             priority, recommendation: JSON.stringify({ title: chk.title, text: chk.fix }),
           });
           total++;

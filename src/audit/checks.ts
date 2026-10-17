@@ -41,6 +41,13 @@ export interface CheckDef {
   effortBase: number; // Fibonacci ≈ effort HOURS: 1 trivial, 3 small, 5 medium, 8 hard, 13 epic
   fixType: 'global' | 'per-page' | 'automated';
   yieldCoef?: number; // 6e: expected % traffic uplift from the fix (0–1). Omitted → derived from category×severity.
+  /**
+   * 0.16.1: the share of the keyed page's clicks a finding can plausibly move (0–1). Omitted → 1 for
+   * most checks, and PAGE_EXPERIENCE_STAKE_SHARE for accessibility checks (engine.ts stakeShareOf).
+   * Set on page-experience findings about one asset or element of a page (an oversized image, an
+   * uncached script), which are keyed to the page with the most clicks but don't put all of them at stake.
+   */
+  stakeShare?: number;
   title: string;
   fix: string;
   run(ctx: CheckContext): RawFinding[];

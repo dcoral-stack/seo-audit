@@ -92,6 +92,7 @@ scripts/*
 !scripts/probe-majestic.mjs
 !scripts/build-mcpb.mjs
 !scripts/probe-jobs.mjs
+!scripts/probe-priority-calibration.mjs
 !scripts/probe-runner.mjs
 !scripts/probe-crawl-local.mjs
 !scripts/probe-checks-v2.mjs
