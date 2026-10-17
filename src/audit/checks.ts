@@ -8,6 +8,7 @@ import { latestTwoCrawls } from './drift.js';
 import { HTML_CT } from '../core/sql.js';
 import { SIGNAL_CHECKS } from './checks-signals.js';
 import { REDIRECT_CHECKS, redirectChainFindings } from './checks-redirects.js';
+import { ECOMMERCE_CHECKS } from './checks-ecommerce.js';
 
 /**
  * Check registry. Each check is a pure read over the AuditDatabase (crawl + GSC +
@@ -1531,6 +1532,8 @@ export const CHECKS: CheckDef[] = [
   ...SIGNAL_CHECKS,
   // #55 group B: redirect hygiene (item 3).
   ...REDIRECT_CHECKS,
+  // #55 group B: ecommerce (item 10).
+  ...ECOMMERCE_CHECKS,
 ];
 
 // ── Google Discover helpers (article-eligibility + directive/schema parsing) ──

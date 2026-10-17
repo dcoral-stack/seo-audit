@@ -1,6 +1,6 @@
 # The check registry
 
-All 124 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
+All 126 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
 
 ## Reading the labels
 
@@ -37,7 +37,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `discover-crawl-waste` | D | Too much of the crawl going to redirects and non-indexable URLs (site-level - Discover leans on fast discovery) | Aim for almost everything Google crawls to be an indexable 200 - repoint links off redirects/404s and prune faceted/parameter URLs. |
 | `entity-internal-link-gap` | N (0.5) | Topically related pages (per Wikidata) with no link between them | Link the broader page to the more specific one - after verifying the entity match. Needs `resolve_entities`. |
 
-## Indexation (19)
+## Indexation (20)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -60,6 +60,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `image-preview-restricted` | D | max-image-preview capped below large | Set max-image-preview:large - Discover strongly favours it - unless licensing forbids. |
 | `sitemap-lastmod-untrustworthy` | D | lastmod dates that are generator stamps, future-dated, or claim changes that didn't happen | Make lastmod reflect genuine content changes, or drop it - dishonest dates teach Google to ignore yours. |
 | `redirect-to-homepage` | D | A deep URL redirected to the bare homepage, which Google treats as a soft 404. `/index.html`-style aliases and locale roots (`/en`, `/en-au`) don't count; URLs with clicks or links are listed first | Redirect to the closest equivalent page, or let it 404/410. |
+| `product-gone-404` | D+G | A store product (Shopify `/products/`, WooCommerce `/product/`, or Product schema in the earlier snapshot) that answered 200 in an earlier crawl and now answers 404/410, with equity (GSC clicks >= 1 or impressions >= 10 over the history held, a backlink, or an internal link). Ranked by the clicks it earned. A product the latest crawl didn't reach, or a rate-limited fetch, is not reported | 301 to the replacement or parent category; keep an out-of-stock product live at 200 marked OutOfStock. |
 
 ## On-page (22)
 
@@ -99,7 +100,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `content-bloat` | D+N (0.6) | Very long unbroken sections | Split into focused, headed passages - AI grounding has sharp diminishing returns past a certain length, and density beats length. |
 | `ai-slop-signals` | N (0.5) | Copy tripping statistical tells of generic AI text (stock filler, uniform sentence lengths, identical section openers) | Rewrite the flagged sections with specifics only you can supply - and verify by reading first; competent human writing can trip these tells. |
 
-## Structured data (13)
+## Structured data (14)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -113,6 +114,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `rich-result-issues` | D+G | Rich-result issues Google itself reports via URL Inspection | Fix the listed issues - this is Google's own validation, not ours, so it's authoritative. |
 | `article-date-illogical` | D | Article dateModified earlier than datePublished | Fix the dates - an impossible pair undermines trust in the markup. |
 | `article-no-author` | D | Article schema where no Article node names an author (an `@id` reference to a named Person counts) | Add a Person author and a visible byline - AI-search guidance rewards a demonstrable first-hand point of view. |
+| `merchant-listing-incomplete` | N (0.5), low | Product markup on a store page missing what [Google's merchant listings](https://developers.google.com/search/docs/appearance/structured-data/merchant-listing) use. Required: `image`, an `Offer` (an `AggregateOffer` alone isn't accepted), `price` and `priceCurrency` (directly or in `priceSpecification`). Recommended: `availability`, `itemCondition`. Store product pages with no offers at all roll up into one site-level finding, because a quote-only product has no price and is not a merchant listing. A review page's Product without offers is skipped | Fix the product template once; ignore it for quote-only products. |
 | `duplicate-article-entities` | D (0.9) | More than one Article entity on one URL, typically an SEO plugin's graph plus a theme- or block-embedded Article | Emit one Article per page: remove the second source or merge it into the graph with the same `@id`. |
 | `discover-generic-article-type` | D+N (0.5) | Article schema using only the generic `Article` type where a more specific one fits | Use `NewsArticle` / `LiveBlogPosting` / `ProfilePage` where it genuinely applies - it unlocks richer Discover/News treatment. |
 | `discover-image-schema` | D | Article schema that declares no `image` (Discover cards need a large image) | Add an `image` (≥1200px wide, ideally 16:9 / 4:3 / 1:1 crops), matching the main visible image. |
