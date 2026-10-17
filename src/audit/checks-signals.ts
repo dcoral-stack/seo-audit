@@ -188,6 +188,56 @@ function cruxRegression(c: CheckContext): RawFinding[] {
   return out;
 }
 
+// ── Item 5: nonbrand-decline-masked ──────────────────────────────────────────────────────────
+/** Thresholds, stated: total clicks no more than 5% down (flat or up) while non-brand clicks fall more than 15%. */
+export const NONBRAND_TOTAL_FLAT = -0.05;
+export const NONBRAND_DROP = -0.15;
+/** The prior window needs this many non-brand clicks, or a small site's noise reads as a trend. */
+export const NONBRAND_MIN_PRIOR_CLICKS = 100;
+
+/**
+ * Branded vs all query clicks in (fromExcl, toIncl], counted once per day. Same brand rule as the
+ * dashboard's brandedSplit (whole-token match of the property's brand label, query-attributed rows
+ * only). A day that holds BOTH GSC row shapes (all-country rows and segmented rows, found on real
+ * databases) counts its all-country rows only, so it is not summed twice.
+ */
+export function brandedClicks(c: CheckContext, brand: string, fromExcl: string, toIncl: string): { branded: number; total: number; mixedDays: number } {
+  const lite = `(COALESCE(device,'') = '' AND COALESCE(country,'') = '')`;
+  const mixed = rows(c, `SELECT date FROM search_analytics WHERE date > ? AND date <= ? GROUP BY date HAVING SUM(${lite}) > 0 AND SUM(NOT ${lite}) > 0`, fromExcl, toIncl).map(r => r.date);
+  const r = one(c, `SELECT COALESCE(SUM(CASE WHEN (' '||LOWER(query)||' ') LIKE ? THEN clicks ELSE 0 END),0) b, COALESCE(SUM(clicks),0) t
+    FROM search_analytics WHERE query IS NOT NULL AND date > ? AND date <= ?
+      AND (date NOT IN (SELECT value FROM json_each(?)) OR ${lite})`, `% ${brand} %`, fromExcl, toIncl, JSON.stringify(mixed));
+  return { branded: r.b, total: r.t, mixedDays: mixed.length };
+}
+
+function nonbrandDeclineMasked(c: CheckContext): RawFinding[] {
+  const d = c.gscMaxDate;
+  const brand = (c.brand ?? '').replace(/[^a-z0-9]/g, '');
+  if (!d || !brand) return [];
+  const span = one(c, `SELECT julianday(?) - julianday(MIN(date)) s FROM search_analytics`, d)?.s ?? 0;
+  if (span < 55) return []; // need both full 28-day windows
+  const at = (offset: number): string => (one(c, `SELECT date(?, ?) d`, d, `${offset} days`) as { d: string }).d;
+  const cur = brandedClicks(c, brand, at(-28), d);
+  const prior = brandedClicks(c, brand, at(-56), at(-28));
+  const curNon = cur.total - cur.branded, priorNon = prior.total - prior.branded;
+  if (priorNon < NONBRAND_MIN_PRIOR_CLICKS || prior.total <= 0) return [];
+  const totalChange = (cur.total - prior.total) / prior.total;
+  const nonChange = (curNon - priorNon) / priorNon;
+  if (totalChange < NONBRAND_TOTAL_FLAT || nonChange >= NONBRAND_DROP) return [];
+  return [{
+    urlKey: null,
+    evidence: {
+      brand, window: { current: `${at(-27)}..${d}`, prior: `${at(-55)}..${at(-28)}` },
+      totalClicks: { current: cur.total, prior: prior.total, changePct: pct(cur.total, prior.total) },
+      nonBrandClicks: { current: curNon, prior: priorNon, changePct: pct(curNon, priorNon) },
+      brandedClicks: { current: cur.branded, prior: prior.branded, changePct: prior.branded ? pct(cur.branded, prior.branded) : null },
+      thresholds: `total change >= ${NONBRAND_TOTAL_FLAT * 100}% and non-brand change < ${NONBRAND_DROP * 100}%, prior non-brand >= ${NONBRAND_MIN_PRIOR_CLICKS} clicks`,
+      note: `brand = whole-token match of "${brand}" (the property's domain label, heuristic); query-attributed clicks only (GSC anonymised queries are excluded)`,
+      ...(cur.mixedDays || prior.mixedDays ? { mixedShapeDaysCountedOnce: cur.mixedDays + prior.mixedDays } : {}),
+    },
+  }];
+}
+
 // ── The registry entries ─────────────────────────────────────────────────────────────────────
 export const SIGNAL_CHECKS: CheckDef[] = [
   {
@@ -239,5 +289,11 @@ export const SIGNAL_CHECKS: CheckDef[] = [
     title: 'Core Web Vital regressed into a worse band (CrUX)',
     fix: 'A Core Web Vital\'s real-user p75 crossed into a worse Google band (good -> needs improvement -> poor) within the last four 28-day CrUX windows. Find what shipped around when it started (theme, plugin, script, image or hosting change) and roll it back or fix it. Needs sync_crux history.',
     run: cruxRegression,
+  },
+  {
+    id: 'nonbrand-decline-masked', category: 'merged', severity: 'high', labels: ['G'], certainty: 1, effortBase: 5, fixType: 'global',
+    title: 'Non-brand clicks falling behind a flat total',
+    fix: 'Total clicks look flat or up, but clicks from non-brand queries (people who did not search for you by name) fell more than 15% on the prior 28 days: brand demand is masking a loss of rankings. Look at traffic-decay, lost-queries and position-slipping for the pages and queries that lost the clicks.',
+    run: nonbrandDeclineMasked,
   },
 ];
