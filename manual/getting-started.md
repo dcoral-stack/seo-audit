@@ -146,14 +146,14 @@ Add this to `claude_desktop_config.json` (Settings → Developer → Edit Config
         "DATAFORSEO_CACHE_DAYS": "20",
         "MAJESTIC_API_KEY": "your-majestic-api-key",
         "MAJESTIC_CACHE_DAYS": "30",
-        "CRUX_API_KEY": "your-crux-api-key"
+        "CRUX_API_KEY": ""
       }
     }
   }
 }
 ```
 
-That's the everything block - every variable the server reads, so you can see the shape. Delete the lines for services you don't have, or leave their values blank to disable them; only `GOOGLE_APPLICATION_CREDENTIALS` is required, and each optional key just switches its own tier on (`MAJESTIC_API_KEY`, for instance, only ever does anything when you run `link_intersect`). Then **fully restart Claude Desktop** - quit it from the system tray, not just the window. Claude Desktop keeps the old server process running until you do, which catches people out constantly.
+That's the everything block - every variable the server reads, so you can see the shape. `CRUX_API_KEY` is optional: field Core Web Vitals, from a free Google API key restricted to the Chrome UX Report API ([setup below](#crux-key-optional)); an empty string leaves it off. Delete the lines for services you don't have, or leave their values blank to disable them; only `GOOGLE_APPLICATION_CREDENTIALS` is required, and each optional key just switches its own tier on (`MAJESTIC_API_KEY`, for instance, only ever does anything when you run `link_intersect`). Then **fully restart Claude Desktop** - quit it from the system tray, not just the window. Claude Desktop keeps the old server process running until you do, which catches people out constantly.
 
 ## 3b. Configure Claude Code
 
@@ -167,7 +167,6 @@ claude mcp add seo-audit-console \
   --env DATAFORSEO_USERNAME=you@example.com \
   --env DATAFORSEO_PASSWORD=your-dataforseo-password \
   --env MAJESTIC_API_KEY=your-majestic-api-key \
-  --env CRUX_API_KEY=your-crux-api-key \
   -- npx -y @houtini/seo-audit-console
 ```
 

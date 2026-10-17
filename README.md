@@ -52,12 +52,15 @@ It's on npm, so there's nothing to clone or build. You need Node.js 20 or newer 
       "command": "npx",
       "args": ["-y", "@houtini/seo-audit-console"],
       "env": {
-        "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json"
+        "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json",
+        "CRUX_API_KEY": ""
       }
     }
   }
 }
 ```
+
+`CRUX_API_KEY` is optional: field Core Web Vitals from a free Google API key restricted to the Chrome UX Report API. Leave it empty to switch it off.
 
 **Claude Code** - one command:
 
@@ -242,7 +245,8 @@ Every environment variable the server reads, in one block - the first is require
         "DATAFORSEO_PASSWORD": "your-dataforseo-password",
         "DATAFORSEO_CACHE_DAYS": "20",
         "MAJESTIC_API_KEY": "your-majestic-api-key",
-        "MAJESTIC_CACHE_DAYS": "30"
+        "MAJESTIC_CACHE_DAYS": "30",
+        "CRUX_API_KEY": ""
       }
     }
   }
@@ -251,7 +255,7 @@ Every environment variable the server reads, in one block - the first is require
 
 Built from source instead? Swap the two launch lines for `"command": "node"` and `"args": ["C:/path/to/seo-audit-console/dist/index.js"]`; the `env` block is identical.
 
-`GOOGLE_APPLICATION_CREDENTIALS` gets you the whole core audit. DataForSEO adds the market layer, and `MAJESTIC_API_KEY` adds the Trust Flow re-sort to `link_intersect`. Line-by-line, including the two advanced ones you'll probably never need: [getting-started.md](manual/getting-started.md#environment-variables).
+`GOOGLE_APPLICATION_CREDENTIALS` gets you the whole core audit. DataForSEO adds the market layer, `MAJESTIC_API_KEY` adds the Trust Flow re-sort to `link_intersect`, and `CRUX_API_KEY` (optional: field Core Web Vitals, a free Google API key restricted to the Chrome UX Report API) adds real-user LCP, INP and CLS. Line-by-line, including the two advanced ones you'll probably never need: [getting-started.md](manual/getting-started.md#environment-variables).
 
 Then: *"list properties"* to check it's connected, *"refresh"*, *"run an SEO audit"*.
 
