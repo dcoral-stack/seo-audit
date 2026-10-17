@@ -2,9 +2,9 @@
 
 Everything SEO Audit Console does with *market* data goes through [DataForSEO](https://dataforseo.com/?aff=213701) — a pay-as-you-go API for search volumes, live SERPs, competitor data, backlinks and Lighthouse. The SERP/Keywords/Labs APIs need no subscription; calls cost fractions of a cent to a few cents and are **cached locally for 20 days**, so a repeat question is free and nothing runs unless you ask. (Backlinks is a separate DataForSEO subscription — see the last section.)
 
-Set `DATAFORSEO_USERNAME` + `DATAFORSEO_PASSWORD` ([getting-started](getting-started.md#environment-variables)). Each tool below wraps one DataForSEO endpoint — the endpoint is named so you can price it against DataForSEO's own docs.
+Set `DATAFORSEO_USERNAME` + `DATAFORSEO_PASSWORD` ([getting-started](getting-started.md#environment-variables)). Each tool below names the DataForSEO endpoint (or endpoints) it calls, so you can price it against DataForSEO's own docs.
 
-## Keywords Data — cheap, 7-day cached
+## Keywords Data — cheap, 20-day cached
 
 ### `keyword_volume`
 True monthly search volume, CPC and competition for up to 700 keywords. How you size an opportunity before writing a word.
@@ -18,7 +18,7 @@ Endpoint: `/v3/keywords_data/google_trends/explore/live`
 > Is the Software category rising in the UK, and what's breaking out in it?
 
 ### `trend_categories`
-Free. Search the Google Trends category tree (~1,400 categories) by name for the codes `topic_trend` takes, each with its parent so you pick the right level. Omit the query to list the top-level categories.
+Free (the endpoint costs nothing, though it still needs your DataForSEO credentials). Search the Google Trends category tree (~1,400 categories) by name for the codes `topic_trend` takes, each with its parent so you pick the right level. Omit the query to list the top-level categories.
 Endpoint: `/v3/keywords_data/google_trends/categories` (cost 0)
 > What's the Google Trends category code for software?
 
@@ -37,16 +37,12 @@ Endpoint: `/v3/serp/youtube/organic/live/advanced`
 > Which YouTube videos rank for "sim racing cockpit setup"?
 
 ### `news_discovery`
-Recent news articles ranking for a keyword — title, source, snippet, publish timestamp. The "what's been published on this since {date}" / freshness check.
-Endpoint: `/v3/serp/google/news/live/advanced`
+Recent news articles for a keyword — title, source, publish time and URL. The "what's been published on this since {date}" / freshness check. The paid DataForSEO News SERP is one of two sources: Google News' own RSS search feed is free and needs no key. The default `source:"both"` merges the two (calling DataForSEO only when your credentials are set); `source:"google"` is the free lookup alone.
+Endpoint: `/v3/serp/google/news/live/advanced` (+ the free Google News feed)
 > What news is there on "direct drive wheelbase" this month?
 
-### `serp_features`
-SERP-feature and AI-Overview exposure across a keyword set, volume-weighted — how much of the market the SERP furniture (features, snippets, video, AIO) already absorbs.
-Endpoint: `/v3/serp/google/organic/live/advanced`
-> Which SERP features show up for my money keywords?
 
-## DataForSEO Labs — cheap, 7-day cached, top-down
+## DataForSEO Labs — cheap, 20-day cached, top-down
 
 ONE `ranked_keywords` call answers "what does this domain rank for" — never loop keywords through the SERP endpoints to reconstruct what a Labs call returns.
 
@@ -60,15 +56,35 @@ Every keyword a domain / subdomain / URL / subfolder ranks for, with position, v
 Endpoint: `/v3/dataforseo_labs/google/ranked_keywords/live`
 > What does competitor.com/blog/ rank for?
 
+### `serp_features`
+SERP-feature and AI-Overview exposure across your keyword universe, volume-weighted — how much of the market the SERP furniture (features, snippets, video, AIO) already absorbs, and how much of that volume you rank page 1 for. One `ranked_keywords` pull of the property's top-volume keywords (default 1,000), persisted for the dashboard - never a per-keyword SERP loop.
+Endpoint: `/v3/dataforseo_labs/google/ranked_keywords/live`
+> What's our AI Overview exposure on mysite.com?
+
+### `market_sizing`
+Your domain plus up to four named competitors, one `ranked_keywords` pull each, unioned into a keyword universe: total demand, share of voice overall and per topic cluster, and the leader per cluster.
+Endpoint: `/v3/dataforseo_labs/google/ranked_keywords/live` (one call per domain, up to 5)
+> Size the market: mysite.com vs rival1.com and rival2.com
+
+### `topic_gaps`
+The topics competitors rank for that you don't cover, after subtracting your GSC queries and existing pages.
+Endpoint: `/v3/dataforseo_labs/google/ranked_keywords/live` per competitor (max 3), plus `competitors_domain` when you don't name them - four calls at most
+> What topics should mysite.com cover?
+
 ### `competitors_domain`
 The domains competing for your keyword footprint, ranked by overlap.
 Endpoint: `/v3/dataforseo_labs/google/competitors_domain/live`
 > Who competes with mysite.com organically?
 
 ### `domain_visibility`
-A domain's ranking distribution over time — the trend line of how it's doing in the market.
+A domain's ranking distribution over time — the trend line of how it's doing in the market. `months` sets the window (default 12, up to 24; billed per month returned).
 Endpoint: `/v3/dataforseo_labs/google/historical_rank_overview/live`
 > How has mysite.com's visibility moved this year?
+
+### `track_ranks`
+The same rank history for your own property, written to `rank_history` for the dashboard's search-visibility chart (full history back to October 2020). A background job; `refresh_property` runs it as its last phase whenever DataForSEO is configured (`ranks:false` skips it).
+Endpoint: `/v3/dataforseo_labs/google/historical_rank_overview/live`
+> Track ranks for mysite.com in the UK
 
 ### `top_pages`
 A domain's top ranking pages by estimated organic traffic.
@@ -76,9 +92,9 @@ Endpoint: `/v3/dataforseo_labs/google/relevant_pages/live`
 > What are competitor.com's best-performing pages?
 
 ### `page_intersection`
-The keywords a set of pages all rank for — their shared footprint.
+The page-level content gap: keywords any of the competitor pages rank for (up to 20, wildcards like `https://rival.com/blog/*` allowed), minus the ones your own pages (`excludePages`, up to 10) already rank for.
 Endpoint: `/v3/dataforseo_labs/google/page_intersection/live`
-> What keywords do these three competitor pages all rank for?
+> Content gap between rival.com/guide and my /guide page
 
 ## OnPage
 
@@ -92,17 +108,17 @@ Endpoint: `/v3/on_page/lighthouse/live/json`
 The DataForSEO **Backlinks** API is billed separately from SERP/Keywords/Labs. If it isn't activated these tools say so in plain English (a `40204` error) rather than throwing a code.
 
 ### `pull_backlinks`
-A domain's backlink profile with live link status.
+Your property's backlink profile, with the live HTTP status of each backlinked page (what powers `backlinks-to-404`). A background job - poll `check_sync_status`. With a [Majestic](majestic.md) key it also scores your most-backlinked pages by Trust Flow.
 Endpoint: `/v3/backlinks/summary/live` + `/v3/backlinks/domain_pages_summary/live`
 > Pull the backlink profile for mysite.com
 
 ### `link_intersect`
 The links your competitors have that you don't — a prioritised outreach list (followed-first, sorted by domain trust). An optional [Majestic Trust Flow](majestic.md) re-sort kills directory noise.
-Endpoint: `/v3/backlinks/domain_intersection/live` (+ optional Majestic)
+Endpoint: `/v3/backlinks/domain_intersection/live` (+ `competitors_domain` when you don't name the competitors, + optional Majestic)
 > What links do my top 3 competitors share that I don't have?
 
 ---
 
-**Composed on top of these:** `market_sizing`, `topic_gaps`, `keyword_list`, `content_opportunities` and `recon_targets` join the calls above with your stored GSC + crawl data — no *new* paid call for the composition. See [tools.md](tools.md) and [composition.md](composition.md).
+**Also paid, on the SERP endpoint:** `recon_targets` makes one `/v3/serp/google/organic/live/advanced` call per page it analyses (with the small surcharge for loading AI Overviews that arrive asynchronously), and `recon_todos` makes one more per to-do when you ask it to `remeasure` - see [recon.md](recon.md). **Free, from stored data:** `keyword_list` and `content_opportunities` make no DataForSEO call at all. See [tools.md](tools.md) and [composition.md](composition.md).
 
 **Cost discipline in one line:** Labs/Keywords are cheap and cached — use them for top-down pulls; SERP is per-keyword — a handful of explicit keywords, never a list; Backlinks needs the separate subscription.

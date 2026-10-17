@@ -30,15 +30,15 @@ The tool is on npm, so you can skip Git and the build entirely - you still need 
 }
 ```
 
-That's the minimum config - one env var. Every optional service (DataForSEO, Majestic) is another line in the same `env` block; the full list is [in step 3a](#environment-variables) below.
+That's the minimum config - one env var. Every optional service (DataForSEO, Majestic) is another line in the same `env` block; the full list is [in step 3](#environment-variables) below.
 
 npx downloads and runs the published build on first launch, and you pick up new versions without ever touching a terminal again. The clone-and-build route below is for anyone who wants the source - to read it, extend it, or run ahead of releases. Everything from step 2 (Search Console) onwards is identical for both routes.
 
 ## One-click install (Claude Desktop extension)
 
-There's also a packaged Claude Desktop extension - a `.mcpb` bundle you double-click (or drag into Claude Desktop's Settings → Extensions) and it installs itself, Node runtime included. Claude Desktop then prompts you for the settings instead of you editing JSON: a file picker for the Google service-account key, an optional data directory, and then the optional keys - DataForSEO and Majestic (the Trust Flow tier for `link_intersect`) - each safe to leave blank, because a blank one simply leaves its tier switched off.
+There's also a packaged Claude Desktop extension - a `.mcpb` bundle you double-click (or drag into Claude Desktop's Settings → Extensions) and it installs itself, dependencies included (Claude Desktop supplies the Node runtime). Claude Desktop then prompts you for the settings instead of you editing JSON: a file picker for the Google service-account key, an optional data directory, and then the optional keys - DataForSEO and Majestic (the Trust Flow tier for `link_intersect`) - each safe to leave blank, because a blank one simply leaves its tier switched off.
 
-Honest status: the bundle is **available from our [GitHub releases](https://github.com/houtini-ai/seo-audit/releases), pending review for the Claude extension directory** - so for now it's a download, not an in-app search result. You still need the Search Console service account from step 2 below; the extension only removes the Node/JSON-editing steps. Note the bundle is built per-platform (native SQLite/ONNX modules), so grab the one matching your OS.
+Honest status: the bundle on our [GitHub releases](https://github.com/houtini-ai/seo-audit/releases) page **lags the npm package** - the newest one there is v0.5.1, many releases behind - and it's still pending review for the Claude extension directory. Until a current bundle is published, **use the npx route above**: it always runs the latest release. If you do try a bundle, you still need the Search Console service account from step 2 below (the extension only removes the JSON-editing steps), and note it's built per platform (native SQLite/ONNX modules) - the bundle is built for Windows.
 
 ## 0. Install the tools this tool is built with
 
@@ -137,7 +137,7 @@ Add this to `claude_desktop_config.json` (Settings → Developer → Edit Config
   "mcpServers": {
     "seo-audit-console": {
       "command": "node",
-      "args": ["C:/path/to/seo-audit-console/dist/index.js"],
+      "args": ["C:/path/to/seo-audit/dist/index.js"],
       "env": {
         "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json",
         "SAC_DATA_DIR": "",
@@ -153,7 +153,7 @@ Add this to `claude_desktop_config.json` (Settings → Developer → Edit Config
 }
 ```
 
-That's the everything block - every variable the server reads, so you can see the shape. `CRUX_API_KEY` is optional: field Core Web Vitals, from a free Google API key restricted to the Chrome UX Report API ([setup below](#crux-key-optional)); an empty string leaves it off. Delete the lines for services you don't have, or leave their values blank to disable them; only `GOOGLE_APPLICATION_CREDENTIALS` is required, and each optional key just switches its own tier on (`MAJESTIC_API_KEY`, for instance, only ever does anything when you run `link_intersect`). Then **fully restart Claude Desktop** - quit it from the system tray, not just the window. Claude Desktop keeps the old server process running until you do, which catches people out constantly.
+That's the everything block - every variable most people will ever set, so you can see the shape (the rarely needed ones are listed under [Environment variables](#environment-variables)). `CRUX_API_KEY` is optional: field Core Web Vitals, from a free Google API key restricted to the Chrome UX Report API ([setup below](#crux-key-optional)); an empty string leaves it off. Delete the lines for services you don't have, or leave their values blank to disable them; only `GOOGLE_APPLICATION_CREDENTIALS` is required, and each optional key just switches its own tier on (`MAJESTIC_API_KEY`, for instance, only ever does anything when you run `link_intersect` or `pull_backlinks`). Then **fully restart Claude Desktop** - quit it from the system tray, not just the window. Claude Desktop keeps the old server process running until you do, which catches people out constantly.
 
 ## 3b. Configure Claude Code
 
@@ -198,16 +198,20 @@ Don't commit real credential paths to a shared repo unless the team shares the s
 | `SAC_DATA_DIR` | optional | Where per-property SQLite databases and reports live (default: `~/Documents/seo-audit-console`) |
 | `DATAFORSEO_USERNAME` / `DATAFORSEO_PASSWORD` | optional | Switches on the keyword / SERP / competitor / CWV / backlink tools |
 | `DATAFORSEO_CACHE_DAYS` | optional | DataForSEO response cache TTL (default 20 days) |
-| `MAJESTIC_API_KEY` | optional | Switches on the **Majestic** tier in `link_intersect`: every prospect gains **Trust Flow** and **Topical Trust Flow**, and the list re-sorts by real editorial authority instead of DataForSEO's link-volume rank. Get a key on [Majestic's plans page](https://majestic.com/plans-pricing). `link_intersect` works without it. |
+| `MAJESTIC_API_KEY` | optional | Switches on the **Majestic** tier in `link_intersect`: every prospect gains **Trust Flow** and **Topical Trust Flow**, and the list re-sorts by real editorial authority instead of DataForSEO's link-volume rank. `pull_backlinks` also adds Trust Flow to your own most-backlinked pages (up to 500), for the dashboard's Trapped authority report. Get a key on [Majestic's plans page](https://majestic.com/plans-pricing). Both tools work without it. |
 | `MAJESTIC_CACHE_DAYS` | optional | Majestic response cache TTL (default 30 days). Cache hits cost no Majestic units, so leave this generous. |
 | `CRUX_API_KEY` | optional | Switches on `sync_crux` and the CrUX step of `refresh_property`: real-user Core Web Vitals from the Chrome UX Report, and the `crux-field-*` / `crux-regression` checks. Free; see [CrUX key (optional)](#crux-key-optional). |
 
-Two more exist for people who need them, and you almost certainly don't:
+A few more exist for people who need them, and you almost certainly don't:
 
 | Env var | Required | Purpose |
 |---|---|---|
 | `SAC_RERANK_DEVICE` | optional | Pins the local passage-scoring model to a device: `dml` (any DirectX 12 GPU on Windows) or `cpu`. Unset, it tries the GPU and falls back to CPU on its own - set it only if that fallback misbehaves. |
 | `MAJESTIC_API_HOST` | optional | Points the Majestic client at a different host. The default is the live API (`api.majestic.com`); Majestic's developer sandbox is a frozen 2015 subset, useful for testing the wiring without spending units. |
+| `SAC_AUTOSERVE` | optional | Set to `0` (or `false` / `no` / `off`) to stop the local dashboard server starting by itself after a refresh, sync, crawl, inspection or audit. `open_dashboard` and `serve_dashboard` still start it when you ask. |
+| `SAC_DASHBOARD_BIND` | optional | The address the dashboard server binds (default `127.0.0.1`). Set `0.0.0.0` inside a container so a published port reaches it; it still answers only requests addressed to localhost. |
+| `SAC_DASHBOARD_PORT` | optional | A fixed port for the dashboard server (default: a random free port). Needed when a container publishes the port. |
+| `SAC_DASHBOARD_URL_HOST` | optional | The host written into the dashboard links the tools hand you (default `127.0.0.1`). |
 
 Each optional key only affects its own tier, and none of those services is called until you ask a question that needs it. **Leave a key blank to disable its tier.** A value that's still a placeholder - `your-majestic-api-key`, `<your key>`, `changeme`, `xxx`, anything containing `example`, or an unsubstituted `${...}` from your MCP host - counts as blank too: the tier stays off and the server writes one line to its log, e.g. `MAJESTIC_API_KEY looks like a placeholder; Majestic tier disabled.` So if a tier you expected is off, check the log for that line.
 
@@ -223,7 +227,7 @@ The Chrome UX Report is Google's own record of how real Chrome users experience 
 
 Then ask *"pull CrUX data for yoursite.com"* (or just refresh the property - it runs on its own once the key is set). The API allows 150 calls a minute and the tool stays under that; the first pull for a site is about 200 calls (history, then the latest window, for the origin and 50 pages on phone and desktop), so it takes a minute or two. Pages without enough Chrome traffic simply have no CrUX data - they're recorded as *insufficient data*, never as a zero.
 
-You can also move the data directory later without touching config - ask *"where is my audit data stored?"* or *"set the data location to D:/seo-data"* (the `data_location` tool persists the choice).
+You can also move the data directory later without touching config - ask *"where is my audit data stored?"* or *"set the data location to D:/seo-data"* (the `data_location` tool persists the choice in `~/.seo-audit-console.json`, and it applies after you restart the client). `SAC_DATA_DIR`, if it's set, always wins over that saved choice.
 
 ## 4. First run
 
@@ -235,7 +239,9 @@ You should see your Search Console properties. If yours is in the list, you're c
 
 > Refresh sc-domain:yoursite.com
 
-This runs four things in order: syncs your Search Console history, crawls your site (politely - it respects robots.txt and never downloads image bytes), checks how Google has indexed your top pages, and computes the internal link graph. The first sync pulls your whole history so it's the slow one; every refresh after that fetches only the new days, usually seconds. On a large site the crawl is the slow part - it runs as a background job, so you don't have to watch it. Ask *"check the crawl status"* if you're curious.
+This runs up to four things in order: syncs your Search Console history, crawls your site (politely - it respects robots.txt and never downloads image bytes) and computes the internal link graph, checks how Google has indexed your top pages, and - only if DataForSEO is configured - pulls your rank history (a small paid call; `ranks:false` skips it). The first sync pulls the last 90 days (ask for an earlier start date to go deeper) so it's the slow one; every refresh after that fetches only the new days, usually seconds. On a large site the crawl is the slow part - it runs as a background job, so you don't have to watch it. Ask *"check the crawl status"* if you're curious.
+
+When the refresh finishes, its status reply gives you a link to the updated dashboard in your browser (*"open the dashboard"* gets it any time - see [dashboard.md](dashboard.md)). Jobs are recorded in `_jobs.db` in the data directory, so a finished job's result survives a restart; one whose server process exited part-way reads as `interrupted`. Running the server in Docker or behind the Docker MCP gateway? Read the README's [Docker section](../README.md#docker-and-the-docker-mcp-gateway) first - the gateway's default per-call containers would kill a background job.
 
 Once it's done:
 
@@ -283,11 +289,11 @@ A job now reads `queued: waiting for the job runner` until the runner claims it.
 
 ## Troubleshooting
 
-- **`list_properties` is empty or errors.** Either the client isn't connected to the server yet, or the service account hasn't been added to your property (step 2.3 above - the classic). Fix the config, then fully restart Claude Desktop from the tray.
-- **The audit says there's no data.** Run the refresh first and let it finish. The audit reads the local database; it doesn't fetch anything itself.
+- **`list_properties` is empty or errors.** Either the client isn't connected to the server yet, `GOOGLE_APPLICATION_CREDENTIALS` isn't set (the error says so), or the service account hasn't been added to your property (step 2.3 above - the classic). Fix the config, then fully restart Claude Desktop from the tray.
+- **The audit comes back with 0 findings, or the dashboard says there's no synced data.** Run the refresh first and let it finish. The audit reads the local database; it doesn't fetch anything itself.
 - **A large site feels slow.** That's the crawl, and it's normal. It backs off when your server rate-limits, so it stays gentle. Carry on when the progress panel says it's done.
 - **A keyword or competitor tool says it needs credentials.** Those are the optional DataForSEO tools. Everything in the core flow works without them.
-- **`link_intersect` shows a "Domain trust" column, not "Trust Flow".** That's the tool telling you the Majestic tier is off - either `MAJESTIC_API_KEY` isn't in your config's `env` block, or the client hasn't been restarted since you added it. The footer under the table says the same thing in words.
+- **`link_intersect` shows a "Domain trust" column, not "Trust Flow".** That's the tool telling you no prospect was enriched by Majestic - usually because `MAJESTIC_API_KEY` isn't in your config's `env` block, or the client hasn't been restarted since you added it. The footer under the table suggests setting the key either way, so if it is set, look for a Majestic error instead (next item).
 - **Majestic errors instead of enriching.** The message comes straight from Majestic and names the cause - a bad key, or an allowance with nothing left in it. Enrichment costs roughly one unit per prospect (batched 100 per call, capped by `enrichLimit`), so a big `topN` on a small plan runs the balance down; results are cached for `MAJESTIC_CACHE_DAYS` (30 by default), so re-running the same intersect inside that window costs nothing.
 - **`pull_backlinks` errors even though DataForSEO works.** Backlinks is a separate DataForSEO subscription from SERP/Keywords/Labs - a 40204 error means it isn't activated on your account. The tool says so plainly when that's the cause.
 - **You changed the code and nothing changed.** The running MCP server holds the previous build. `npm run build`, then fully restart the client.
@@ -296,8 +302,8 @@ Forget what's possible at any point? Ask *"run seo_audit_help"* - it returns the
 
 ## Where your data lives
 
-One SQLite database per property, under `SAC_DATA_DIR` (default `~/Documents/seo-audit-console`), alongside a small cache database per external service (`dataforseo-cache.db`, `majestic-cache.db`, `wikidata-cache.db`) - that's what stops the same question being paid for twice. `data_storage` shows you the lot with sizes.
+One SQLite database per property, under `SAC_DATA_DIR` (default `~/Documents/seo-audit-console`), alongside a small cache database per external service (`dataforseo-cache.db`, `majestic-cache.db`, `wikidata-cache.db`) - that's what stops the same question being paid for twice - the job registry (`_jobs.db`) and a `reports` folder for exports. `data_storage` shows you the lot with sizes.
 
-Your Search Console history and crawl stay on your machine; the passage-scoring model runs locally too. Nothing leaves except the API calls you trigger yourself - Google (your own GSC) and, if configured, DataForSEO and Majestic (`link_intersect` sends prospect domain names and nothing else). No telemetry.
+Your Search Console history and crawl stay on your machine; the passage-scoring model runs locally too. Nothing leaves except the API calls you trigger yourself - Google (your own GSC) and, if configured, DataForSEO and Majestic (`link_intersect` sends prospect domain names; `pull_backlinks` sends your backlinked page URLs). Content recon's competitor fetch requests those public pages directly, with no service in between. After each crawl the tool also checks the outbound links on your pages (one request to each linked URL; `checkExternal:false` skips it), and the free extras fetch from public sources: the local models download once from Hugging Face, `resolve_entities` queries Wikidata and `news_discovery` reads the Google News feed. No telemetry.
 
 Next: [tools.md](tools.md) for the full tool reference, or [composition.md](composition.md) for asking your own bespoke questions across the data.

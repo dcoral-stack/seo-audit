@@ -144,7 +144,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 
 ## Accessibility (7)
 
-A deterministic subset of the [axe-core](https://github.com/dequelabs/axe-core) rules - the ones decidable from the raw HTML, no render needed (the full rule set rides on `render_pages`). These sit alongside the on-page `image-alt`, `heading-hierarchy` and `missing-lang` checks.
+A deterministic subset of the [axe-core](https://github.com/dequelabs/axe-core) rules - the ones decidable from the raw HTML, no render needed. The rest of axe-core needs a rendered page and isn't run (`render_pages` diffs content and links, not accessibility). These sit alongside the on-page `image-alt`, `heading-hierarchy` and `missing-lang` checks.
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|

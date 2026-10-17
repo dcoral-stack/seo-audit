@@ -104,12 +104,12 @@ This README is the story and the quick start. The detail lives in the manual:
 | [Getting started](manual/getting-started.md) | Install, the GSC service-account setup (and the step everyone misses), Claude Desktop and Claude Code config, your first audit, troubleshooting |
 | [Tool reference](manual/tools.md) | Every tool: what it does, inputs, joins, an example prompt |
 | [The check registry](manual/checks.md) | All 126 checks with what each catches, its D/N label, and the fix |
-| [Composition](manual/composition.md) | The join keys, the grains, and thirteen worked recipes for asking your own questions across the data |
+| [Composition](manual/composition.md) | The join keys, the grains, and fourteen recipes for asking your own questions across the data |
 | [Competitive analysis](manual/competitive.md) | The Semrush-replacement workflows, DataForSEO setup, link intersect with the Majestic Trust Flow tier, and the real costs |
 | [SEO Recon](manual/recon.md) | Why a page is losing: the live SERP + AI-Overview citation verdict, the competitor diff, and the trackable to-do ledger |
 | [DataForSEO functions](manual/dataforseo.md) | Every DataForSEO-backed tool grouped by API module - Keywords, SERP, Labs, Backlinks, OnPage - each with its endpoint and cost |
-| [Majestic functions](manual/majestic.md) | The optional Trust Flow tier - what it adds and how `link_intersect` uses it |
-| [Dashboard & reports](manual/dashboard.md) | The eight tabs, what each chart shows, and the shareable export |
+| [Majestic functions](manual/majestic.md) | The optional Trust Flow tier - what it adds, and how `link_intersect` and `pull_backlinks` use it |
+| [Dashboard & reports](manual/dashboard.md) | The eight tabs, what each chart shows, the browser dashboard (and its standalone version for Docker), and the shareable export |
 
 ## Surprisingly little has changed in twenty years
 
@@ -192,7 +192,7 @@ Each of these is a real procedure I use, and each is one prompt. The expanded ve
 9. **Reporting.** *"Show me the dashboard"* in the chat, *"serve the dashboard"* for the live version in your browser, or *"export the report"* as one self-contained HTML file you can send a client. → [dashboard.md](manual/dashboard.md)
 10. **The content opportunity report.** If you write for a living, this is your page one: *"Content opportunities for mysite.com"* returns what to WRITE next (demand you already earn impressions for with no winning page), what to REFRESH (pages bleeding clicks), which SNIPPETS to rewrite (ranking well, under-clicked), and which clusters to STRENGTHEN (position 4-20, one push from the money). Every row traces to your own Search Console data - no invented keyword ideas - and *"draft the brief for row 1"* turns any of them into a grounded outline. → [competitive.md](manual/competitive.md)
 11. **Market Sizing and Prioritisation.** *"Size the market: mysite.com vs rival1.com and rival2.com"* - the keyword universe, total monthly demand, and share of voice per topic cluster, from one cached call per domain. The engagement-opening read that used to need a Semrush subscription. → [competitive.md](manual/competitive.md)
-12. **Content recon - why is this page losing?** *"Run content recon on mysite.com"* takes your worst declining pages, pulls the live Google SERP for each, and reads whether the **AI Overview** cites you. The verdict is the honest bit: *rank but not cited* is a data-accuracy or freshness problem, not a rewrite. It reads the reachable competitors with a free browser-profile fetch (one that even gets Reddit), lists the ranking videos for you to watch, and writes the gaps into a tracked to-do board you can annotate and re-measure. → [recon.md](manual/recon.md)
+12. **Content recon - why is this page losing?** *"Run content recon on mysite.com"* takes your highest-impression pages sitting at positions 3-15 (the ones a push could move), pulls the live Google SERP for each, and reads whether the **AI Overview** cites you. The verdict is the honest bit: *rank but not cited* is a data-accuracy or freshness problem, not a rewrite. It reads the reachable competitors with a free browser-profile fetch (Reddit through its own JSON), lists the ranking videos for you to watch, and writes the gaps into a tracked to-do board you can annotate and re-measure. → [recon.md](manual/recon.md)
 13. **Link prospecting, sorted by authority that's real.** *"Link intersect for mysite.com vs rival1.com, rival2.com"* returns the domains linking to your rivals and not to you - the outreach list, followed-first and spam-filtered. Add a **Majestic** key and it re-sorts on **Trust Flow** and shows each prospect's **Topical Trust Flow**, so the directories drop out and what's left is authority that's on your topic. → [Majestic, below](#link-intersect-and-the-majestic-trust-flow-tier)
 
 [![The Search performance tab - branded vs non-branded, ranking distribution over time (impressions by position bucket) and search visibility over time](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/search-performance.png)](https://github.com/houtini-ai/seo-audit)
@@ -203,9 +203,9 @@ Each of these is a real procedure I use, and each is one prompt. The expanded ve
 
 ## What DataForSEO adds (and what it costs)
 
-Everything above works with just your Search Console data. But GSC can only describe searches where you already appear. The moment your question is "how big is this market?" or "what do competitors rank for that I don't?", you need third-party data - and that's [DataForSEO](https://dataforseo.com/?aff=213701): a pay-as-you-go API for volumes, live rankings, competitor data and Lighthouse runs. No subscription; calls cost fractions of a cent to a few cents, cached for 7 days, and only ever run when you ask. My own usage runs to a few dollars a month.
+Everything above works with just your Search Console data. But GSC can only describe searches where you already appear. The moment your question is "how big is this market?" or "what do competitors rank for that I don't?", you need third-party data - and that's [DataForSEO](https://dataforseo.com/?aff=213701): a pay-as-you-go API for volumes, live rankings, competitor data and Lighthouse runs. No subscription; calls cost fractions of a cent to a few cents, cached for 20 days, and only ever run when you ask. My own usage runs to a few dollars a month.
 
-It unlocks the Semrush-replacement layer: the organic visibility overview for any domain, any site's top pages and ranked keywords (including which keywords cite a site in **AI Overviews**), the content gap, topic gaps, search intent, lab Core Web Vitals and backlinks. It also drives **content recon** - `recon_targets` pulls the live Google SERP for a losing page, reads whether the AI Overview cites you, and tells you *why* you're behind. The full workflows and setup: [competitive.md](manual/competitive.md).
+It unlocks the Semrush-replacement layer: the organic visibility overview for any domain, any site's top pages and ranked keywords (including which of them show an **AI Overview**), the content gap, topic gaps, search intent, lab Core Web Vitals and backlinks. It also drives **content recon** - `recon_targets` pulls the live Google SERP for a losing page, reads whether the AI Overview cites you, and tells you *why* you're behind. The full workflows and setup: [competitive.md](manual/competitive.md).
 
 One more thing DataForSEO unlocks gets a section of its own, because the link work has a second, optional service behind it.
 
@@ -241,7 +241,7 @@ The tier is careful with your allowance: enrichment is batched 100 domains per c
 
 Optional, and I mean optional: with no key, `link_intersect` still runs and still sorts followed-first by domain trust. Majestic is what turns "here are 100 domains" into "here are the 20 worth an email, and here's why". Grab a key on their [plans and pricing](https://majestic.com/plans-pricing) page; the full workflow is in [competitive.md](manual/competitive.md#link-intersect-link_intersect).
 
-> Trust Flow and Topical Trust Flow are trademarks of [Majestic](https://majestic.com) (Majestic-12 Ltd). This tier calls the Majestic API with your own key, only when you run `link_intersect`, and nothing else in the tool touches it.
+> Trust Flow and Topical Trust Flow are trademarks of [Majestic](https://majestic.com) (Majestic-12 Ltd). This tier calls the Majestic API with your own key, only when you run `link_intersect` or `pull_backlinks` (which adds Trust Flow to your own backlinked pages for the dashboard's Trapped authority report), and nothing else in the tool touches it.
 
 ---
 
@@ -278,7 +278,7 @@ Every environment variable the server reads, in one block. The first is required
 
 Built from source instead? Swap the two launch lines for `"command": "node"` and `"args": ["C:/path/to/seo-audit-console/dist/index.js"]`; the `env` block is identical.
 
-`GOOGLE_APPLICATION_CREDENTIALS` gets you the whole core audit. DataForSEO adds the market layer, `MAJESTIC_API_KEY` adds the Trust Flow re-sort to `link_intersect`, and `CRUX_API_KEY` (optional: field Core Web Vitals, a free Google API key restricted to the Chrome UX Report API) adds real-user LCP, INP and CLS. Line-by-line, including the two advanced ones you'll probably never need: [getting-started.md](manual/getting-started.md#environment-variables).
+`GOOGLE_APPLICATION_CREDENTIALS` gets you the whole core audit. DataForSEO adds the market layer, `MAJESTIC_API_KEY` adds the Trust Flow re-sort to `link_intersect`, and `CRUX_API_KEY` (optional: field Core Web Vitals, a free Google API key restricted to the Chrome UX Report API) adds real-user LCP, INP and CLS. Line-by-line, including the advanced ones you'll probably never need (the reranker device, the Majestic sandbox host, and the dashboard server's bind, port and auto-start): [getting-started.md](manual/getting-started.md#environment-variables).
 
 Then: *"list properties"* to check it's connected, *"refresh"*, *"run an SEO audit"*.
 
@@ -311,7 +311,11 @@ The four `-e NAME` flags with no value pass those variables through from your sh
 
 **Without the runner,** the older options still work: `longLived: true` on the catalog entry (or `--long-lived` on the gateway), or plain `docker run -i --rm` with the volumes mounted, which is one long-lived stdio process for the session. Either way, mount named volumes for the data directory and the credentials (for example `-v seo-audit-data:/data -e SAC_DATA_DIR=/data` and `-v seo-audit-creds:/creds:ro -e GOOGLE_APPLICATION_CREDENTIALS=/creds/service-account.json`) so audits and the job list survive a restart.
 
+There's no published image for the server itself: build one from this repo's `Dockerfile` (`docker build -t seo-audit-console .`). Its entrypoint is `node dist/index.js`, the stdio server.
+
 Every job is recorded in `_jobs.db` in the data directory. If the process running a job exits before it finishes, the job reads as `interrupted` with the reason rather than disappearing, and a finished job's result can still be read after a restart.
+
+The gateway doesn't publish the server container's ports, so the browser dashboard the server starts after a job isn't reachable from your machine. `get_dashboard` still renders it in chat, and for a browser tab you can run the standalone dashboard, `seo-audit-dashboard`, as a second container on the same data volume with a published port. The command is in [dashboard.md](manual/dashboard.md#in-your-browser).
 
 ---
 
@@ -333,11 +337,12 @@ The one-line version - full descriptions, inputs and example prompts for every t
 | `check_agent_readiness` | 0-100 AI-agent readiness score with copy-paste fixes |
 | `list_templates` · `suggest_pages` | Template clusters · new-page ideas from real demand |
 | `score_passages` · `draft_content` | Local relevance scoring · grounded writing briefs |
+| `find_duplicates` · `render_pages` | Semantic near-duplicate pages (local model) · Response vs Render in headless Chromium (optional Playwright) |
 | `resolve_entities` | Wikidata entities and the link gaps between them |
 | `keyword_volume` · `related_terms` · `search_intent` | DataForSEO keyword data |
 | `youtube_discovery` · `news_discovery` · `topic_trend` · `trend_categories` | Content research: the videos ranking for a topic (pair with a transcript tool) · recent news coverage / freshness · Google Trends interest-over-time for keywords, a whole category, or a term inside one (rising / falling / seasonal, plus breakout topics and queries) · free lookup of the Trends category codes |
 | `competitors_domain` · `page_intersection` · `topic_gaps` | Competitors · content gap · topic gaps |
-| `domain_visibility` · `top_pages` · `ranked_keywords` | The Semrush-style views, any domain (+ `aioOnly` for AI Overview citations) |
+| `domain_visibility` · `top_pages` · `ranked_keywords` | The Semrush-style views, any domain (+ `aioOnly` for the keywords that show an AI Overview) |
 | `page_lighthouse` · `pull_backlinks` | Lab CWV · backlink profile with live status |
 | `link_intersect` | The links your competitors have that you don't - a prioritised outreach list (followed-first, sorted by domain trust; optional Majestic Trust Flow re-sort kills directory noise) |
 | `market_sizing` · `serp_features` | Share of voice vs named competitors · AI-Overview / snippet / video exposure by volume |
@@ -346,7 +351,7 @@ The one-line version - full descriptions, inputs and example prompts for every t
 | `get_dashboard` · `serve_dashboard` · `export_report` | In-chat dashboard · the same in a local browser tab · shareable HTML |
 | `get_dashboard_data` | Internal: the dashboard widget fetches its data through this; not for direct use |
 | `composition_cookbook` | The data-surface map and recipes for bespoke analyses |
-| `data_storage` | Per-property disk usage and row counts, with confirm-gated pruning |
+| `data_storage` | Per-property disk usage and row counts, confirm-gated pruning, and an integrity check with index repair |
 | `normalize_url` · `data_location` · `list_properties` · `seo_audit_help` | Utilities and the help menu |
 
 ---
@@ -361,7 +366,7 @@ The one-line version - full descriptions, inputs and example prompts for every t
 
 ## Privacy and data
 
-Your Search Console data and the crawl live in local SQLite files under `SAC_DATA_DIR`. The passage-scoring model runs locally too. Nothing leaves your machine except the API calls *you* trigger - Google (your own GSC) and, if you've set them up, DataForSEO and Majestic (`link_intersect` sends prospect domain names, nothing else). Content recon's competitor fetch requests those public pages directly, with no service in between. Every one of those is keyed by you, called on demand, and cached locally so it isn't called twice. No telemetry. None.
+Your Search Console data and the crawl live in local SQLite files under `SAC_DATA_DIR`. The passage-scoring model runs locally too. Nothing leaves your machine except the API calls *you* trigger - Google (your own GSC) and, if you've set them up, DataForSEO and Majestic (`link_intersect` sends prospect domain names; `pull_backlinks` sends your own backlinked page URLs). Every one of those is keyed by you, called on demand, and cached locally so it isn't called twice. Content recon's competitor fetch requests those public pages directly, with no service in between. The crawl also reaches beyond your own site in one way: after each crawl it checks the outbound links your pages carry (a HEAD request, or a ranged GET, to each linked URL; `checkExternal:false` turns that off). And the free extras fetch from public sources: the local models download once from Hugging Face, `resolve_entities` queries Wikidata, and `news_discovery` reads the Google News feed. No telemetry. None.
 
 ---
 
@@ -373,7 +378,7 @@ A few things I'm building next, in rough order:
 - **A per-page content scorecard.** A dedicated table of *every* ranking phrase your copy misses, not just the top query.
 - **More agent readiness.** A WebMCP advisory (which tool actions your site could expose to agents) and the agent-commerce protocols.
 - **A printable report.** A proper A4 document you can hand a client, not a slide deck.
-- **Source-level parser checks.** The layer most tools never touch: elements that silently break `<head>` parsing, and directives hoisted into the body and ignored. (Raw-vs-rendered divergence now ships - see JavaScript rendering below.)
+- **Source-level parser checks.** The layer most tools never touch: elements that silently break `<head>` parsing, and directives hoisted into the body and ignored. (Raw-vs-rendered divergence now ships - see JavaScript rendering above.)
 
 Got a weird edge case you wish a tool caught? Tell me - that's exactly how the merged GSC×crawl checks got built.
 
