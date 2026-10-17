@@ -47,7 +47,7 @@ Real-user Core Web Vitals from the Chrome UX Report API: p75 and the good / need
 > Get Core Web Vitals field data for these three URLs
 
 ### `check_sync_status` / `check_crawl_status`
-Poll any job by id, or list recent jobs - the two names are the same tool. A failed job's reason is in the reply text, with a repair pointer when it's database corruption. Every job-starting tool also returns its `jobId` as JSON in the text, so clients that only read text can poll it. A running crawl reports its **stage** (`fetching`, then `writing-links`, `image-weights`, `resource-headers`, `link-graph`, `revalidation-probe`, `snapshot`, `external-links`), pages crawled against `maxPages`, the queue, pages/sec and an ETA for the fetch stage, so a 20-40 minute crawl never looks stalled. The ETA covers fetching only; the post-crawl stages are named instead of timed. When the host rate limits the crawl, or it is a Shopify store, the line says so and gives the current concurrency, the URLs retried and any not fetched (`progress.rateLimited` / `result.rateLimited`: `events`, `currentConcurrency`, `minConcurrency`, `maxConcurrency`, `retried`, `unfetched`). Poll every 60-120 s.
+Poll any job by id, or list recent jobs - the two names are the same tool. A failed job's reason is in the reply text, with a repair pointer when it's database corruption. Every job-starting tool also returns its `jobId` as JSON in the text, so clients that only read text can poll it. A running crawl reports its **stage** (`fetching`, then `writing-links`, `image-weights`, `resource-headers`, `link-graph`, `revalidation-probe`, `snapshot`, `site-probes`, `external-links`), pages crawled against `maxPages`, the queue, pages/sec and an ETA for the fetch stage, so a 20-40 minute crawl never looks stalled. The ETA covers fetching only; the post-crawl stages are named instead of timed. When the host rate limits the crawl, or it is a Shopify store, the line says so and gives the current concurrency, the URLs retried and any not fetched (`progress.rateLimited` / `result.rateLimited`: `events`, `currentConcurrency`, `minConcurrency`, `maxConcurrency`, `retried`, `unfetched`). Poll every 60-120 s.
 
 Jobs are also recorded in `_jobs.db` in the data directory, so a finished job's result can still be read after the server restarts. A job whose server process exited before it finished reads as `interrupted` rather than vanishing; under the Docker MCP gateway that usually means the container was removed between calls (see [Docker and the Docker MCP gateway](../README.md#docker-and-the-docker-mcp-gateway)). A completed sync, crawl, inspection or refresh starts the local dashboard server and gives you the link to the updated dashboard.
 > Check the crawl status
@@ -74,7 +74,7 @@ One named check, with every affected URL and its full evidence. The drill-down a
 > Run the keyword-cannibalisation check on mysite.com with evidence
 
 ### `list_checks`
-The whole check catalogue - all 137, with categories and labels. The same list, annotated, is [checks.md](checks.md).
+The whole check catalogue - all 139, with categories and labels. The same list, annotated, is [checks.md](checks.md).
 > What does the audit check for?
 
 ### `list_templates`

@@ -167,7 +167,7 @@ This server's value is composition: joining Search Console, the crawl, URL Inspe
 | external_link_status | one row per distinct outbound link target | verdict (ok / redirected / broken / unverifiable), status, final_url, error, fetched_as | url_key = links.target_key | after every crawl, cached 7 days | free |
 | page_resources / resource_assets | one row per subresource a page loads / per distinct css-js-font asset | type, first/third party, head/body, async/defer/preload; status, size, cache-control | page_key; resource_url | every crawl (assets with headResources:true) | free |
 | image_assets | one row per sampled image | bytes, status, content_type, used_on | url | every crawl (top 500 by use) | free |
-| probes | one row per probe_urls fetch (persist:true) | status, redirect chain, canonical, verdict | url | on demand | free |
+| probes | one row per probe_urls fetch (persist:true), plus the crawl's site probes (source='site-probe': soft-404 + host variants) | status, redirect chain, canonical, verdict | url | on demand; site probes every crawl (latest only) | free |
 
 Raw access: query_data reads any of these tables (aggregate by default; filters eq/ne/gt/gte/lt/lte/like/in, and "match" for full-text search over GSC queries, page titles/H1s/body text and anchor text); query_audit runs any single check with full evidence; every table lives in one SQLite file per property (path via data_location) if you need direct SQL.
 

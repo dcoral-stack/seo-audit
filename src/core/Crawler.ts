@@ -11,6 +11,7 @@ import { crawlRate, type CrawlStage } from './crawlProgress.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { snapshotCrawl } from '../audit/drift.js';
 import { checkExternalLinks, type ExternalSummary } from './externalLinks.js';
+import { runSiteProbes, type SiteProbeSummary } from './siteProbes.js';
 import { CLEAR_CRAWL_FTS } from './fts.js';
 import { BOT_UA, CHROME_HEADERS, looksBotBlocked, type FetchedAs } from './userAgents.js';
 import {
@@ -70,6 +71,7 @@ export interface CrawlOptions {
   checkExternal?: boolean;    // check outbound link targets after the crawl (default true) (#36)
   externalCacheDays?: number; // reuse external results younger than this (default 7)
   chromeFallback?: boolean;   // retry bot-blocked requests once as Chrome (default true; off when userAgent is set)
+  siteProbes?: boolean;       // soft-404 + host-variant probes after the crawl, at most 5 requests (default true) (#55 group D)
 }
 
 export interface CrawlResult {
@@ -82,6 +84,8 @@ export interface CrawlResult {
   sitemaps?: { declared: string[]; undeclared: string[]; fetched: number; urls: number };
   /** Outbound link status pass (#36). */
   external?: ExternalSummary;
+  /** Soft-404 and host-variant probes (#55 group D): what was probed and each verdict. */
+  siteProbes?: SiteProbeSummary;
   /** Bot blocking seen on the site's own pages: requests blocked for the crawler UA, how many got
    *  through as Chrome, and whether the crawl switched to Chrome for the rest. */
   blocking?: { blockedAsBot: number; okAsChrome: number; blockedForBoth: number; switchedToChrome: boolean };
@@ -848,6 +852,18 @@ export class Crawler {
         console.error(`[crawl ${crawlId}] snapshot failed (change-detection will report this crawl as missing):`, e);
       }
     }
+    // Post-crawl (#55 group D): at most 5 requests the crawl never makes - two random non-existent URLs
+    // (soft-404 handling) and the http/https + www/apex twins of the homepage and one deep URL (host
+    // variants). Same UA (Chrome if the crawl switched), Chrome fallback and delay as the crawl; one at a
+    // time. Never fails the crawl.
+    let siteProbes: SiteProbeSummary | undefined;
+    if (opts.siteProbes !== false && !signal.aborted && wipedPrior) {
+      try {
+        stage('site-probes');
+        siteProbes = await runSiteProbes(db.db, siteUrl, { crawlId, userAgent: ua, chromeFallback: uaState.fallback, preferChrome: uaState.preferChrome, delayMs, signal });
+      } catch (e) { console.error(`[crawl ${crawlId}] site probes skipped:`, e instanceof Error ? e.message : String(e)); }
+    }
+
     // Post-crawl (#36): status of every distinct outbound link target — cached, host-throttled,
     // HEAD with a ranged-GET fallback. On by default; checkExternal:false skips it. Runs AFTER the
     // crawl is marked completed and snapshotted: it can take minutes, and dying here must not leave a
@@ -864,7 +880,7 @@ export class Crawler {
     // forbidden URL, not bot protection.
     stage('done');
     const blocking = uaState.okAsChrome ? { blockedAsBot: uaState.blockedAsBot, okAsChrome: uaState.okAsChrome, blockedForBoth: uaState.blockedAsChrome, switchedToChrome: uaState.preferChrome } : undefined;
-    return { crawlId, siteUrl, crawled, failed, skipped, ...(sitemaps ? { sitemaps } : {}), ...(external ? { external } : {}), ...(blocking ? { blocking } : {}),
+    return { crawlId, siteUrl, crawled, failed, skipped, ...(sitemaps ? { sitemaps } : {}), ...(external ? { external } : {}), ...(siteProbes ? { siteProbes } : {}), ...(blocking ? { blocking } : {}),
       rateLimited: rateLimitReport(), ...(platform ? { platform } : {}) };
     } catch (err) {
       try {

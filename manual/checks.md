@@ -1,6 +1,6 @@
 # The check registry
 
-All 137 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
+All 139 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
 
 ## Reading the labels
 
@@ -12,7 +12,7 @@ A check can carry more than one label - `noindex-with-traffic` is D+G because th
 
 Every finding is priced the same way: priority = (traffic at stake × expected yield × certainty) / effort hours. So the list you get back is ordered by expected clicks per developer-hour, not by how alarming the check sounds.
 
-Zero findings from a check normally means it passed. The exception is a check whose source table is empty because the data was never collected (the asset checks read `page_resources`, `resource_assets` and `image_assets`): `run_audit` lists those under **Not collected** with the step that collects the data, so an empty table never reads as a clean bill of health.
+Zero findings from a check normally means it passed. The exception is a check whose source table is empty because the data was never collected (the asset checks read `page_resources`, `resource_assets` and `image_assets`; `soft-404-handling` and `host-variant-split` read the crawl's site probes): `run_audit` lists those under **Not collected** with the step that collects the data, so an empty table never reads as a clean bill of health.
 
 ## Crawlability (21)
 
@@ -40,7 +40,7 @@ Zero findings from a check normally means it passed. The exception is a check wh
 | `discover-crawl-waste` | D | Too much of the crawl going to redirects and non-indexable URLs (site-level - Discover leans on fast discovery) | Aim for almost everything Google crawls to be an indexable 200 - repoint links off redirects/404s and prune faceted/parameter URLs. |
 | `entity-internal-link-gap` | N (0.5) | Topically related pages (per Wikidata) with no link between them | Link the broader page to the more specific one - after verifying the entity match. Needs `resolve_entities`. |
 
-## Indexation (25)
+## Indexation (27)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -56,6 +56,8 @@ Zero findings from a check normally means it passed. The exception is a check wh
 | `index-bloat` | D+G | Indexable pages with no impressions in 90 days | Consolidate, improve, or noindex/prune - after confirming it isn't seasonal or new. |
 | `broken-canonical-target` | D | Canonicals pointing at broken, redirecting, noindexed or chained targets | Point the canonical at a live, indexable, self-canonical HTTPS URL. |
 | `soft-404-shell` | D+G | Pages serving 200 that Google flags as soft 404 | Populate the page with real content, or return a true 404/410. |
+| `soft-404-handling` | D | The site answers 200 for URLs that don't exist, or redirects them to the homepage or another 200 page. At the end of every crawl two random URLs that can't exist are requested (one at the root, one under the busiest section): one site-level finding. Also each crawled 200 page whose title (any segment around a `|`/`-` separator) or H1 is wholly a not-found message ("404", "Page not found", "Nothing found"...; an article about 404s doesn't match), highest equity first. A probe that was rate limited or got no answer is unknown | Answer 404 (or 410) for unknown URLs, not 200 and not a homepage redirect; on a single-page app, have the server 404 unknown routes. |
+| `host-variant-split` | D | An http/https or www/apex twin of the homepage or of the most-linked deep page answers 200, a temporary redirect (302/307), a chain, or lands on a different URL, instead of one 301/308 to the same path on the canonical host. At most three requests per crawl; a twin that doesn't resolve is unknown, not a finding; not run for an IP address, localhost or a host with a port | Redirect every twin in one permanent hop at the CDN or server, keeping the path and query. |
 | `broken-hreflang-target` | D | hreflang alternates that are 4xx/5xx, noindex, or a URL that redirected in the latest crawl (from `redirect_sources`; before #55 group C redirecting alternates were skipped). A rate-limited fetch or a legacy stored 429/503 is unknown, not broken; alternates on hosts we didn't crawl are not judged | Point every alternate at a live, indexable URL - one bad alternate drops the whole cluster. |
 | `hreflang-no-return-tag` | D | hreflang annotations a crawled, live, indexable target never reciprocates (x-default is not required to return). Alternates that canonicalise elsewhere, and pages that are themselves canonicalised, are left to `hreflang-canonical-conflict` | Add the return tag - Google ignores one-way hreflang. |
 | `canonical-cross-host` | D | A 200 page whose canonical names a different host (an old domain, staging, a CDN or sister host, a subdomain). The www/apex twin and an http/https switch don't count. Pages with equity (GSC clicks >= 1 or impressions >= 10, a backlink, or an internal link) are listed first | Make the canonical self-referencing on this host, or redirect if the move is real. |

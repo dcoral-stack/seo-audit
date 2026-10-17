@@ -40,14 +40,22 @@ export interface ProbeResult {
   error?: string;
 }
 
-export interface ProbeOptions { followRedirects?: boolean; userAgent?: string; concurrency?: number; budgetMs?: number; chromeFallback?: boolean }
+export interface ProbeOptions {
+  followRedirects?: boolean; userAgent?: string; concurrency?: number; budgetMs?: number; chromeFallback?: boolean;
+  /** Test seam: the fetch to use (default: the global fetch). Lets a probe script map hostnames such as
+   * www./http:// variants onto a local server without DNS or TLS. */
+  fetchImpl?: typeof fetch;
+  /** Request as Chrome from the first hop (the crawl already switched to Chrome because the site walls its UA). */
+  preferChrome?: boolean;
+}
+type ResolvedProbeOptions = Required<Omit<ProbeOptions, 'fetchImpl'>> & { fetchImpl: typeof fetch };
 
 const emptyResult = (url: string): ProbeResult => ({ url, status: null, redirectChain: [], finalUrl: null, finalStatus: null, contentType: null, title: null, canonical: null, metaRobots: null, xRobotsTag: null, contentHash: null, cache: { cfCacheStatus: null, xCache: null, age: null, cacheControl: null }, ms: 0, fetchedAs: 'bot' });
 
 const UA = 'Mozilla/5.0 (compatible; seo-audit-console probe; +https://github.com/houtini-ai/seo-audit)';
 const MAX_BODY = 2_000_000;
 
-async function probeOne(url: string, o: Required<ProbeOptions>, deadline: number, baseHost: string, chrome = false): Promise<ProbeResult & { botBlocked?: boolean }> {
+async function probeOne(url: string, o: ResolvedProbeOptions, deadline: number, baseHost: string, chrome = false): Promise<ProbeResult & { botBlocked?: boolean }> {
   const t0 = Date.now();
   const out: ProbeResult & { botBlocked?: boolean } = { ...emptyResult(url), fetchedAs: chrome ? 'chrome' : 'bot' };
   let current = url;
@@ -55,7 +63,7 @@ async function probeOne(url: string, o: Required<ProbeOptions>, deadline: number
   try {
     for (let hop = 0; hop <= 10; hop++) {
       const left = Math.max(1000, Math.min(10000, deadline - Date.now()));
-      const res = await fetch(current, { redirect: 'manual', headers: chrome ? CHROME_HEADERS : { 'user-agent': o.userAgent, accept: 'text/html,*/*;q=0.8' }, signal: AbortSignal.timeout(left) });
+      const res = await o.fetchImpl(current, { redirect: 'manual', headers: chrome ? CHROME_HEADERS : { 'user-agent': o.userAgent, accept: 'text/html,*/*;q=0.8' }, signal: AbortSignal.timeout(left) });
       // #54: rate limited (and not a bot wall, which the Chrome retry handles). Wait out Retry-After
       // once if the budget allows (capped at 5 s), then report "unknown" rather than a 429 status.
       if (isRateLimited(res.status, n => res.headers.get(n)) && !looksBotBlocked(res.status, n => res.headers.get(n))) {
@@ -129,7 +137,7 @@ async function probeOne(url: string, o: Required<ProbeOptions>, deadline: number
 
 /** Probe up to 50 URLs on the property's host(s) within a time budget; unprobed URLs are marked. */
 export async function probeUrls(urls: { url: string; variantType?: string }[], baseHost: string, opts: ProbeOptions = {}): Promise<ProbeResult[]> {
-  const o: Required<ProbeOptions> = { followRedirects: opts.followRedirects ?? true, userAgent: opts.userAgent ?? UA, concurrency: opts.concurrency ?? 4, budgetMs: opts.budgetMs ?? 45000, chromeFallback: opts.chromeFallback ?? !opts.userAgent };
+  const o: ResolvedProbeOptions = { followRedirects: opts.followRedirects ?? true, userAgent: opts.userAgent ?? UA, concurrency: opts.concurrency ?? 4, budgetMs: opts.budgetMs ?? 45000, chromeFallback: opts.chromeFallback ?? !opts.userAgent, fetchImpl: opts.fetchImpl ?? fetch, preferChrome: opts.preferChrome ?? false };
   for (const u of urls) {
     let h: URL;
     try { h = new URL(u.url); } catch { throw new Error(`Not a URL: ${u.url}`); }
@@ -147,7 +155,7 @@ export async function probeUrls(urls: { url: string; variantType?: string }[], b
         results[i] = { ...emptyResult(u.url), ...(u.variantType ? { variantType: u.variantType } : {}), error: 'not probed: time budget reached (probe fewer URLs per call)' };
         continue;
       }
-      let r = await probeOne(u.url, o, deadline, baseHost);
+      let r = await probeOne(u.url, o, deadline, baseHost, o.preferChrome);
       // Bot-blocked under our own UA: one retry as Chrome, flagged so the reader knows (and so a
       // site that walls crawlers is visible as such).
       if (r.botBlocked && o.chromeFallback && Date.now() < deadline - 1000) r = { ...(await probeOne(u.url, o, deadline, baseHost, true)), blockedAsBot: true };

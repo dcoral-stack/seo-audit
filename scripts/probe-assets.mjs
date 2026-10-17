@@ -153,7 +153,7 @@ try {
     check('collected: broken-image reads old rows (status needs no Accept)', note('broken-image') === '');
     adb.close();
     const r = runAudit(dir2, SITE, {});
-    const ids = (r.notCollected ?? []).map(n => n.checkId).sort();
+    const ids = (r.notCollected ?? []).map(n => n.checkId).filter(id => IDS.includes(id)).sort(); // this probe's checks only (others report their own)
     check('runAudit: notCollected lists the five checks', same(ids, ['broken-subresource', 'image-legacy-format', 'image-oversized', 'render-blocking-head-resources', 'static-asset-uncached']), JSON.stringify(ids));
   }
 

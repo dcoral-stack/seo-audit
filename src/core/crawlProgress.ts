@@ -11,6 +11,7 @@ export type CrawlStage =
   | 'link-graph'          // in-degree, internal PageRank, click depth
   | 'revalidation-probe'  // conditional re-requests (304 check)
   | 'snapshot'            // page_snapshots for change detection
+  | 'site-probes'         // soft-404 + host-variant probes, at most 5 requests (#55 group D)
   | 'external-links'      // outbound link status (#36)
   | 'done';
 

@@ -11,6 +11,7 @@ import { REDIRECT_CHECKS, redirectChainFindings } from './checks-redirects.js';
 import { ECOMMERCE_CHECKS } from './checks-ecommerce.js';
 import { HREFLANG_CHECKS, HREFLANG_EXISTING_CHECKS } from './checks-hreflang.js';
 import { ASSET_CHECKS } from './checks-assets.js';
+import { PROBE_CHECKS } from './checks-probes.js';
 
 /**
  * Check registry. Each check is a pure read over the AuditDatabase (crawl + GSC +
@@ -1542,6 +1543,8 @@ export const CHECKS: CheckDef[] = [
   ...HREFLANG_CHECKS,
   // #55 group C: asset checks (item 7).
   ...ASSET_CHECKS,
+  // #55 group D: soft-404 handling + host variants, from the crawl's site probes (item 8).
+  ...PROBE_CHECKS,
 ];
 
 // ── Google Discover helpers (article-eligibility + directive/schema parsing) ──

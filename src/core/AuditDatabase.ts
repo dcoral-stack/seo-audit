@@ -698,6 +698,11 @@ export class AuditDatabase {
     // this column), so a CDN that negotiates WebP/AVIF for browsers (Shopify, Cloudflare Polish) was measured
     // at its JPEG/PNG size; the image-weight checks read only rows probed with a browser Accept.
     ensure('image_assets', 'accept', 'accept TEXT');
+    // #55 group D: the crawl's own site probes (soft-404 handling, host variants) share the probes table
+    // with probe_urls persist:true. source = 'site-probe' marks them (NULL = a probe_urls row); crawl_id
+    // ties them to the crawl that ran them.
+    ensure('probes', 'source', 'source TEXT');
+    ensure('probes', 'crawl_id', 'crawl_id TEXT');
     ensure('pages', 'max_passage_score', 'max_passage_score REAL');
     ensure('pages', 'max_passage_query', 'max_passage_query TEXT');
     ensure('pages', 'max_passage_impr', 'max_passage_impr INTEGER');
