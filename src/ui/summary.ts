@@ -146,7 +146,7 @@ function tiles(d: any): string {
         label: 'Non-brand share', value: share == null ? '–' : `<span class="n">${share}%</span>`,
         foot: nb != null ? `<span class="n">${delta(nb)}</span><span class="tile-note">non-brand clicks</span>` : undefined,
         sub: `of clicks · brand "${esc(bs.brand)}"`,
-        title: `Non-brand = queries without "${bs.brand}" as a whole word, detected from the domain (a heuristic).`,
+        title: `Non-brand = queries that don't spell "${bs.brand}" in whole words, detected from the domain (a heuristic)${bs.variants?.length ? `. Counted as brand: ${bs.variants.map((v: string) => `"${v}"`).join(', ')}` : ''}.`,
       }));
     } else {
       out.push(tile({ label: 'Non-brand share', value: '–', sub: 'brand not detected from the domain' }));

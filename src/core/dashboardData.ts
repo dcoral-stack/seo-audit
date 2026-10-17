@@ -6,7 +6,7 @@ import { liveJobTypes } from './JobManager.js';
 import { dbPathFor, jobScopeFor } from './paths.js';
 import { gscFreshness } from './gscFreshness.js';
 import { expectedCtr } from './ctrModel.js';
-import { brandToken } from './url-key.js';
+import { loadBrandQueries, brandPredicate } from './brand.js';
 import { HTML_CT } from './sql.js';
 import { gscMixedShape } from './gscRows.js';
 import { latestSerpFootprint, ensureFootprintTable, type SerpFootprint } from './serpFootprint.js';
@@ -43,7 +43,7 @@ export interface DashboardData {
   quickWins?: { query: string; position: number; impressions: number; clicks: number; ctr: number; expectedCtr: number; type: 'striking' | 'snippet' | 'serp' | 'ok'; potential: number }[];
   contentDecay?: { urlKey: string; prevClicks: number; clicks: number; lost: number; dropPct: number; impressions: number; position: number }[];
   cannibalisationTable?: { query: string; urlCount: number; totalImpressions: number; totalClicks: number; verdict: 'split' | 'dominant'; crossType: boolean; urls: { url: string; impressions: number; clicks: number; position: number; template: string }[] }[];
-  brandedSplit?: { brand: string; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
+  brandedSplit?: { brand: string; variants: string[]; brandedQueries: number; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
   topKeywords?: {
     query: string;
     clicks: number;
@@ -267,30 +267,29 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const prior = totals('-56 days', '-28 days');
     const ctr = (t: Totals): number => (t.impressions ? t.clicks / t.impressions : 0);
 
-    // Branded vs non-branded — brand derived from the property's registrable label, matched against
-    // the space-stripped query (so "my brand name" matches brand "mybrandname"). Done in
-    // one SQL pass. The detected brand is surfaced in the UI so the split is verifiable, not a
-    // black box — for descriptive domains where the brand equals a generic term, the user can see it.
-    const brandKey = brandToken(siteUrl); // shared helper — same derivation the audit's brandExcl uses
+    // Branded vs non-branded. The brand is the domain stem; a query is branded when a run of its
+    // whole words spells it ("sim racing cockpit", "simracingcockpit.gg" for simracingcockpit.gg),
+    // so "ehi" never matches "vehicle" (core/brand.ts). The matched spellings ship with the split
+    // so the UI can show what was counted: on a descriptive domain the spaced spelling is also the
+    // generic search.
+    const brand = loadBrandQueries(db.db, siteUrl); // shared with the audit's brandExcl
     let brandedSplit: DashboardData['brandedSplit'];
-    if (brandKey) {
-      // Whole-token match (brand surrounded by word boundaries), NOT substring — so a 3-letter brand
-      // like "ehi" matches the query "ehi inspections" but NOT "vehicle". Strict: this under-detects
-      // for descriptive concatenated domains (where the brand is typed spaced = the category) rather
-      // than over-detecting — a wrong split is worse than a conservative one.
-      const tok = `% ${brandKey} %`;
+    if (brand) {
+      const isB = brandPredicate();
       const splitRow = db.db.prepare(
-        `SELECT COALESCE(SUM(CASE WHEN (' '||LOWER(query)||' ') LIKE ? THEN clicks ELSE 0 END),0) bClk,
-                COALESCE(SUM(CASE WHEN (' '||LOWER(query)||' ') LIKE ? THEN impressions ELSE 0 END),0) bImp,
+        `SELECT COALESCE(SUM(CASE WHEN ${isB} THEN clicks ELSE 0 END),0) bClk,
+                COALESCE(SUM(CASE WHEN ${isB} THEN impressions ELSE 0 END),0) bImp,
                 COALESCE(SUM(clicks),0) tClk, COALESCE(SUM(impressions),0) tImp
          FROM gsc_rows WHERE query IS NOT NULL AND ${UB} AND date > date(?, '-28 days')`)
-        .get(tok, tok, maxDate) as { bClk: number; bImp: number; tClk: number; tImp: number };
+        .get(maxDate) as { bClk: number; bImp: number; tClk: number; tImp: number };
       const priorRow = db.db.prepare(
-        `SELECT COALESCE(SUM(CASE WHEN (' '||LOWER(query)||' ') LIKE ? THEN clicks ELSE 0 END),0) bClk, COALESCE(SUM(clicks),0) tClk
+        `SELECT COALESCE(SUM(CASE WHEN ${isB} THEN clicks ELSE 0 END),0) bClk, COALESCE(SUM(clicks),0) tClk
          FROM gsc_rows WHERE query IS NOT NULL AND date > date(?, '-56 days') AND date <= date(?, '-28 days')`)
-        .get(tok, maxDate, maxDate) as { bClk: number; tClk: number };
+        .get(maxDate, maxDate) as { bClk: number; tClk: number };
       brandedSplit = {
-        brand: brandKey,
+        brand: brand.token,
+        variants: brand.variants,
+        brandedQueries: brand.queries,
         branded: { clicks: splitRow.bClk, impressions: splitRow.bImp },
         nonBranded: { clicks: splitRow.tClk - splitRow.bClk, impressions: splitRow.tImp - splitRow.bImp },
         priorBrandedClicks: priorRow.bClk,

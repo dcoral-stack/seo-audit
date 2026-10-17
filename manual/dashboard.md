@@ -64,7 +64,7 @@ The Search Console view you wish Google shipped - and because the history lives 
 
 - **Search performance over time** - daily clicks, impressions and average position as three small charts on one timeline.
 - **Top keywords and top pages** - 28 days against the prior 28, by clicks.
-- **Branded vs non-branded** clicks split.
+- **Branded vs non-branded** clicks split. The brand is your domain name without its ending; a query counts as branded when its whole words spell it, spaced or not (for simracingcockpit.gg: "simracingcockpit", "sim racing cockpit", "simracingcockpit.gg", but not "sim racing cockpits"). The spellings it matched are listed above the bar. On a descriptive domain the spaced name is also the generic search, so read the split with that in mind.
 - **Ranking distribution over time** - impressions by position bucket, the honest "are we improving" chart.
 - **Search visibility over time** - the DataForSEO monthly rank distribution, reconciled with your GSC dates (needs `track_ranks`).
 - **Rank & clicks over time**, together on one axis.

@@ -88,7 +88,7 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
         snapshotCrawl(db.db, cr.crawl_id, at);
       }
     }
-    const ctx: CheckContext = { db: db.db, gscMaxDate: maxDate, brand: brandToken(siteUrl) };
+    const ctx: CheckContext = { db: db.db, gscMaxDate: maxDate, brand: brandToken(siteUrl), siteUrl };
     const runId = randomUUID().slice(0, 8);
 
     let checks = CHECKS;
@@ -248,7 +248,7 @@ export function runSingleCheck(dataDir: string, siteUrl: string, checkId: string
   const db = new AuditDatabase(dbPathFor(dataDir, siteUrl));
   try {
     const maxDate = gscFreshness(db.db).effectiveMax;
-    const all = chk.run({ db: db.db, gscMaxDate: maxDate, brand: brandToken(siteUrl) });
+    const all = chk.run({ db: db.db, gscMaxDate: maxDate, brand: brandToken(siteUrl), siteUrl });
     return { check: checkId, findings: all.slice(offset, offset + limit), total: all.length };
   } finally {
     db.close();

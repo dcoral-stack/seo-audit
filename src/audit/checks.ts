@@ -6,6 +6,7 @@ import { parseJsonLdNodes, nodeType } from './templates.js';
 import { expectedCtr } from '../core/ctrModel.js';
 import { latestTwoCrawls } from './drift.js';
 import { HTML_CT } from '../core/sql.js';
+import { loadBrandQueries, brandPredicate } from '../core/brand.js';
 
 /**
  * Check registry. Each check is a pure read over the AuditDatabase (crawl + GSC +
@@ -18,6 +19,7 @@ export interface CheckContext {
   db: Database.Database;
   gscMaxDate: string | null; // null = no GSC data; G-checks skip
   brand?: string | null;     // registrable brand label (alnum), for excluding branded queries; null = unknown
+  siteUrl?: string;          // the property: branded queries are detected from its domain stem (core/brand.ts)
 }
 export interface RawFinding {
   urlKey?: string | null;
@@ -47,10 +49,13 @@ const iterRows = (ctx: CheckContext, sql: string, ...args: unknown[]): IterableI
 const win = (d: string): string => `date > date('${d}', '-28 days') AND date <= '${d}'`;
 // Prior 28-day window (the 28 days BEFORE the current window) — for period-over-period checks.
 const winPrev = (d: string): string => `date <= date('${d}', '-28 days') AND date > date('${d}', '-56 days')`;
-// SQL clause to drop branded queries (whole-token match). Branded multi-URL ranking is sitelinks,
-// not cannibalisation; branded top-queries aren't anchor targets. The brand is re-sanitised to
+// SQL clause to drop branded queries. Branded multi-URL ranking is sitelinks, not cannibalisation;
+// branded top-queries aren't anchor targets. With the property known, a query is branded when a run
+// of its whole words spells the domain stem ("sim racing cockpit"; core/brand.ts), the same rule as
+// the dashboard's branded split. Without it, the bare token as one whole word - re-sanitised to
 // alnum HERE (not trusting the caller) so inlining it into SQL is unconditionally injection-safe.
 const brandExcl = (c: CheckContext): string => {
+  if (c.siteUrl) return loadBrandQueries(c.db, c.siteUrl) ? `AND NOT (${brandPredicate()})` : '';
   const b = (c.brand ?? '').replace(/[^a-z0-9]/g, '');
   return b ? `AND (' ' || LOWER(query) || ' ') NOT LIKE '% ${b} %'` : '';
 };
