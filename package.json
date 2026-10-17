@@ -50,7 +50,7 @@
     "build:mcpb": "npm run build && node scripts/build-mcpb.mjs",
     "dev": "tsc -p tsconfig.server.json --watch",
     "start": "node dist/index.js",
-    "test": "npm run build:server && npm run smoke && npm run probe:jobs && npm run probe:runner && npm run probe:fts && npm run probe:review-0-15 && npm run probe:summary && npm run probe:gsc-rows && npm run probe:brand && npm run probe:ratelimit && npm run probe:signals && npm run probe:redirects && npm run probe:ecommerce",
+    "test": "npm run build:server && npm run smoke && npm run probe:jobs && npm run probe:runner && npm run probe:fts && npm run probe:review-0-15 && npm run probe:summary && npm run probe:gsc-rows && npm run probe:brand && npm run probe:ratelimit && npm run probe:signals && npm run probe:redirects && npm run probe:ecommerce && npm run probe:gsc-storage",
     "smoke": "node scripts/smoke.mjs",
     "demo:property": "node scripts/demo-property.mjs",
     "demo:screenshots": "node scripts/demo-screenshots.mjs",
@@ -96,6 +96,7 @@
     "probe:review-0-15": "node scripts/probe-review-0-15.mjs",
     "probe:summary": "node scripts/probe-summary.mjs",
     "probe:gsc-rows": "node scripts/probe-gsc-rows.mjs",
+    "probe:gsc-storage": "node scripts/probe-gsc-storage.mjs",
     "probe:brand": "node scripts/probe-brand.mjs",
     "probe:ratelimit": "node scripts/probe-ratelimit.mjs"
   },

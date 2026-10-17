@@ -2,6 +2,9 @@
 // Issue #61 regression: a GSC day stored in more than one row shape (all-country "lite" rows AND
 // per-country / per-device rows) is counted ONCE by every reader - the dashboard KPIs, a movement
 // list, an audit period comparison and query_data - via the gsc_rows views (src/core/gscRows.ts).
+// Since #65 that mixed layout only exists in databases written before it (the guard refuses segment
+// rows in search_analytics), so the fixtures build it explicitly; section 4 then migrates one and
+// checks every reader gives the same answer. The #65 storage regression is probe-gsc-storage.mjs.
 // Run:  npm run build:server && node scripts/probe-gsc-rows.mjs
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,6 +15,7 @@ import { getDashboardData } from '../dist/core/dashboardData.js';
 import { runSingleCheck } from '../dist/audit/engine.js';
 import { runQueryData } from '../dist/core/queryData.js';
 import { dbPathFor } from '../dist/core/paths.js';
+import { migrateGscStorage } from '../dist/core/gscMigrate.js';
 
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; console.log(`  ok  ${msg}`); } else { fail++; console.log(`  FAIL ${msg}`); } };
@@ -24,6 +28,8 @@ function property(name) {
   const site = `sc-domain:${name}.test`;
   const adb = new AuditDatabase(dbPathFor(dataDir, site));
   adb.upsertProperty(site, 'apex');
+  // The #64 layout: no guard, layout undetected, so mixed shapes can be written and the next open sees them.
+  adb.db.exec(`DROP TRIGGER IF EXISTS sa_totals_only; DROP TRIGGER IF EXISTS sa_totals_only_upd; DELETE FROM gsc_storage_state;`);
   return { site, adb, db: adb.db, file: dbPathFor(dataDir, site) };
 }
 const insert = (db) => db.prepare(`INSERT INTO search_analytics (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,?,?,?,?,?,?,?,?,?)`);
@@ -159,6 +165,35 @@ function day(ins, d, q, url, clicks, impr, shapes) {
   const c = a.db.prepare(`SELECT SUM(clicks) c FROM gsc_rows`).get().c;
   a.close();
   ok(n === 0 && !/WHERE/.test(sql) && c === 30, `single shape: no mixed day, gsc_rows has no filter, sums 30 (${c})`);
+}
+
+// ── 4. Migrate the overlap property (#65): every reader gives the same answer, faster ────────────
+{
+  const site = 'sc-domain:overlap.test';
+  const file = dbPathFor(dataDir, site);
+  const snapshot = () => {
+    const d = getDashboardData(dataDir, site);
+    const q = (input) => runQueryData(file, { table: 'search_analytics', ...input }).structured.groups.map(g => JSON.stringify(g)).sort(); // no orderBy: group order is unspecified
+    return JSON.stringify({
+      summary: d.summary, monthly: d.monthly, contentDecay: d.contentDecay, pagePerformance: d.pagePerformance,
+      pageMovers: d.pageMovers, clickWindows: d.clickWindows,
+      decay: runSingleCheck(dataDir, site, 'traffic-decay').findings.map(f => f.urlKey).sort(),
+      total: q({ metrics: [{ fn: 'sum', column: 'clicks' }] }),
+      byCountry: q({ groupBy: ['country'], metrics: [{ fn: 'sum', column: 'clicks' }], filters: [{ column: 'date', op: 'eq', value: '2026-07-15' }] }),
+      byDevice: q({ groupBy: ['device'], metrics: [{ fn: 'sum', column: 'clicks' }], filters: [{ column: 'date', op: 'eq', value: '2026-07-15' }] }),
+    });
+  };
+  const before = snapshot();
+  const adb = new AuditDatabase(file);
+  const r = await migrateGscStorage(adb.db, file, { freeBytes: () => 1e15 });
+  adb.close();
+  const after = snapshot();
+  ok(r.state === 'done' && r.segmentRowsMoved > 0, `migrated (${r.segmentRowsMoved} segment rows moved over ${r.days} days)`);
+  ok(after === before, 'dashboard totals, monthly, decay, page performance, movers, traffic-decay and query_data are identical after the migration');
+  const v = new Database(file, { readonly: true });
+  const sql = v.prepare(`SELECT sql FROM sqlite_master WHERE name = 'gsc_rows'`).get().sql;
+  v.close();
+  ok(!/WHERE/.test(sql), 'gsc_rows is a straight pass-through after the migration');
 }
 
 rmSync(dataDir, { recursive: true, force: true });

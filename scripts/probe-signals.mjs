@@ -109,14 +109,17 @@ try {
     const adb = new AuditDatabase(dbPathFor(dir1, SITE));
     adb.upsertProperty(SITE, 'apex');
     const ins = adb.db.prepare(`INSERT INTO search_analytics (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,?,?,?,?,?,?,?,0,5)`);
+    // Segment (per-country) rows live in their own table since #65; the totals table refuses them.
+    const insSeg = adb.db.prepare(`INSERT INTO search_analytics_segments (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,?,?,?,?,?,?,?,0,5)`);
     adb.db.transaction(() => {
       for (let k = 0; k < 70; k++) {
         const date = day(k);
         const cur = k <= 27;
         const B = cur ? 16 : 10, N = cur ? 14 : 20;
         const rowsFor = (country) => {
-          ins.run(date, 'example shop', pageUrl(1), urlKey(pageUrl(1), keyOpts), '', country, B, 50);
-          ins.run(date, 'blue widgets', pageUrl(2), urlKey(pageUrl(2), keyOpts), '', country, N, 60);
+          const to = country ? insSeg : ins;
+          to.run(date, 'example shop', pageUrl(1), urlKey(pageUrl(1), keyOpts), '', country, B, 50);
+          to.run(date, 'blue widgets', pageUrl(2), urlKey(pageUrl(2), keyOpts), '', country, N, 60);
         };
         rowsFor('');
         // Mixed row shapes on 11 prior-window days: segmented rows duplicating the same clicks.
@@ -145,7 +148,9 @@ try {
     const nb = runCheck(adb.db, 'nonbrand-decline-masked', brand);
     const ev = nb[0]?.evidence;
     check('nonbrand-decline-masked: fires (total flat, non-brand -30%)', nb.length === 1 && ev.totalClicks.changePct === 0 && ev.nonBrandClicks.changePct === -30, JSON.stringify(ev));
-    check('nonbrand-decline-masked: mixed-shape days counted once (11 days, not doubled)', ev?.mixedShapeDaysCountedOnce === 11 && ev.totalClicks.prior === 840, JSON.stringify(ev?.totalClicks));
+    // Since #65 the 11 per-country days sit in search_analytics_segments, so the totals table has no
+    // mixed-shape days left to de-duplicate; what matters is that the prior window isn't doubled (840, not 1,680).
+    check('nonbrand-decline-masked: segment rows never double the totals (prior 840, not 1,680)', ev?.totalClicks.prior === 840 && !(ev?.mixedShapeDaysCountedOnce > 0), JSON.stringify(ev?.totalClicks));
     check('nonbrand-decline-masked: no brand token = no finding', runCheck(adb.db, 'nonbrand-decline-masked', null).length === 0);
 
     const alarm = runCheck(adb.db, 'site-wide-indexing-alarm');

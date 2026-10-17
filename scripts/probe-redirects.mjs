@@ -114,7 +114,9 @@ try {
     sa.run(day(30), 'off thing', `${W}/temp-offsite`, K('/temp-offsite'), '', '', 4, 50);
     sa.run(day(30), 'home', `${W}/`, K('/'), '', '', 9, 90);
     sa.run(day(40), 'article', `${W}/gone-article`, K('/gone-article'), '', '', 3, 30);
-    sa.run(day(40), 'article', `${W}/gone-article`, K('/gone-article'), 'MOBILE', 'gbr', 3, 30); // same day, segmented shape: counted once
+    // Same day, segmented shape: since #65 it lives in search_analytics_segments and never adds to totals.
+    db.prepare(`INSERT INTO search_analytics_segments (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,?,?,?,?,?,?,?,0,5)`)
+      .run(day(40), 'article', `${W}/gone-article`, K('/gone-article'), 'MOBILE', 'gbr', 3, 30);
     sa.run(day(40), 'quiet', `${W}/gone-quiet`, K('/gone-quiet'), '', '', 0, 2); // below the impressions floor
     sa.run(day(40), 'gone 403', `${W}/gone-403`, K('/gone-403'), '', '', 9, 90);
     const ln = db.prepare(`INSERT INTO links (crawl_id,source_url,source_key,target_url,target_key,anchor_text,is_internal,placement) VALUES ('c2',?,?,?,?,'x',1,'body')`);

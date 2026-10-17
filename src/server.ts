@@ -112,7 +112,7 @@ JOIN KEYS (memorise these):
 - domain — a bare host (no scheme, no www). Joins the Labs tools (ranked_keywords, domain_visibility, top_pages, competitors_domain, topic_gaps) ↔ backlinks summary.
 
 GRAIN (one line per source):
-- search_analytics: date × query × page (plus device/country when synced with segments). Rows are additive; position must be impression-weighted when aggregated. A day can be stored in two row shapes (all-country and segmented rows), so never SUM the raw table: totals read the gsc_rows view (one shape per day), breakdowns gsc_country_rows / gsc_device_rows. query_data on search_analytics already does this.
+- search_analytics: date × query × page, all-country totals rows only. Device/country rows (synced with segments) live in search_analytics_segments, the same columns. Rows are additive; position must be impression-weighted when aggregated. Totals read the gsc_rows view, breakdowns gsc_country_rows / gsc_device_rows (the segment rows); query_data on search_analytics picks the right one from the columns you name.
 - pages / links: the LATEST crawl only, one row per url_key (history lives in page_snapshots, diffed by detect_changes). Carries title/H1/meta, canonical, schema (json_ld), body_chunks, iPR, click_depth, inlink_count.
 - url_inspection: one row per inspected URL — Google's own view (coverage_state, google_canonical vs user_canonical, last_crawl_time, crawled_as, rich_results).
 - rank_history: month × domain (DataForSEO rank distribution + ETV).
@@ -492,7 +492,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         return { content: [{ type: 'text', text: `No databases in ${s.dataDir}${siteUrl ? ` matching ${siteUrl}` : ''} — run refresh_property first.` }], structuredContent: s as unknown as Record<string, unknown> };
       }
       const rows = s.properties.map(p =>
-        `| ${p.siteUrl ?? p.file} | ${fmtBytes(p.bytes)} | ${p.searchAnalytics.toLocaleString('en-US')} | ${p.pages.toLocaleString('en-US')} | ${p.links.toLocaleString('en-US')} | ${p.pageSnapshots.toLocaleString('en-US')} | ${p.findings.toLocaleString('en-US')} | ${p.lastSynced?.slice(0, 10) ?? '—'} | ${p.lastCrawl?.slice(0, 10) ?? '—'} |`,
+        `| ${p.siteUrl ?? p.file} | ${fmtBytes(p.bytes)} | ${p.searchAnalytics.toLocaleString('en-US')}${p.searchAnalyticsSegments ? ` (+${p.searchAnalyticsSegments.toLocaleString('en-US')} segment)` : ''} | ${p.pages.toLocaleString('en-US')} | ${p.links.toLocaleString('en-US')} | ${p.pageSnapshots.toLocaleString('en-US')} | ${p.findings.toLocaleString('en-US')} | ${p.lastSynced?.slice(0, 10) ?? '—'} | ${p.lastCrawl?.slice(0, 10) ?? '—'} |`,
       ).join('\n');
       const cacheLines = s.caches.map(c => `- ${c.file}: ${fmtBytes(c.bytes)}`).join('\n');
       // Link-intersect freshness: prospect data ages as competitors keep earning links, so

@@ -217,6 +217,7 @@ interface Totals { clicks: number; impressions: number; position: number }
 // 25: every GSC total reads gsc_rows (each day counted once, #61); brandedSplit.terms (spaced brand variants).
 // 26: backlinkProfile (#47), merged onto the summary stack (its branch numbered it 24).
 // 27: crawlHealth.responseCodes gains the rate-limited bucket (#54; its branch numbered it 25).
+// (#65 changed where segment rows live, not the payload; the version probe reads both tables.)
 const PAYLOAD_VERSION = '27';
 
 /** Build the dashboard payload for a property from its synced GSC history. */
@@ -225,7 +226,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
   try {
     // Cache: the payload is ~20 GROUP-BY scans over search_analytics (~6s at 1.8M rows) but only
     // changes on sync/audit. Probe a cheap data-version; serve the cached JSON on a hit.
-    // Probe every table the payload reads from — search_analytics + pages + the latest audit run,
+    // Probe every table the payload reads from — search_analytics (+ its segment table, #65) + pages + the latest audit run,
     // PLUS agent_readiness and rank_history (written by check_agent_readiness / track_ranks via their
     // own paths). Omitting the latter two would serve a stale dashboard after those tools run.
     ensureFootprintTable(db.db); // probe below reads it; create before first serp_features run
@@ -233,7 +234,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     // Lazy, one-time health backfill for past audit runs (a no-op probe once every run is visited).
     backfillAuditHealth(db.db);
     const ver = db.db.prepare(
-      `SELECT (SELECT MAX(date)||':'||COALESCE(MAX(rowid),0) FROM search_analytics) sa,
+      `SELECT (SELECT MAX(date)||':'||COALESCE(MAX(rowid),0) FROM search_analytics)||':'||(SELECT COALESCE(MAX(rowid),0) FROM search_analytics_segments) sa,
               (SELECT run_id FROM audit_runs ORDER BY started_at DESC LIMIT 1)||':'||(SELECT COUNT(*)||':'||COALESCE(MAX(finished_at),'')||':'||COUNT(health_basis) FROM audit_runs) run,
               (SELECT COALESCE(MAX(rowid),0) FROM pages) pg,
               (SELECT COALESCE(MAX(checked_at),'') FROM agent_readiness) ar,
