@@ -207,6 +207,21 @@ let dash;
 try { dash = getDashboardData(dataDir, site); } catch (e) { dash = { __error: e.message }; }
 ok(dash && !dash.__error && typeof dash === 'object', `dashboard data builds${dash?.__error ? ` — ${dash.__error}` : ''}`);
 
+// 5) Data freshness (job/status panel, read from the DB) + the canonical/redirect/404 breakdown
+const fr = dash?.freshness;
+const kinds = new Set((fr?.sources ?? []).map(s => s.kind));
+ok(['sync', 'crawl', 'audit', 'inspect'].every(x => kinds.has(x)), `freshness lists sync/crawl/audit/inspect (got ${[...kinds].join(',')})`);
+const crawlSrc = fr?.sources?.find(s => s.kind === 'crawl');
+ok(crawlSrc?.state === 'completed' && /URLs crawled/.test(crawlSrc.detail), `freshness crawl source reads crawl_metadata (${crawlSrc?.state}: ${crawlSrc?.detail})`);
+ok(fr?.sources?.find(s => s.kind === 'audit')?.state === 'completed', 'freshness audit source reads the audit run');
+ok(Array.isArray(fr?.crawlRuns) && fr.crawlRuns.length === 1, `freshness lists crawl runs (got ${fr?.crawlRuns?.length})`);
+const flow = dash?.crawlHealth?.urlFlow ?? [];
+const nf = flow.find(r => r.label === 'Not found (404)');
+ok(nf && nf.count >= 1 && typeof nf.example === 'string', `urlFlow has a 404 bucket with an example (${JSON.stringify(nf)})`);
+// A cache hit must still carry live freshness (it is read outside the payload cache).
+const dash2 = getDashboardData(dataDir, site);
+ok(Array.isArray(dash2?.freshness?.sources) && dash2.freshness.sources.length === fr.sources.length, 'cached payload still carries live freshness');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 rmSync(dataDir, { recursive: true, force: true });
 if (fail) process.exitCode = 1;

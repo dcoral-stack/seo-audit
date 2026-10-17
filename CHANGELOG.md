@@ -10,6 +10,16 @@ Each release is tagged `vX.Y.Z` on the release commit (tagging lapsed between 0.
 
 ## [Unreleased]
 
+### Changed
+- **Dashboard redesign: crawl and network intelligence (#38 part 1).** Direction from a Google Stitch round (`design/stitch/`), built on the existing data contracts:
+  - A sticky sidebar (property, navigation, data freshness) replaces the pill tabs, under a slim top bar. The graphite dark and cool-paper light themes share one signal-green accent.
+  - The Overview is rebuilt: KPI strip, clicks / impressions / position as small multiples, findings by priority, crawl-health status mix, a site-network preview, top keywords and pages, and a jobs and data-freshness panel.
+  - Crawl health gets a KPI strip and a canonical / redirect / 404 breakdown. The Network tab (formerly Architecture) leads with the full crawl graph, and Issues gets a by-area filter.
+  - The two dual-axis charts (rank and clicks; DataForSEO keywords vs ETV) become small multiples.
+
+### Added
+- Dashboard payload: `freshness`, read from the property database on every load (outside the cache), so the standalone dashboard sidecar shows the same job status as the MCP. Also `crawlHealth.urlFlow`, the canonical / redirect / not-found buckets with the most-linked example URL per bucket.
+
 ### Fixed
 - **`triage_404s` suggested redirects for URLs that already redirect live, and let shared suffix tokens inflate matches** (#40). Redirect and review candidates are now probed live before bucketing (`verify:true` by default, up to 50 URLs, 30s): a URL that already 3xx's to a live page lands in a new `already-redirected` bucket with its live destination, so a suggestion never replaces a correct redirect; one answering 200 lands in `live-now`. Slug similarity weights tokens by how many live URLs carry them, so `stormforcegaming-buyers-guide` no longer matches `syncmesh-buyers-guide` on `buyers-guide` alone while a typo of a rare brand token still scores high. Archive targets (`/tag/`, `/category/`, `/author/`, `/page/N`) are discounted and flagged `weakTarget`.
 
