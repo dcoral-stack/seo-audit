@@ -1,0 +1,303 @@
+// Overview + crawl-health + freshness renderers for the Stitch-direction dashboard
+// (design/stitch/). Pure HTML-string + ECharts builders; dashboard.ts owns the data load,
+// the chart registry and the tab shell, and passes them in.
+import { esc, fmtNum, sparkline, delta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
+
+const fmt = fmtNum;
+type Dash = any; // the dashboard payload (typed loosely, as in dashboard.ts)
+
+export interface OverviewCtx {
+  wrap: (id: string, group?: string) => EChartWrapper;
+  col: ChartPalette & { green: string; red: string; amber: string; grey: string; blue: string };
+  shortPath: (u: string, max?: number) => string;
+  safeJson: (s: string) => any;
+  redacted: boolean;
+}
+
+const SEV = [
+  { key: 'crit', label: 'Critical', dot: 'dot-crit', bar: 'var(--intent-danger)' },
+  { key: 'high', label: 'High', dot: 'dot-high', bar: 'var(--intent-warning)' },
+  { key: 'med', label: 'Medium', dot: 'dot-med', bar: 'var(--intent-info)' },
+  { key: 'low', label: 'Low', dot: 'dot-low', bar: 'var(--text-faint)' },
+] as const;
+
+const pct = (a: number, b: number): number => (b ? ((a - b) / b) * 100 : 0);
+
+/** "3h ago" / "2d ago" from a SQLite datetime ('YYYY-MM-DD HH:MM:SS', UTC) or ISO string. */
+export function ago(at: string | null | undefined, now = Date.now()): string {
+  if (!at) return '-';
+  const t = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(' ', 'T')}Z`);
+  if (!Number.isFinite(t)) return at.slice(0, 10);
+  const s = Math.max(0, (now - t) / 1000);
+  if (s < 90) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400 * 2) return `${Math.round(s / 3600)}h ago`;
+  if (s < 86400 * 60) return `${Math.round(s / 86400)}d ago`;
+  return at.slice(0, 10);
+}
+
+const stateDot = (state: string): string =>
+  state === 'completed' ? 'dot-ok' : state === 'running' ? 'dot-run' : state === 'never' ? 'dot-never' : 'dot-bad';
+const KIND_LABEL: Record<string, string> = { sync: 'Sync', crawl: 'Crawl', audit: 'Audit', inspect: 'Inspect', ranks: 'Ranks', sitemap: 'Sitemap' };
+
+// ── KPI strip ─────────────────────────────────────────────────────────────
+interface Tile { label: string; value: string; change?: number; lowerIsBetter?: boolean; spark?: number[]; sub?: string; color?: string }
+const tile = (t: Tile): string =>
+  `<div class="metric-card"><div class="label">${esc(t.label)}</div>` +
+  `<div class="value"${t.color ? ` style="color:${t.color}"` : ''}>${t.value}</div>` +
+  ((t.change !== undefined || t.spark) ? `<div class="metric-foot">${t.change !== undefined ? delta(t.change, t.lowerIsBetter) : '<span></span>'}${t.spark ? sparkline(t.spark, t.lowerIsBetter) : ''}</div>` : '') +
+  (t.sub ? `<div class="metric-sub">${t.sub}</div>` : '') + `</div>`;
+
+function overviewKpis(d: Dash): string {
+  const c = d.summary.current, p = d.summary.prior;
+  const spark = (d.rankTrend ?? []).slice(-28);
+  const hs = d.healthScore;
+  const hsColor = !hs ? '' : (hs.band === 'Excellent' || hs.band === 'Good') ? 'var(--intent-success)' : hs.band === 'Fair' ? 'var(--intent-warning)' : 'var(--intent-danger)';
+  const tiles: Tile[] = [
+    { label: 'Clicks', value: fmt(c.clicks), change: pct(c.clicks, p.clicks), spark: spark.map((x: any) => x.clicks), sub: 'last 28d vs prior' },
+    { label: 'Impressions', value: fmt(c.impressions), change: pct(c.impressions, p.impressions), spark: spark.map((x: any) => x.impressions), sub: 'last 28d vs prior' },
+    { label: 'CTR', value: `${(c.ctr * 100).toFixed(1)}%`, change: pct(c.ctr, p.ctr), spark: spark.map((x: any) => (x.impressions ? x.clicks / x.impressions : 0)), sub: 'clicks ÷ impressions' },
+    { label: 'Avg position', value: c.position.toFixed(1), change: pct(c.position, p.position), lowerIsBetter: true, spark: spark.map((x: any) => x.position).filter((v: number) => v > 0), sub: 'lower is better' },
+    hs
+      ? { label: 'Site health', value: `${hs.score}<span class="kpi-of">/100</span>`, color: hsColor, sub: `${esc(hs.band)} · <span class="redact-n">${fmt(hs.errorPages)} of ${fmt(hs.totalPages)}</span> pages flagged` }
+      : { label: 'Site health', value: '–', sub: 'run a crawl + run_audit' },
+  ];
+  return tiles.map(tile).join('');
+}
+
+// ── Small multiples: clicks / impressions / position on one shared x (never dual-axis) ──
+function trendMultiples(d: Dash, ctx: OverviewCtx): void {
+  const { col } = ctx;
+  const t = d.rankTrend ?? [];
+  if (!document.getElementById('ovTrendChart')) return;
+  if (!t.length) { ctx.wrap('ovTrendChart').setEmpty('No Search Console data yet - run sync_gsc', col); return; }
+  const dates = t.map((x: any) => x.date);
+  const series = [
+    { name: 'Clicks', data: t.map((x: any) => x.clicks), color: col.accent, inverse: false, fmtV: (v: number) => fmt(v) },
+    { name: 'Impressions', data: t.map((x: any) => x.impressions), color: col.categorical[0], inverse: false, fmtV: (v: number) => fmt(v) },
+    { name: 'Avg position', data: t.map((x: any) => (x.position > 0 ? Math.round(x.position * 10) / 10 : null)), color: col.categorical[1], inverse: true, fmtV: (v: number) => v.toFixed(1) },
+  ];
+  const H = 23, GAP = 9, TOP = 7;
+  const ax = axisDefaults(col, { numeric: true });
+  ctx.wrap('ovTrendChart').setOption({
+    aria: { enabled: true },
+    animation: false,
+    axisPointer: { link: [{ xAxisIndex: 'all' }], lineStyle: { color: col.border } },
+    tooltip: { ...tooltipDefaults(col), trigger: 'axis' },
+    grid: series.map((_, i) => ({ left: 52, right: 64, top: `${TOP + i * (H + GAP)}%`, height: `${H}%` })),
+    // Each multiple is titled above its own plot (axis names collide on an inverted axis).
+    title: series.map((x, i) => ({ text: x.name + (x.inverse ? '  (1 = top)' : ''), left: 52, top: `${TOP + i * (H + GAP) - 5.5}%`, textStyle: { color: col.text, fontSize: 11.5, fontWeight: 600 } })),
+    xAxis: series.map((_, i) => ({
+      type: 'category', gridIndex: i, data: dates, boundaryGap: false,
+      axisLine: { lineStyle: { color: col.border } }, axisTick: { show: false },
+      axisLabel: i === series.length - 1 ? { color: col.axisText, fontSize: 10.5, fontFamily: monoFont(), formatter: (v: string) => v.slice(5) } : { show: false },
+    })),
+    yAxis: series.map((s, i) => ({
+      type: 'value', gridIndex: i, inverse: s.inverse, scale: s.inverse, splitNumber: 2,
+      ...ax, axisLine: { show: false },
+    })),
+    series: series.map((s, i) => ({
+      name: s.name, type: 'line', xAxisIndex: i, yAxisIndex: i, showSymbol: false, smooth: 0.25, connectNulls: false,
+      lineStyle: { width: 1.75, color: s.color }, itemStyle: { color: s.color },
+      areaStyle: s.inverse ? undefined : { color: s.color, opacity: 0.08 },
+      endLabel: { show: !ctx.redacted, color: col.text, fontFamily: monoFont(), fontSize: 11, formatter: (p: any) => (p.value == null ? '' : s.fmtV(Number(p.value))) },
+      data: s.data,
+    })),
+  });
+  const last = t[t.length - 1];
+  const sum = document.getElementById('ovTrendSummary');
+  if (sum) sum.textContent = `${t.length} days of Search Console data; latest day ${fmt(last.clicks)} clicks, ${fmt(last.impressions)} impressions, average position ${last.position ? last.position.toFixed(1) : 'n/a'}.`;
+  const src = document.getElementById('ovTrendSrc');
+  if (src) src.textContent = `GSC · ${t.length}d`;
+}
+
+// ── Findings by priority: severity spine + legend + top issues ──
+function findingsCard(d: Dash, ctx: OverviewCtx): string {
+  const fc = d.findings;
+  if (!fc || !fc.byCheck?.length) return '<div class="empty-state">No audit yet - run <code>run_audit</code> to rank the issues.</div>';
+  const counts: Record<string, number> = {};
+  for (const b of fc.byCheck) { const k = b.severity === 'info' ? 'low' : b.severity; counts[k] = (counts[k] ?? 0) + b.count; }
+  const spine = `<div class="spine" role="img" aria-label="Findings by severity">${SEV.filter(x => counts[x.key]).map(x =>
+    `<span style="flex:${counts[x.key]};background:${x.bar}" title="${x.label}: ${counts[x.key]}"></span>`).join('')}</div>`;
+  const legend = `<div class="sev-legend">${SEV.map(x => `<span class="sev-key"><span class="dot ${x.dot}"></span>${x.label} <b>${fmt(counts[x.key] ?? 0)}</b></span>`).join('')}</div>`;
+  const seen = new Set<string>(); const top: any[] = [];
+  for (const f of fc.top ?? []) { if (top.length >= 6) break; if (seen.has(f.check_id)) continue; seen.add(f.check_id); top.push(f); }
+  const maxImpact = Math.max(...top.map(f => Number(f.impact) || 0), 1);
+  const sevOf = (s: string) => SEV.find(x => x.key === (s === 'info' ? 'low' : s)) ?? SEV[3];
+  const items = top.map(f => {
+    const rec = ctx.safeJson(f.recommendation);
+    const sv = sevOf(f.severity);
+    const w = Math.max(4, Math.round(((Number(f.impact) || 0) / maxImpact) * 100));
+    return `<li><span class="dot ${sv.dot}" title="${sv.label}"></span><span class="ti-title" title="${esc(rec.title || f.check_id)}">${esc(rec.title || f.check_id)}</span>` +
+      `<span class="ti-bar" title="Impact ${f.impact ?? ''}"><span style="width:${w}%;background:${sv.bar}"></span></span><span class="ti-size">${esc(String(f.size ?? ''))}</span></li>`;
+  }).join('');
+  const src = document.getElementById('ovFindingsSrc');
+  if (src) src.textContent = fc.finishedAt ? `Audit · ${ago(fc.finishedAt)}` : 'Audit';
+  return spine + legend + `<ul class="top-issues">${items}</ul>` +
+    `<div style="margin-top:10px"><button class="link-btn" type="button" data-goto="issues">All ${fmt(fc.total)} findings →</button></div>`;
+}
+
+// ── Crawl health summary: 100% status mix + leak rows ──
+function crawlCard(d: Dash): string {
+  const ch = d.crawlHealth;
+  if (!ch?.totalPages) return '<div class="empty-state">No crawl yet - run <code>start_crawl</code> or <code>refresh_property</code>.</div>';
+  const rc: { label: string; count: number }[] = ch.responseCodes ?? [];
+  const byCls = (re: RegExp) => rc.filter(r => re.test(r.label)).reduce((s, r) => s + r.count, 0);
+  const mix = [
+    { k: '2xx', n: byCls(/^200/), c: 'var(--intent-success)' },
+    { k: '3xx', n: byCls(/^3xx/), c: 'var(--chart-context)' },
+    { k: '4xx', n: byCls(/^4xx/), c: 'var(--intent-warning)' },
+    { k: '5xx / failed', n: byCls(/^5xx|Fetch failed/), c: 'var(--intent-danger)' },
+  ].filter(m => m.n > 0);
+  const tot = mix.reduce((s, m) => s + m.n, 0) || 1;
+  const p = (n: number): string => { const v = (n / tot) * 100; return v > 0 && v < 1 ? '<1' : String(Math.round(v)); };
+  const bar = `<div class="mix" role="img" aria-label="Response status mix">${mix.map(m => `<span style="flex:${m.n};background:${m.c}" title="${m.k}: ${m.n}"></span>`).join('')}</div>`;
+  const legend = `<div class="mix-legend">${mix.map(m => `<span><span class="dot" style="background:${m.c}"></span>${m.k} <b>${p(m.n)}%</b></span>`).join('')}</div>`;
+  const total = ch.totalPages as number;
+  const idx = (ch.indexability ?? []).find((r: any) => r.label === 'Indexable')?.count ?? 0;
+  const flow: { label: string; count: number }[] = ch.urlFlow ?? [];
+  const f = (re: RegExp): number => flow.filter(r => re.test(r.label)).reduce((s, r) => s + r.count, 0);
+  const rows = [
+    { label: 'Indexable', n: idx, c: 'var(--intent-success)' },
+    { label: 'Canonicalised elsewhere', n: f(/Canonicalised/), c: 'var(--chart-categorical-1)' },
+    { label: 'Redirected (3xx)', n: f(/redirect/i), c: 'var(--chart-context)' },
+    { label: 'Not found (404 / 410)', n: f(/404|410/), c: 'var(--intent-danger)' },
+  ];
+  const statRows = rows.map(r => {
+    const w = total ? Math.max(r.n ? 1 : 0, (r.n / total) * 100) : 0;
+    return `<div class="stat-row"><div class="sr-top"><span>${r.label}</span><span><b>${fmt(r.n)}</b><em>${total ? Math.round((r.n / total) * 100) : 0}%</em></span></div><div class="stat-track"><span style="width:${w.toFixed(1)}%;background:${r.c}"></span></div></div>`;
+  }).join('');
+  return bar + legend + `<div class="stat-rows">${statRows}</div>` +
+    `<div style="margin-top:12px"><button class="link-btn" type="button" data-goto="health">Crawl health →</button></div>`;
+}
+
+/** The network force graph - shared by the Overview preview (compact) and the Network tab (full). */
+export function drawNetwork(d: Dash, ctx: OverviewCtx, id: string, opts: { compact: boolean }): boolean {
+  const sg = d.structureGraph;
+  const { col } = ctx;
+  if (!sg?.nodes?.length) { ctx.wrap(id).setEmpty('Run a crawl to map the internal link network', col); return false; }
+  const nodes = opts.compact ? [...sg.nodes].sort((a: any, b: any) => b.ipr - a.ipr).slice(0, 90) : sg.nodes;
+  const keep = new Set(nodes.map((n: any) => n.id));
+  const catOf = (n: any): number => ((n.status == null || n.status >= 300) ? 2 : (n.indexable ? 0 : 1));
+  const maxIpr = Math.max(...nodes.map((n: any) => n.ipr), 1);
+  const labelCut = opts.compact ? 0.85 : 0.8;
+  const gnodes = nodes.map((n: any) => ({
+    id: n.id, name: n.id, value: n.ipr, category: catOf(n),
+    symbolSize: (opts.compact ? 4 : 5) + Math.round((n.ipr / maxIpr) * (opts.compact ? 18 : 26)),
+    label: (n.ipr / maxIpr >= labelCut && !ctx.redacted)
+      ? { show: true, formatter: ctx.shortPath(n.id, 22), color: col.muted, fontSize: 10, fontFamily: monoFont() } : { show: false },
+    _s: n.status, _d: n.depth,
+  }));
+  const edgeColor = getComputedStyle(document.documentElement).getPropertyValue('--chart-edge').trim() || col.border;
+  ctx.wrap(id).setOption({
+    aria: { enabled: true },
+    tooltip: { ...tooltipDefaults(col, 'item'), formatter: (p: any) => p.dataType === 'edge' ? '' : `${esc(ctx.shortPath(p.data.id, 48))}<br/>iPR ${p.data.value} · status ${p.data._s ?? '-'} · depth ${p.data._d ?? '-'}` },
+    legend: opts.compact ? undefined : { top: 10, left: 12, data: ['Healthy', 'Non-indexable', 'Broken / redirected'], textStyle: { color: col.text, fontSize: 12 }, itemWidth: 9, itemHeight: 9, icon: 'circle' },
+    series: [{
+      type: 'graph', layout: 'force', roam: !opts.compact, draggable: !opts.compact,
+      categories: [
+        { name: 'Healthy', itemStyle: { color: col.green } },
+        { name: 'Non-indexable', itemStyle: { color: col.amber } },
+        { name: 'Broken / redirected', itemStyle: { color: col.red } },
+      ],
+      force: opts.compact ? { repulsion: 60, edgeLength: [18, 60], gravity: 0.14 } : { repulsion: 95, edgeLength: [30, 110], gravity: 0.08 },
+      data: gnodes,
+      links: sg.edges.filter((e: any) => keep.has(e.source) && keep.has(e.target)).map((e: any) => ({ source: e.source, target: e.target })),
+      lineStyle: { color: edgeColor, width: 0.7, opacity: 1, curveness: 0.06 },
+      itemStyle: { borderColor: col.surface, borderWidth: 1.5 },
+      emphasis: { focus: 'adjacency', lineStyle: { color: col.accent, width: 1.4, opacity: 1 }, label: { show: !ctx.redacted } },
+      label: { position: 'right' },
+    }],
+  });
+  return true;
+}
+
+// ── Top keywords / pages ──
+function kwTable(d: Dash): string {
+  const kw = (d.topKeywords ?? []).slice().sort((a: any, b: any) => b.clicks - a.clicks).slice(0, 8);
+  if (!kw.length) return '<div class="empty-state">No keyword data yet - run <code>sync_gsc</code>.</div>';
+  const rows = kw.map((k: any) => {
+    const ch = k.prevClicks ? ((k.clicks - k.prevClicks) / k.prevClicks) * 100 : (k.clicks ? 100 : 0);
+    return `<tr><td class="q" title="${esc(k.query)}">${esc(k.query)}</td><td class="num">${fmt(k.clicks)}</td><td class="num">${delta(ch)}</td><td class="num">${Number(k.position).toFixed(1)}</td></tr>`;
+  }).join('');
+  return `<table><thead><tr><th>Query</th><th class="num">Clicks</th><th class="num">Change</th><th class="num">Pos</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function pageTable(d: Dash, ctx: OverviewCtx): string {
+  const pp = (d.pagePerformance ?? []).slice().sort((a: any, b: any) => b.clicks - a.clicks).slice(0, 8);
+  if (!pp.length) return '<div class="empty-state">No page data yet - run <code>sync_gsc</code>.</div>';
+  const rows = pp.map((p: any) =>
+    `<tr><td class="url" title="${esc(p.urlKey)}">${esc(ctx.shortPath(p.urlKey, 40))}</td><td class="num">${fmt(p.clicks)}</td><td class="num">${delta(p.clicksChangePct)}</td><td class="num">${Number(p.position).toFixed(1)}</td></tr>`).join('');
+  return `<table><thead><tr><th>Page</th><th class="num">Clicks</th><th class="num">Change</th><th class="num">Pos</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// ── Jobs & data freshness (from the DB, not the MCP's in-memory jobs) ──
+export function jobsHtml(d: Dash): string {
+  const src: any[] = d.freshness?.sources ?? [];
+  if (!src.length) return '<div class="empty-state">No data sources recorded yet.</div>';
+  return `<div class="jobs">${src.map(s => `<div class="job"><span class="job-tag">${esc(KIND_LABEL[s.kind] ?? s.kind)}</span>` +
+    `<span class="job-state"><span class="dot ${stateDot(s.state)}"></span>${esc(s.state)}</span>` +
+    `<span class="job-detail" title="${esc(s.detail)}">${esc(s.detail)}${s.error ? ` <span class="job-err">- ${esc(String(s.error).slice(0, 120))}</span>` : ''}</span>` +
+    `<span class="job-at" title="${esc(s.at ?? '')}">${esc(ago(s.at))}</span></div>`).join('')}</div>`;
+}
+
+export function renderSideFreshness(d: Dash): void {
+  const el = document.getElementById('sideFresh');
+  if (!el) return;
+  const src: any[] = (d.freshness?.sources ?? []).filter((s: any) => ['sync', 'crawl', 'audit'].includes(s.kind));
+  el.innerHTML = src.length
+    ? `<div class="side-fresh-title">Data freshness</div>` + src.map(s =>
+      `<div class="fresh-row" title="${esc(s.detail)}"><span class="dot ${stateDot(s.state)}"></span><span class="fr-k">${esc(KIND_LABEL[s.kind])}</span><span class="fr-v">${s.state === 'never' ? 'never' : esc(ago(s.at))}</span></div>`).join('')
+    : '';
+}
+
+// ── Crawl-health tab: KPI strip + canonical/redirect/404 table ──
+export function renderHealthTop(d: Dash, ctx: OverviewCtx): void {
+  const ch = d.crawlHealth;
+  const k = document.getElementById('healthKpis');
+  const flowEl = document.getElementById('urlFlow');
+  const flowCard = document.getElementById('urlFlowCard');
+  if (!ch?.totalPages) {
+    if (k) k.innerHTML = '';
+    if (flowCard) flowCard.style.display = 'none';
+    return;
+  }
+  const rc: any[] = ch.responseCodes ?? [];
+  const non200 = rc.filter(r => !/^200/.test(r.label)).reduce((s, r) => s + r.count, 0);
+  const redirects = rc.filter(r => /^3xx/.test(r.label)).reduce((s, r) => s + r.count, 0);
+  const idx = (ch.indexability ?? []).find((r: any) => r.label === 'Indexable')?.count ?? 0;
+  const depthRows: any[] = ch.depth ?? [];
+  const depthN = depthRows.reduce((s, r) => s + r.count, 0);
+  const depthAvg = depthN ? depthRows.reduce((s, r) => s + (parseInt(String(r.label).replace(/\D/g, ''), 10) || 0) * r.count, 0) / depthN : 0;
+  const share = (n: number): string => `${Math.round((n / ch.totalPages) * 100)}% of crawled`;
+  if (k) k.innerHTML = ([
+    { label: 'Pages crawled', value: fmt(ch.totalPages), sub: 'internal URLs, latest crawl' },
+    { label: 'Indexable', value: fmt(idx), sub: share(idx), color: 'var(--intent-success)' },
+    { label: 'Non-200', value: fmt(non200), sub: share(non200), color: non200 ? 'var(--intent-danger)' : '' },
+    { label: 'Redirects', value: fmt(redirects), sub: share(redirects) },
+    { label: 'Avg crawl depth', value: depthAvg ? depthAvg.toFixed(1) : '–', sub: 'from the start URL (6+ as 6)' },
+  ] as Tile[]).map(tile).join('');
+  const flow: any[] = ch.urlFlow ?? [];
+  if (flowCard) flowCard.style.display = flow.length ? '' : 'none';
+  if (flowEl && flow.length) {
+    const tone: Record<string, string> = { bad: 'dot-bad', warn: 'dot-high', muted: 'dot-never' };
+    flowEl.innerHTML = `<table><thead><tr><th>Type</th><th class="num">URLs</th><th class="num">Share</th><th>Most-linked example</th></tr></thead><tbody>${flow.map(r =>
+      `<tr><td><span class="dot ${tone[r.tone] ?? 'dot-never'}" style="margin-right:8px"></span>${esc(r.label)}</td><td class="num">${fmt(r.count)}</td><td class="num">${Math.round((r.count / ch.totalPages) * 100)}%</td><td class="url" title="${esc(r.example ?? '')}">${esc(r.example ? ctx.shortPath(r.example, 60) : '-')}</td></tr>`).join('')}</tbody></table>`;
+  }
+}
+
+export function renderOverview(d: Dash, ctx: OverviewCtx): void {
+  const set = (id: string, html: string): void => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+  set('ovKpis', overviewKpis(d));
+  trendMultiples(d, ctx);
+  set('ovFindings', findingsCard(d, ctx));
+  set('ovCrawl', crawlCard(d));
+  const cs = document.getElementById('ovCrawlSrc');
+  const crawlSrc = (d.freshness?.sources ?? []).find((s: any) => s.kind === 'crawl');
+  if (cs) cs.textContent = crawlSrc?.at ? `Crawl · ${ago(crawlSrc.at)}` : 'Crawl';
+  const drawn = drawNetwork(d, ctx, 'ovNetChart', { compact: true });
+  const ns = document.getElementById('ovNetSummary');
+  if (ns) ns.textContent = drawn ? `Preview of the internal link network: the top ${Math.min(90, d.structureGraph.nodes.length)} pages by internal PageRank.` : 'No crawl network yet.';
+  set('ovKeywords', kwTable(d));
+  set('ovPages', pageTable(d, ctx));
+  set('ovJobs', jobsHtml(d));
+}
