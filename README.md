@@ -74,6 +74,26 @@ claude mcp add seo-audit-console --env GOOGLE_APPLICATION_CREDENTIALS=C:/path/to
 
 Then ask Claude: *"list properties"*, *"refresh mysite.com"*, *"run an SEO audit"*.
 
+## Opening the dashboard
+
+Once a property has been refreshed or audited, there are three ways to see it:
+
+| You want | Ask Claude | What you get |
+|---|---|---|
+| A quick look in the chat | *"show me the dashboard for mysite.com"* | The dashboard drawn inside the conversation (`get_dashboard`) |
+| The full dashboard in your browser | *"open the dashboard for mysite.com"* | A link such as `http://127.0.0.1:53817/dashboard?siteUrl=…` (`open_dashboard`). Click it. It reads the local database live, so reload after each refresh |
+| Something to send a client | *"export the report for mysite.com"* | One self-contained HTML file (`export_report`) |
+
+You often don't need to ask: when a refresh, crawl, sync or audit finishes, the reply says the dashboard is updated and includes the browser link. The link is local to your machine (it only answers on `127.0.0.1`), and the port changes each time the server starts, so use the link from the latest reply. Add `&theme=dark` for dark mode, or `&redact=1` to blur the numbers for a screenshot.
+
+**Running it under Docker or the Docker MCP gateway?** The browser link points at a port inside the container, which your browser can't reach. Run the dashboard as its own small container on a fixed port instead, on the same data volume:
+
+```bash
+docker run -d --name seo-audit-dashboard --restart unless-stopped -p 127.0.0.1:8788:8788 -e SAC_DATA_DIR=/data -e SAC_DASHBOARD_BIND=0.0.0.0 -e SAC_DASHBOARD_PORT=8788 -v seo-audit-data:/data node:22-slim npx -y -p @houtini/seo-audit-console seo-audit-dashboard
+```
+
+Then open `http://127.0.0.1:8788/dashboard?siteUrl=sc-domain:mysite.com`. Use the volume name your MCP server writes to. In Git Bash on Windows, put `MSYS_NO_PATHCONV=1` in front of the command so `/data` isn't rewritten as a Windows path. More in [dashboard.md](manual/dashboard.md).
+
 ## The manual
 
 This README is the story and the quick start. The detail lives in the manual:
