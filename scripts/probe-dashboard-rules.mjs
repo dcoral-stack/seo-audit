@@ -10,6 +10,7 @@ import { rmSync } from 'node:fs';
 import {
   countChange, shareText, sharePct, capHealth, rankChange, SMALL_BASE_MIN,
   assessField, fieldValue, fieldWindowLagDays, quickWinsEmptyReason, trappedEmptyReason,
+  sourceFreshness, freshnessDot, GSC_STALE_DAYS, SNAPSHOT_STALE_DAYS,
 } from '../dist/core/displayRules.js';
 import { cwvFieldPayload } from '../dist/core/CruxSync.js';
 import { loadBrandQueries, spacedIsUncertain } from '../dist/core/brand.js';
@@ -186,6 +187,24 @@ console.log('meta description limit');
   const check = runSingleCheck(dataDir, site, 'meta-description-length');
   ok(over?.label === `Over ${META_DESC_MAX_CHARS} characters` && over.count === 2, `Crawl health counts meta descriptions over ${META_DESC_MAX_CHARS} (${JSON.stringify(over)})`);
   ok(check.total === over?.count, `the audit check flags the same pages (${check.total} vs ${over?.count})`);
+}
+
+// ── 9. One freshness rule for the Summary strip and the sidebar ─────────────────────────────
+console.log('freshness');
+{
+  const now = Date.parse('2026-10-17T16:30:00Z');
+  const done = (at) => ({ state: 'completed', at });
+  const sync = sourceFreshness('sync', done('2026-08-16 09:47:21'), { gscEnd: '2026-08-15', now });
+  ok(sync.stale && freshnessDot('completed', sync.stale) === 'dot-high', `Search Console ending 15 Aug is stale on 17 Oct (> ${GSC_STALE_DAYS} days), amber dot`);
+  ok(!sourceFreshness('sync', done('2026-10-16 09:00:00'), { gscEnd: '2026-10-14', now }).stale, 'Search Console ending 3 days ago is fresh');
+  for (const kind of ['crawl', 'inspect', 'ranks']) {
+    const f = sourceFreshness(kind, done('2026-08-16T09:48:13.956Z'), { now });
+    ok(f.stale, `${kind} from 16 Aug is stale on 17 Oct (> ${SNAPSHOT_STALE_DAYS} days): the same rule for every snapshot source`);
+  }
+  const audit = sourceFreshness('audit', done('2026-10-17 16:21:38'), { now });
+  ok(!audit.stale && freshnessDot('completed', audit.stale) === 'dot-ok', 'an audit from minutes ago is fresh, green dot');
+  ok(freshnessDot('failed', false) === 'dot-bad' && freshnessDot('queued', false) === 'dot-run' && freshnessDot('never', false) === 'dot-never', 'failed / queued / never keep their own dots');
+  ok(!sourceFreshness('crawl', { state: 'never', at: null }, { now }).stale, 'a source that never ran is "never", not stale');
 }
 
 rmSync(dataDir, { recursive: true, force: true });

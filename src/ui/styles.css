@@ -865,3 +865,4 @@ select, select.sel, #cannSelect {
 .chart.chart-is-empty { height: 120px !important; }
 .brand-uncertain { color: var(--intent-warning); cursor: help; }
 .sf-rule { font-size: 11px; color: var(--text-faint); margin-top: 4px; line-height: 1.4; }
+.fresh-row.fr-flag .fr-v { color: var(--intent-warning); }

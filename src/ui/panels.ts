@@ -5,7 +5,7 @@
 // they belong to. Pure HTML-string + ECharts builders; dashboard.ts owns the data load, the chart
 // registry and the tab shell, and passes them in.
 import { esc, fmtNum, fmtCompact, fmtDate, countDelta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
-import { shareText, sharePct } from '../core/displayRules.js';
+import { shareText, sharePct, sourceFreshness, freshnessDot } from '../core/displayRules.js';
 
 const fmt = fmtNum;
 import type { DashboardData } from './dashboard.js';
@@ -48,8 +48,25 @@ export function ago(at: string | null | undefined, now = Date.now()): string {
   return fmtDate(at);
 }
 
-const stateDot = (state: string): string =>
-  state === 'completed' ? 'dot-ok' : state === 'running' || state === 'queued' ? 'dot-run' : state === 'never' ? 'dot-never' : 'dot-bad';
+/**
+ * One freshness verdict per data source, shared by the Summary strip and the sidebar so the two
+ * never disagree: the staleness rule (core/displayRules.ts sourceFreshness), the audit-predates-
+ * crawl flag, and the dot that follows from them.
+ */
+export function freshVerdict(d: Dash, kind: string, s: { state: string; at: string | null }): { dot: string; flag: string; rule: string } {
+  const gscEnd = x(d).dateRange?.rawMaxDate ?? x(d).coverage?.gsc?.maxDate ?? null;
+  const f = sourceFreshness(kind, s, { gscEnd });
+  let flag = f.stale ? 'stale' : '', rule = f.rule;
+  if (kind === 'sync' && s.state !== 'never' && x(d).dateRange?.trimmedDays) {
+    const n = x(d).dateRange.trimmedDays;
+    rule += ` The last ${n} unfinalised day${n > 1 ? 's are' : ' is'} left out of every figure.`;
+  }
+  if (kind === 'audit' && x(d).freshness?.auditVsCrawl?.predatesCrawl) {
+    flag = 'older than crawl';
+    rule += ' The latest audit ran before the latest completed crawl, so its findings describe the previous crawl: run run_audit.';
+  }
+  return { dot: freshnessDot(s.state, !!flag), flag, rule };
+}
 const KIND_LABEL: Record<string, string> = { sync: 'Sync', crawl: 'Crawl', audit: 'Audit', inspect: 'Inspect', ranks: 'Ranks', sitemap: 'Sitemap' };
 
 // ── KPI tile (the crawl-health strip) ──
@@ -208,7 +225,10 @@ export function renderSideFreshness(d: Dash): void {
   const src: any[] = (d.freshness?.sources ?? []).filter((s: any) => ['sync', 'crawl', 'audit'].includes(s.kind));
   el.innerHTML = src.length
     ? `<div class="side-fresh-title">Data freshness</div>` + src.map(s =>
-      `<div class="fresh-row" title="${esc(s.detail)}"><span class="dot ${stateDot(s.state)}"></span><span class="fr-k">${esc(KIND_LABEL[s.kind])}</span><span class="fr-v">${s.state === 'never' ? 'never' : esc(ago(s.at))}</span></div>`).join('')
+{
+        const v = freshVerdict(d, s.kind, s);
+        return `<div class="fresh-row${v.flag ? ' fr-flag' : ''}" title="${esc([s.detail, v.flag ? `${v.flag}.` : '', v.rule].filter(Boolean).join(' '))}"><span class="dot ${v.dot}"></span><span class="fr-k">${esc(KIND_LABEL[s.kind])}</span><span class="fr-v">${s.state === 'never' ? 'never' : esc(ago(s.at))}</span></div>`;
+      }).join('')
     : '';
 }
 

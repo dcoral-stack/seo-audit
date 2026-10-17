@@ -11,7 +11,7 @@
 import { esc, fmtNum, fmtCompact, sparkline, countDelta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
 import { shareText, capHealth } from '../core/displayRules.js';
 import { buildVerdict, direction } from '../core/summaryVerdict.js';
-import { ago, SEV_LABEL } from './panels.js';
+import { ago, SEV_LABEL, freshVerdict } from './panels.js';
 import { cwvTile, cwvCoverage } from './cwv.js';
 
 const fmt = fmtNum;
@@ -27,10 +27,6 @@ export interface SummaryCtx {
   catLabel: Record<string, string>;
 }
 
-// Stated product rules (not benchmarks), shown in the freshness tooltips.
-const GSC_STALE_DAYS = 7;
-const CRAWL_AUDIT_STALE_DAYS = 30;
-const DAY = 86_400_000;
 
 const set = (id: string, html: string): void => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
 const show = (id: string, on: boolean): void => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
@@ -40,7 +36,6 @@ const parseAt = (at: string | null | undefined): number => {
   if (/^\d{4}-\d{2}-\d{2}$/.test(at)) return Date.parse(`${at}T00:00:00Z`);
   return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(' ', 'T')}Z`);
 };
-const daysSince = (at: string | null | undefined): number | null => { const t = parseAt(at); return Number.isFinite(t) ? (Date.now() - t) / DAY : null; };
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monthLabel = (ym: string): string => `${MONTHS[Number(ym.slice(5, 7)) - 1]} ${ym.slice(2, 4)}`;
 const dayLabel = (at: string | null | undefined): string => {
@@ -62,27 +57,11 @@ function freshness(d: any): string {
   for (const kind of ['sync', 'crawl', 'audit', 'inspect', 'ranks']) {
     const s = src.find(r => r.kind === kind);
     if (!s) continue;
-    let flag = '', rule = '';
     let line = s.state === 'never' ? 'never' : s.state === 'running' ? 'running now' : s.state === 'completed' ? ago(s.at) : `${s.state} ${ago(s.at)}`;
-    if (kind === 'sync' && s.state !== 'never') {
-      const end = d.dateRange?.rawMaxDate ?? d.coverage?.gsc?.maxDate;
-      const behind = daysSince(end);
-      if (end) line += ` · to ${dayLabel(end)}`;
-      if (behind != null && behind > GSC_STALE_DAYS) flag = 'stale';
-      rule = `Stale when the latest Search Console day is more than ${GSC_STALE_DAYS} days old (a product rule).` +
-        (d.dateRange?.trimmedDays ? ` The last ${d.dateRange.trimmedDays} unfinalised day${d.dateRange.trimmedDays > 1 ? 's are' : ' is'} left out of every figure.` : '');
-    }
-    if ((kind === 'crawl' || kind === 'audit') && s.state !== 'never') {
-      const age = daysSince(s.at);
-      if (age != null && age > CRAWL_AUDIT_STALE_DAYS) flag = 'stale';
-      rule = `Stale when older than ${CRAWL_AUDIT_STALE_DAYS} days (a product rule).`;
-    }
-    if (kind === 'audit' && d.freshness?.auditVsCrawl?.predatesCrawl) {
-      flag = 'older than crawl';
-      rule += ' The latest audit ran before the latest completed crawl, so its findings describe the previous crawl: run run_audit.';
-    }
-    const bad = s.state === 'failed' || s.state === 'interrupted';
-    const dot = bad ? 'dot-bad' : flag ? 'dot-high' : s.state === 'never' ? 'dot-never' : s.state === 'running' || s.state === 'queued' ? 'dot-run' : 'dot-ok';
+    const end = d.dateRange?.rawMaxDate ?? d.coverage?.gsc?.maxDate;
+    if (kind === 'sync' && s.state !== 'never' && end) line += ` · to ${dayLabel(end)}`;
+    // The same verdict the sidebar shows (panels.ts freshVerdict): one rule, one dot.
+    const { dot, flag, rule } = freshVerdict(d, kind, s);
     const tip = [s.detail, rule].filter(Boolean).join(' ');
     cells.push(`<div class="sf-cell" title="${esc(tip)}"><div class="sf-k"><span class="dot ${dot}"></span>${esc(LABEL[kind])}</div>` +
       `<div class="sf-v">${esc(line)}${flag ? ` <span class="sf-flag">${esc(flag)}</span>` : ''}</div></div>`);
