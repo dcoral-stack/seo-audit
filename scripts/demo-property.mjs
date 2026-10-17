@@ -497,6 +497,7 @@ undici.setGlobalDispatcher(new undici.Agent());
 // Import the built modules only after the patch, so their `undici` binding is the demo agent.
 const { AuditDatabase } = await import('../dist/core/AuditDatabase.js');
 const { dbPathFor } = await import('../dist/core/paths.js');
+const { settleGscTotals } = await import('../dist/core/gscRows.js');
 const { urlKey } = await import('../dist/core/url-key.js');
 const { Crawler } = await import('../dist/core/Crawler.js');
 const { runAudit } = await import('../dist/audit/engine.js');
@@ -553,7 +554,9 @@ const startMs = endMs - (DAYS - 1) * DAY;
 {
   const adb = new AuditDatabase(dbPath);
   adb.upsertProperty(SITE, 'apex');
-  const ins = adb.db.prepare(`INSERT INTO search_analytics (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  // Device × country rows, as a segments sync writes them (#65): the segment table, then the totals
+  // aggregated into search_analytics by the same settle step the sync runs.
+  const ins = adb.db.prepare(`INSERT INTO search_analytics_segments (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,?,?,?,?,?,?,?,?,?)`);
   let rows = 0, totC = 0, totI = 0;
   adb.db.transaction(() => {
     for (const pr of pairs) {
@@ -592,6 +595,7 @@ const startMs = endMs - (DAYS - 1) * DAY;
       }
     }
   })();
+  settleGscTotals(adb.db, isoDate(startMs), END, true);
   adb.db.prepare('UPDATE property_meta SET last_synced_at=? WHERE site_url=?').run(sqlTs(nowMs - 26 * 3600_000), SITE);
   adb.close();
   log(`GSC: ${pairs.length} query/page pairs, ${rows.toLocaleString()} rows, ${totC.toLocaleString()} clicks / ${totI.toLocaleString()} impressions over ${DAYS} days to ${END}`);

@@ -214,6 +214,8 @@ function audit(db, runId, at, crawlId, findings, checkIds = CHECKS) {
 // each day counts once (#61; the full regression is scripts/probe-gsc-rows.mjs).
 {
   const { site, adb, db } = property('mixed');
+  // The #64 layout (mixed shapes in search_analytics) only exists in databases written before #65: drop the guard to build one.
+  db.exec(`DROP TRIGGER IF EXISTS sa_totals_only; DROP TRIGGER IF EXISTS sa_totals_only_upd; DELETE FROM gsc_storage_state;`);
   const ins = db.prepare(`INSERT INTO search_analytics (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,?,?,?,?,?,?,?,?,?)`);
   db.transaction(() => {
     for (let t = Date.parse('2026-08-01'); t <= Date.parse('2026-10-10'); t += DAY) {
