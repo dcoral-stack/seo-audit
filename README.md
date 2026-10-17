@@ -327,13 +327,33 @@ The four `-e NAME` flags with no value pass those variables through from your sh
 
 **What you'll see.** A job reads `queued: waiting for the job runner` until the runner picks it up, then `running` as before. If a job stays queued for over a minute and no runner has checked in, the status says so and prints the `docker run` line above. After about two minutes with no runner heartbeat it reads `queued (no runner)` and no longer blocks `data_storage` prune or repair; it stays listed until the usual one-day prune. One runner runs one job at a time by default; set `SAC_RUNNER_CONCURRENCY` to run more, though two jobs for the same property never run at once. To update, recreate the runner container (`docker rm -f seo-audit-runner`, then the `docker run` line again, so npx installs the new release; a plain `docker restart` can keep running the copy npx already installed in the container). Keep the runner and the gateway on the same release: pin `@houtini/seo-audit-console@<version>` in both if you want updates to be deliberate. A job running when the runner stops is recorded as `interrupted`, so re-run it.
 
+**The first call after a worker starts is slow.** Each gateway worker is a fresh container, and `npx` installs the package before the server can answer: about 60 seconds on a cold npm cache. That can outlast the client's tool-call timeout, and a client that retries can start extra workers, each installing again. Two ways round it:
+
+- **Pin the version** in the catalog entry's command (`npx -y -p @houtini/seo-audit-console@0.16.1 ...` rather than the bare name), so npx never has to look up "latest", and the runner and the server stay on the same release. If the entry mounts a named volume at `/root/.npm` (the npm cache), pre-warm it once after each upgrade, so workers start from a warm cache:
+
+  ```bash
+  docker run --rm -v sac-npm-cache:/root/.npm node:22-slim npx -y -p @houtini/seo-audit-console@0.16.1 node -e 0
+  ```
+
+- **Or build a small image with the package preinstalled** and point the catalog entry at it. Workers then start in a second or two:
+
+  ```dockerfile
+  FROM node:22-slim
+  RUN npm install -g @houtini/seo-audit-console@0.16.1
+  ENTRYPOINT ["seo-audit-console"]
+  ```
+
+  `docker build -t seo-audit-console:0.16.1 .`, then use that image (the runner runs from it too, with `--entrypoint seo-audit-runner`). Rebuild it for each release.
+
+**After upgrading, restart the MCP client.** Clients read the tool list once, when they connect, and keep it. Until Claude Desktop or Claude Code is restarted (fully, from the tray on Windows), tools added in the new release, such as `sync_crux`, stay invisible even though the server has them.
+
 **Without the runner,** the older options still work: `longLived: true` on the catalog entry (or `--long-lived` on the gateway), or plain `docker run -i --rm` with the volumes mounted, which is one long-lived stdio process for the session. Either way, mount named volumes for the data directory and the credentials (for example `-v seo-audit-data:/data -e SAC_DATA_DIR=/data` and `-v seo-audit-creds:/creds:ro -e GOOGLE_APPLICATION_CREDENTIALS=/creds/service-account.json`) so audits and the job list survive a restart.
 
 There's no published image for the server itself: build one from this repo's `Dockerfile` (`docker build -t seo-audit-console .`). Its entrypoint is `node dist/index.js`, the stdio server.
 
 Every job is recorded in `_jobs.db` in the data directory. If the process running a job exits before it finishes, the job reads as `interrupted` with the reason rather than disappearing, and a finished job's result can still be read after a restart.
 
-The gateway doesn't publish the server container's ports, so the browser dashboard the server starts after a job isn't reachable from your machine. `get_dashboard` still renders it in chat, and for a browser tab you can run the standalone dashboard, `seo-audit-dashboard`, as a second container on the same data volume with a published port. The command is in [dashboard.md](manual/dashboard.md#in-your-browser).
+The gateway doesn't publish the server container's ports, so the browser dashboard the server starts after a job isn't reachable from your machine. The server notices it is in a container without a published dashboard port (no `SAC_DASHBOARD_BIND=0.0.0.0` with `SAC_DASHBOARD_PORT`), and says so in place of the link, with the command to start the standalone dashboard. `get_dashboard` still renders it in chat, and for a browser tab you can run the standalone dashboard, `seo-audit-dashboard`, as a second container on the same data volume with a published port. The command is in [dashboard.md](manual/dashboard.md#in-your-browser).
 
 ---
 
