@@ -18,6 +18,7 @@
 import { gscTotalsSource } from '../core/gscRows.js';
 import type { CheckContext, CheckDef, RawFinding } from './checks.js';
 import { HTML_CT } from '../core/sql.js';
+import { PAGE_EXPERIENCE_STAKE_SHARE } from './stakes.js';
 
 const rows = (c: CheckContext, sql: string, ...args: unknown[]): any[] => c.db.prepare(sql).all(...args);
 const one = (c: CheckContext, sql: string, ...args: unknown[]): any => c.db.prepare(sql).get(...args);
@@ -247,31 +248,31 @@ export const ASSET_CHECKS: CheckDef[] = [
     run: brokenSubresource, collected: resourceAssetsNote,
   },
   {
-    id: 'render-blocking-head-resources', category: 'performance', severity: 'med', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'global',
+    id: 'render-blocking-head-resources', category: 'performance', severity: 'med', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'global', stakeShare: PAGE_EXPERIENCE_STAKE_SHARE,
     title: 'Render-blocking scripts or stylesheets in <head>',
     fix: `Pages load ${SYNC_HEAD_SCRIPTS_MIN}+ parser-blocking script in <head> (no async, defer or type=module), or ${BLOCKING_STYLESHEETS_MIN}+ render-blocking stylesheets (no media query that excludes the screen). Each one delays first paint and LCP. Add defer (or async for independent scripts) to head scripts; inline the critical CSS and load the rest without blocking, or merge sheets. Findings are rolled up per set of blocking files (one per template). The stylesheet threshold is ours: 1-2 sheets are the normal floor. Reads page_resources (every crawl since 0.15.0).`,
     run: renderBlockingHeadResources, collected: pageResourcesNote,
   },
   {
-    id: 'static-asset-uncached', category: 'performance', severity: 'low', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'global',
+    id: 'static-asset-uncached', category: 'performance', severity: 'low', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'global', stakeShare: PAGE_EXPERIENCE_STAKE_SHARE,
     title: 'Static file cached for less than a day',
     fix: `A first-party CSS, JavaScript or font file has no Cache-Control, no max-age, no-store/no-cache, or a max-age under ${MIN_CACHE_SECONDS} s (one day), so returning visitors download it again. Serve versioned (hashed) static files with a long max-age (a year, plus immutable) at the server or CDN. Third-party files are not reported (not yours to change); the Expires header isn't recorded, so a file cached only by Expires reads as uncached. Needs a crawl with headResources:true (resource_assets).`,
     run: staticAssetUncached, collected: resourceAssetsNote,
   },
   {
-    id: 'image-oversized', category: 'performance', severity: 'med', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'per-page',
+    id: 'image-oversized', category: 'performance', severity: 'med', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'per-page', stakeShare: PAGE_EXPERIENCE_STAKE_SHARE,
     title: 'Image over 300 KB',
     fix: `An <img> on the site weighs more than ${IMAGE_OVERSIZED_BYTES.toLocaleString('en-GB')} bytes (Content-Length), which slows LCP on the pages using it. Resize it to the largest size it is displayed at, compress it, serve WebP/AVIF, and use srcset for smaller screens. Sizes come from a header-only probe of the 500 most-used images after each crawl (image_assets), sent with a browser's image Accept header so a CDN that negotiates WebP/AVIF is measured as browsers see it; images sampled by older crawls (no Accept recorded) are not judged until a re-crawl.`,
     run: imageOversized, collected: imageWeightNote,
   },
   {
-    id: 'image-legacy-format', category: 'performance', severity: 'low', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'global',
+    id: 'image-legacy-format', category: 'performance', severity: 'low', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'global', stakeShare: PAGE_EXPERIENCE_STAKE_SHARE,
     title: 'JPEG/PNG image where WebP or AVIF would be smaller',
     fix: `An <img> of ${LEGACY_MIN_BYTES / 1024} KiB to 300 KB is served as JPEG, PNG, GIF or BMP. WebP is 25-34% smaller than JPEG at equal quality (Google's WebP study), so each saves at least the 8 KiB Lighthouse counts. Convert at build time or turn on format negotiation at the CDN. The probe sends a browser's image Accept header, so a CDN that already negotiates WebP/AVIF is not reported; images sampled by older crawls (no Accept recorded) are not judged until a re-crawl. Images over 300 KB are reported by image-oversized.`,
     run: imageLegacyFormat, collected: imageWeightNote,
   },
   {
-    id: 'broken-image', category: 'onpage', severity: 'med', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'per-page',
+    id: 'broken-image', category: 'onpage', severity: 'med', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'per-page', stakeShare: PAGE_EXPERIENCE_STAKE_SHARE,
     title: 'Image returns an error or an HTML page',
     fix: 'An <img> src answers 4xx/5xx, or answers 200 with an HTML page (a redirect to the homepage, a soft 404), so the image is missing for visitors and for Google Images. Fix the src or restore the file. Each finding is one image with the pages using it. Reads image_assets (the 500 most-used images, sampled after each crawl); a failed or rate-limited probe is unknown, not broken.',
     run: brokenImage, collected: imageAssetsNote,

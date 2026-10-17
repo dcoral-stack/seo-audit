@@ -33,7 +33,10 @@ function load(): Promise<Loaded> {
           return { tokenizer, model, device };
         } catch (e) {
           const last = i === DEVICE_ORDER.length - 1;
-          console.error(`[reranker] device '${device}' unavailable${last ? '' : ', falling back'}: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
+          // DirectML only exists on Windows: elsewhere 'dml' failing is the expected path to the CPU,
+          // not news, so it is logged only when asked for (SAC_RERANK_DEVICE) or on Windows.
+          const expected = !last && device === 'dml' && process.platform !== 'win32' && !process.env.SAC_RERANK_DEVICE;
+          if (!expected) console.error(`[reranker] device '${device}' unavailable${last ? '' : ', falling back'}: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
           if (last) throw e;
         }
       }

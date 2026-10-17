@@ -59,6 +59,7 @@ docs/
 scripts/*
 !scripts/smoke.mjs
 !scripts/probe-dashboard-rules.mjs
+!scripts/probe-dashboard-container.mjs
 !scripts/demo-property.mjs
 !scripts/demo-screenshots.mjs
 !scripts/qa-crawl.mjs
@@ -80,6 +81,7 @@ scripts/*
 !scripts/probe-backlinks.mjs
 !scripts/probe-dfs-labs.mjs
 !scripts/probe-6a.mjs
+!scripts/probe-audit-size.mjs
 !scripts/probe-6b.mjs
 !scripts/probe-6c.mjs
 !scripts/probe-6d.mjs
@@ -90,10 +92,13 @@ scripts/*
 !scripts/probe-majestic.mjs
 !scripts/build-mcpb.mjs
 !scripts/probe-jobs.mjs
+!scripts/probe-priority-calibration.mjs
 !scripts/probe-runner.mjs
+!scripts/probe-runner-stopped.mjs
 !scripts/probe-crawl-local.mjs
 !scripts/probe-checks-v2.mjs
 !scripts/probe-integrity.mjs
+!scripts/probe-data-storage.mjs
 !scripts/probe-probeurls.mjs
 !scripts/probe-triage404.mjs
 !scripts/probe-fts.mjs
@@ -104,6 +109,7 @@ scripts/*
 !scripts/probe-ecommerce.mjs
 !scripts/probe-hreflang.mjs
 !scripts/probe-assets.mjs
+!scripts/probe-a11y-rollup.mjs
 
 # --- secrets hardening (never commit) ---
 *.pem

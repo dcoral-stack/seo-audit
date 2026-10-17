@@ -693,6 +693,9 @@ export class AuditDatabase {
     ensure('pages', 'a11y_viewport_zoom_disabled', 'a11y_viewport_zoom_disabled INTEGER');
     ensure('pages', 'a11y_positive_tabindex', 'a11y_positive_tabindex INTEGER');
     ensure('pages', 'a11y_duplicate_ids', 'a11y_duplicate_ids INTEGER');
+    // 0.16.1: which elements failed (JSON {links, buttons, dupIds}: signature -> count), so the a11y
+    // checks roll shared theme elements up per template. NULL on older crawls: one finding per page.
+    ensure('pages', 'a11y_samples', 'a11y_samples TEXT');
     ensure('sitemap_urls', 'lastmod', 'lastmod TEXT');
     // #55 group C: the Accept header the image-weight probe sent. NULL = probed without one (crawls before
     // this column), so a CDN that negotiates WebP/AVIF for browsers (Shopify, Cloudflare Polish) was measured

@@ -40,6 +40,29 @@ export interface PropertyStorage {
   linkProspectsFetched: string | null; // MAX(fetched_at) — freshness of the intersect (may be stale)
   /** Other properties sharing this file (pre-per-form-filename databases) — their data is mixed in. */
   sharedWith?: string[];
+  /** The GSC storage layout (#65): migrated, pending, migrating, or deferred (with why). */
+  gscStorage: GscStorageInfo;
+  /** `<file>.bak-*` backups beside this database (the GSC migration's, a repair's, or hand-made). */
+  backups: BackupFile[];
+}
+
+export interface GscStorageInfo {
+  state: 'migrated' | 'pending' | 'migrating' | 'deferred' | 'unknown';
+  /** Plain words: what the state means, and for deferred why (from the last refused attempt). */
+  note: string;
+  /** The backup the migration made, when it made one. */
+  backup?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface BackupFile {
+  file: string;
+  /** The database it is a backup of. */
+  of: string;
+  bytes: number;
+  modified: string;
+  /** 'gsc-migration' = the backup the #65 migration took (gsc_storage_state.backup); 'other' = a repair's or hand-made. */
+  kind: 'gsc-migration' | 'other';
 }
 
 export interface StorageSummary {
@@ -47,8 +70,45 @@ export interface StorageSummary {
   properties: PropertyStorage[];
   caches: { file: string; bytes: number }[];
   other: { file: string; bytes: number }[];
+  /** Every `*.db.bak-*` file in the data dir (also listed per property), counted in totalBytes. */
+  backups: BackupFile[];
+  backupBytes: number;
+  /** Empty `-wal` (and its `-shm`) left beside a backup by an older version: removed by this listing. */
+  straySidecarsRemoved: string[];
   reportsBytes: number;
   totalBytes: number;
+}
+
+/** A backup's name: `<name>.db.bak-<stamp>`; its SQLite sidecars end in -wal / -shm. */
+const BACKUP_RE = /^(.+\.db)\.bak-.+$/;
+const isSidecar = (f: string): boolean => f.endsWith('-wal') || f.endsWith('-shm');
+
+/**
+ * Remove the -wal/-shm left beside a backup when the WAL is empty (or gone). A read-only handle on a
+ * WAL-mode copy creates them and can't delete them on close; with an empty WAL they hold nothing.
+ * Returns the files removed.
+ */
+export function removeEmptySidecars(file: string): string[] {
+  const wal = `${file}-wal`, shm = `${file}-shm`;
+  let walBytes = 0;
+  try { walBytes = statSync(wal).size; } catch { walBytes = 0; }
+  if (walBytes > 0) return [];
+  const removed: string[] = [];
+  for (const f of [wal, shm]) if (existsSync(f)) { try { rmSync(f, { force: true }); removed.push(path.basename(f)); } catch { /* in use: leave it */ } }
+  return removed;
+}
+
+function readGscStorage(db: Database.Database): GscStorageInfo {
+  let row: { state: string; backup: string | null; detail: string | null; updated_at: string | null } | undefined;
+  try { row = db.prepare(`SELECT state, backup, detail, updated_at FROM gsc_storage_state WHERE id = 1`).get() as typeof row; } catch { row = undefined; }
+  if (!row) return { state: 'unknown', note: 'not recorded yet: this version has not opened the database for a sync (the next sync records it, and migrates if needed)' };
+  let detail: { deferred?: { reason?: string; at?: string } ; daysDone?: number; finishedAt?: string } = {};
+  try { detail = row.detail ? JSON.parse(row.detail) : {}; } catch { detail = {}; }
+  const base = { backup: row.backup, updatedAt: row.updated_at };
+  if (row.state === 'done') return { ...base, state: 'migrated', note: `migrated to the 0.16 layout${detail.finishedAt ? ` (${detail.finishedAt.slice(0, 16).replace('T', ' ')})` : ''}${row.backup ? '; its pre-migration backup can be deleted once you are happy with the data' : ''}` };
+  if (detail.deferred?.reason) return { ...base, state: 'deferred', note: `deferred${detail.deferred.at ? ` ${detail.deferred.at.slice(0, 16).replace('T', ' ')}` : ''}${row.state === 'migrating' ? ' part-way through' : ''}: ${detail.deferred.reason}` };
+  if (row.state === 'migrating') return { ...base, state: 'migrating', note: `migration under way or interrupted${detail.daysDone != null ? ` (${detail.daysDone} days moved)` : ''}; the next sync resumes it` };
+  return { ...base, state: 'pending', note: 'pending: the next sync migrates it (backup first, then day by day)' };
 }
 
 const sizeWithSidecars = (dbFile: string): number => {
@@ -79,9 +139,20 @@ export function storageSummary(dataDir: string, siteUrl?: string): StorageSummar
   const properties: PropertyStorage[] = [];
   const caches: { file: string; bytes: number }[] = [];
   const other: { file: string; bytes: number }[] = [];
-  let files: string[] = [];
-  try { files = readdirSync(dataDir).filter(f => f.endsWith('.db')); } catch { /* dataDir absent */ }
+  let all: string[] = [];
+  try { all = readdirSync(dataDir); } catch { /* dataDir absent */ }
+  const files = all.filter(f => f.endsWith('.db'));
   const wantStem = siteUrl ? sanitizeProperty(siteUrl) : null;
+  // Backups (`x.db.bak-<stamp>`), with their stray empty sidecars cleared first.
+  const straySidecarsRemoved: string[] = [];
+  const backupNames = all.filter(f => BACKUP_RE.test(f) && !isSidecar(f)).sort();
+  for (const b of backupNames) straySidecarsRemoved.push(...removeEmptySidecars(path.join(dataDir, b)));
+  const backupsAll: BackupFile[] = backupNames.map(b => {
+    const full = path.join(dataDir, b);
+    let modified = '';
+    try { modified = statSync(full).mtime.toISOString(); } catch { /* raced */ }
+    return { file: b, of: BACKUP_RE.exec(b)![1], bytes: sizeWithSidecars(full), modified, kind: 'other' as BackupFile['kind'] };
+  });
 
   for (const file of files.sort()) {
     const full = path.join(dataDir, file);
@@ -109,6 +180,9 @@ export function storageSummary(dataDir: string, siteUrl?: string): StorageSummar
         const latest = db.prepare(`SELECT status, started_at, error FROM crawl_metadata ORDER BY started_at DESC LIMIT 1`).get() as { status: string; started_at: string; error: string | null } | undefined;
         if (latest && latest.status !== 'completed') latestCrawlRun = { status: latest.status, startedAt: latest.started_at, error: latest.error ?? null };
       } catch { /* no crawl table */ }
+      const gscStorage = readGscStorage(db);
+      const backups = backupsAll.filter(b => b.of === file).map(b => (gscStorage.backup && path.basename(gscStorage.backup) === b.file ? { ...b, kind: 'gsc-migration' as const } : b));
+      for (const b of backups) { const i = backupsAll.findIndex(x => x.file === b.file); if (i >= 0) backupsAll[i] = b; }
       let linkProspectsFetched: string | null = null;
       try {
         linkProspectsFetched = (db.prepare(`SELECT MAX(fetched_at) t FROM link_prospects`).get() as { t: string | null }).t;
@@ -127,6 +201,8 @@ export function storageSummary(dataDir: string, siteUrl?: string): StorageSummar
         linkProspects: safeCount(db, 'link_prospects'),
         linkProspectsFetched,
         ...(sharedWith ? { sharedWith } : {}),
+        gscStorage,
+        backups,
         lastCrawl,
         ...(latestCrawlRun ? { latestCrawlRun } : {}),
       });
@@ -138,11 +214,15 @@ export function storageSummary(dataDir: string, siteUrl?: string): StorageSummar
   }
 
   const reportsBytes = dirSize(path.join(dataDir, 'reports'));
+  // Narrowed to one property: only its backups.
+  const backups = wantStem ? backupsAll.filter(b => b.of === `${wantStem}.db`) : backupsAll;
+  const backupBytes = backups.reduce((s, b) => s + b.bytes, 0);
   const totalBytes = properties.reduce((s, p) => s + p.bytes, 0)
     + caches.reduce((s, c) => s + c.bytes, 0)
     + other.reduce((s, o) => s + o.bytes, 0)
+    + backupBytes
     + reportsBytes;
-  return { dataDir, properties, caches, other, reportsBytes, totalBytes };
+  return { dataDir, properties, caches, other, backups, backupBytes, straySidecarsRemoved, reportsBytes, totalBytes };
 }
 
 export const fmtBytes = (n: number): string => {

@@ -7,6 +7,7 @@ import { brandToken } from '../core/url-key.js';
 import { snapshotCrawl } from './drift.js';
 import { checkIdsJson, computeHealth, serverVersion } from './history.js';
 import { CHECKS, expectedCtr, type CheckContext, type CheckDef } from './checks.js';
+import { PAGE_EXPERIENCE_STAKE_SHARE } from './stakes.js';
 
 const MAX_PER_CHECK = 500; // bound findings/check so a huge site can't balloon the table
 
@@ -26,6 +27,25 @@ function yieldOf(chk: CheckDef): number {
 }
 // Site-wide (null-url) findings: stake = a severity-scaled fraction of total site clicks.
 const SITEWIDE_FRACTION: Record<Severity, number> = { crit: 0.25, high: 0.12, med: 0.04, low: 0.01, info: 0.005 };
+/**
+ * Clicks at stake for page-experience findings (0.16.1). An asset or accessibility finding is keyed to
+ * the page that loads the asset with the most GSC clicks, so T used to be that page's FULL click count:
+ * an oversized image on the site's top page outranked a high-severity CTR or decay finding on the
+ * same page, because both claimed all 23k clicks. But fixing one image, one render-blocking set or one
+ * cache header doesn't put a page's clicks at stake the way a snippet, indexation or content fix does:
+ * page experience (Core Web Vitals) is a light ranking signal next to relevance, accessibility isn't
+ * one, and the asset is one of many the page loads (LCP only if it is the LCP element, which a
+ * header-only crawl can't tell). The principled stake would be the share of the page's weight or LCP
+ * the asset accounts for, but bodies and the LCP element aren't recorded, so the share is a stated
+ * assumption: a tenth of the page's clicks. It changes ordering only; every finding still exists, and
+ * a perf issue on a genuinely big page still ranks (10% of a 20k-click page beats most of a small one).
+ * Field-data CWV failures (high-yield-cwv-fail) are measured per page and keep the full stake.
+ */
+export { PAGE_EXPERIENCE_STAKE_SHARE };
+export function stakeShareOf(chk: CheckDef): number {
+  if (chk.stakeShare != null) return Math.max(0, Math.min(1, chk.stakeShare));
+  return chk.category === 'accessibility' ? PAGE_EXPERIENCE_STAKE_SHARE : 1;
+}
 // Floor so a high-severity finding on a zero-GSC page (e.g. backlinks-to-404) never scores 0.
 const SEVERITY_FLOOR: Record<Severity, number> = { crit: 5, high: 2, med: 0.5, low: 0.1, info: 0.05 };
 
@@ -44,7 +64,10 @@ export interface AuditResult {
   truncatedChecks?: { checkId: string; stored: number; totalFound: number }[];
   /** Checks whose source data was never collected (CheckDef.collected): unknown, not passed. */
   notCollected?: { checkId: string; note: string }[];
-  top: any[];
+  /** The highest-priority findings (topLimit, default 10), as parsed objects with compact evidence. */
+  top: TopFinding[];
+  /** Each check in `top` once: its title and fix (the text is not repeated per finding). */
+  checks: Record<string, { title: string; fix: string }>;
   elapsedMs?: number; // wall-clock for the audit run (performance instrumentation)
   indexability?: Record<string, number>; // reason → count (indexable, http-404, noindex-meta, robots-disallowed, …)
 }
@@ -53,7 +76,48 @@ export interface AuditOptions {
   scope?: 'core' | 'full';
   categories?: string[];
   includeJudgement?: boolean; // run N (certainty < 1) checks too
+  topLimit?: number; // findings returned in `top` (default 10, max 50); query_audit is the drill-down
 }
+
+/** One `top` finding as returned by run_audit: parsed, rounded, evidence trimmed (full rows stay in `findings`). */
+export interface TopFinding {
+  id: number; // findings.id, for fix_finding
+  checkId: string;
+  category: string;
+  severity: string;
+  url: string | null;
+  priority: number;
+  traffic: { clicks: number; impressions: number; position: number };
+  effort: { hours: number; fixType: string; expectedClicks: number; yield: number; stakeShare?: number };
+  evidence: Record<string, unknown>;
+}
+
+export const TOP_DEFAULT = 10;
+export const TOP_MAX = 50;
+/** Evidence trimming for `top`: arrays keep their first 3 items (the full length goes in `<key>Total`), strings are cut at 200 chars. */
+export const EVIDENCE_ARRAY_MAX = 3;
+export const EVIDENCE_STRING_MAX = 200;
+
+/** Trim a finding's evidence for the run_audit reply. query_audit returns it in full. */
+export function compactEvidence(ev: unknown, depth = 0): Record<string, unknown> {
+  if (!ev || typeof ev !== 'object' || Array.isArray(ev)) return {};
+  const out: Record<string, unknown> = {};
+  const trim = (v: unknown, d: number): unknown => {
+    if (typeof v === 'string') return v.length > EVIDENCE_STRING_MAX ? `${v.slice(0, EVIDENCE_STRING_MAX - 1)}…` : v;
+    if (typeof v === 'number') return Number.isInteger(v) ? v : Math.round(v * 100) / 100;
+    if (Array.isArray(v)) return v.slice(0, EVIDENCE_ARRAY_MAX).map(x => trim(x, d + 1));
+    if (v && typeof v === 'object') return d >= 2 ? '[…]' : compactEvidence(v, d + 1);
+    return v;
+  };
+  for (const [k, v] of Object.entries(ev as Record<string, unknown>)) {
+    out[k] = trim(v, depth);
+    if (Array.isArray(v) && v.length > EVIDENCE_ARRAY_MAX && !(`${k}Total` in (ev as object))) out[`${k}Total`] = v.length;
+  }
+  return out;
+}
+
+const parseJson = (s: unknown): any => { if (typeof s !== 'string') return s ?? {}; try { return JSON.parse(s); } catch { return {}; } };
+const round1 = (n: unknown): number => Math.round((Number(n) || 0) * 10) / 10;
 
 export function listChecks(): Omit<CheckDef, 'run'>[] {
   return CHECKS.map(({ run: _run, ...meta }) => meta);
@@ -142,6 +206,7 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
         if (all.length > MAX_PER_CHECK) truncated.set(chk.id, all.length);
         const E = Math.max(chk.effortBase * scale, 0.0001); // effort in ~hours
         const Y = yieldOf(chk);
+        const share = stakeShareOf(chk);
         for (const f of findings) {
           const ev = (f.evidence ?? {}) as any;
           const evImpr = Number(ev.impressions) || 0;
@@ -182,13 +247,14 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
           } else {
             T = 0; // floored below
           }
+          T *= share; // page-experience findings stake a share of the page's clicks, not all of them
           T = Math.max(T, SEVERITY_FLOOR[chk.severity]); // floor so zero-GSC findings aren't lost
           const priority = (T * Y * chk.certainty) / E; // expected clicks per dev-hour
           insert.run({
             run_id: runId, check_id: chk.id, category: chk.category, severity: chk.severity,
             labels: JSON.stringify(chk.labels), certainty: chk.certainty, url_key: f.urlKey ?? null,
             evidence: JSON.stringify(f.evidence), traffic_at_risk: JSON.stringify(traf),
-            effort: JSON.stringify({ base: chk.effortBase, scale: Math.round(scale * 100) / 100, fixType: chk.fixType, hours: Math.round(E * 10) / 10, expectedClicks: Math.round(T * 10) / 10, yield: Math.round(Y * 100) / 100 }),
+            effort: JSON.stringify({ base: chk.effortBase, scale: Math.round(scale * 100) / 100, fixType: chk.fixType, hours: Math.round(E * 10) / 10, expectedClicks: Math.round(T * 10) / 10, yield: Math.round(Y * 100) / 100, ...(share !== 1 ? { stakeShare: share } : {}) }),
             priority, recommendation: JSON.stringify({ title: chk.title, text: chk.fix }),
           });
           total++;
@@ -217,21 +283,37 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
       .all(runId) as AuditResult['byCheck'])
       .map(r => {
         const t = truncated.get(r.checkId);
-        return t ? { ...r, totalFound: t, truncated: true } : r;
+        const row = { ...r, priority: round1(r.priority) }; // AVG(): 1 dp is plenty, and 15 digits x 143 checks is not
+        return t ? { ...row, totalFound: t, truncated: true } : row;
       });
     const truncatedChecks = [...truncated.entries()]
       .map(([checkId, totalFound]) => ({ checkId, stored: MAX_PER_CHECK, totalFound }))
       .sort((a, b) => b.totalFound - a.totalFound);
-    const top = db.db
-      .prepare(`SELECT check_id, category, severity, url_key, evidence, traffic_at_risk, effort, priority, recommendation FROM findings WHERE run_id=? ORDER BY priority DESC LIMIT 25`)
-      .all(runId);
+    // `top` is the headline, not the dump (0.16.1): parsed objects, capped (default 10), evidence
+    // trimmed, and each check's title + fix given once in `checks` instead of on every finding.
+    const topLimit = Math.max(1, Math.min(TOP_MAX, Math.floor(opts.topLimit ?? TOP_DEFAULT)));
+    const checkText: AuditResult['checks'] = {};
+    const top: TopFinding[] = (db.db
+      .prepare(`SELECT id, check_id, category, severity, url_key, evidence, traffic_at_risk, effort, priority, recommendation FROM findings WHERE run_id=? ORDER BY priority DESC, id ASC LIMIT ?`)
+      .all(runId, topLimit) as any[])
+      .map(f => {
+        const rec = parseJson(f.recommendation), traf = parseJson(f.traffic_at_risk), eff = parseJson(f.effort);
+        checkText[f.check_id] ??= { title: rec.title ?? f.check_id, fix: rec.text ?? '' };
+        return {
+          id: f.id, checkId: f.check_id, category: f.category, severity: f.severity, url: f.url_key ?? null,
+          priority: round1(f.priority),
+          traffic: { clicks: Number(traf.clicks) || 0, impressions: Number(traf.impressions) || 0, position: round1(traf.position) },
+          effort: { hours: eff.hours, fixType: eff.fixType, expectedClicks: eff.expectedClicks, yield: eff.yield, ...(eff.stakeShare != null ? { stakeShare: eff.stakeShare } : {}) },
+          evidence: compactEvidence(parseJson(f.evidence)),
+        };
+      });
 
     const indexability = Object.fromEntries(
       (db.db.prepare(`SELECT COALESCE(indexable_reason,'indexable') reason, COUNT(*) n FROM pages WHERE is_internal IS NOT 0 GROUP BY reason ORDER BY n DESC`).all() as { reason: string; n: number }[])
         .map(r => [r.reason, r.n]),
     );
     return {
-      runId, siteUrl, integrityOk: pageCount > 0, total, bySeverity, byCategory, byCheck, top,
+      runId, siteUrl, integrityOk: pageCount > 0, total, bySeverity, byCategory, byCheck, top, checks: checkText,
       ...(truncatedChecks.length ? { truncatedChecks } : {}),
       ...(notCollected.length ? { notCollected } : {}),
       elapsedMs: Date.now() - t0, indexability,

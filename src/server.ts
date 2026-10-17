@@ -8,17 +8,30 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
 import { getDashboardData } from './core/dashboardData.js';
-import { startDashboardServer, stopDashboardServer, dashboardServerUrl, type WebServerOptions } from './core/webServer.js';
+import { startDashboardServer, stopDashboardServer, dashboardServerUrl, dashboardReachable, containerDashboardNote, type WebServerOptions } from './core/webServer.js';
 import { buildWebCallHandlers } from './core/webHandlers.js';
 import { computeSerpFootprint, persistSerpFootprint } from './core/serpFootprint.js';
 import { computeMarketSizing, persistMarketSizing } from './core/marketSizing.js';
 import { parseSerpForRecon } from './core/serpRecon.js';
 import { insertTodos, opportunityBasis } from './audit/recon.js';
 
+/** The dashboard fields for a structured result: an openable URL, or (in a container the host
+ * can't reach) a null URL plus the in-container address and what to do instead. */
+function dashboardFields(siteUrl?: string): Record<string, unknown> {
+  const base = dashboardServerUrl();
+  if (!base) return { dashboardUrl: null };
+  const page = `${base}/dashboard${siteUrl ? `?siteUrl=${encodeURIComponent(siteUrl)}` : ''}`;
+  if (dashboardReachable()) return { dashboardUrl: base, dashboard: page };
+  return { dashboardUrl: null, dashboard: null, dashboardContainerUrl: page, dashboardNote: containerDashboardNote(siteUrl, page) };
+}
+
 /** A clickable browser-dashboard link appended to tool outputs — the user should always
  * know the full interactive report is one click away (or one serve_dashboard call away). */
 function browserLink(siteUrl?: string): string {
   const base = dashboardServerUrl();
+  // Inside a container with a random, unpublished port the URL is only reachable from inside it:
+  // say so and hand over the sidecar command instead of a dead link (bare metal is unchanged).
+  if (base && !dashboardReachable()) return `\n\n📊 ${containerDashboardNote(siteUrl, `${base}/dashboard${siteUrl ? `?siteUrl=${encodeURIComponent(siteUrl)}` : ''}`)}`;
   if (base) return `\n\n📊 Browser dashboard: ${base}/dashboard${siteUrl ? `?siteUrl=${encodeURIComponent(siteUrl)}` : ''}`;
   // No live server: point at the dashboard surfaces that always work. get_dashboard renders the
   // interactive dashboard in chat (works through the Docker gateway where a served port would not);
@@ -492,8 +505,18 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         return { content: [{ type: 'text', text: `No databases in ${s.dataDir}${siteUrl ? ` matching ${siteUrl}` : ''} — run refresh_property first.` }], structuredContent: s as unknown as Record<string, unknown> };
       }
       const rows = s.properties.map(p =>
-        `| ${p.siteUrl ?? p.file} | ${fmtBytes(p.bytes)} | ${p.searchAnalytics.toLocaleString('en-US')}${p.searchAnalyticsSegments ? ` (+${p.searchAnalyticsSegments.toLocaleString('en-US')} segment)` : ''} | ${p.pages.toLocaleString('en-US')} | ${p.links.toLocaleString('en-US')} | ${p.pageSnapshots.toLocaleString('en-US')} | ${p.findings.toLocaleString('en-US')} | ${p.lastSynced?.slice(0, 10) ?? '—'} | ${p.lastCrawl?.slice(0, 10) ?? '—'} |`,
+        `| ${p.siteUrl ?? p.file} | ${fmtBytes(p.bytes)} | ${p.searchAnalytics.toLocaleString('en-US')}${p.searchAnalyticsSegments ? ` (+${p.searchAnalyticsSegments.toLocaleString('en-US')} segment)` : ''} | ${p.pages.toLocaleString('en-US')} | ${p.links.toLocaleString('en-US')} | ${p.pageSnapshots.toLocaleString('en-US')} | ${p.findings.toLocaleString('en-US')} | ${p.lastSynced?.slice(0, 10) ?? '—'} | ${p.lastCrawl?.slice(0, 10) ?? '—'} | ${p.gscStorage.state} |`,
       ).join('\n');
+      // GSC storage (#65): spell out anything that isn't simply migrated, with the reason.
+      const gscLines = s.properties.filter(p => p.gscStorage.state !== 'migrated').map(p => `- ${p.siteUrl ?? p.file}: ${p.gscStorage.note}`).join('\n');
+      // Backups beside the databases: the migration's (and repairs') copies are full-size files.
+      const bkLines = s.backups.map(b => `- ${b.file}: ${fmtBytes(b.bytes)}, ${b.modified ? b.modified.slice(0, 16).replace('T', ' ') : 'date unknown'}${b.kind === 'gsc-migration' ? ' (the GSC storage migration\'s backup)' : ''}`).join('\n');
+      const bkBlock = bkLines
+        ? `Backups (${fmtBytes(s.backupBytes)}, included in the total):\n${bkLines}\nEach can be deleted once you've confirmed the migration or repair it was taken for went through (the dashboard and an audit look right); nothing reads them.\n\n`
+        : '';
+      const strayBlock = s.straySidecarsRemoved.length
+        ? `Removed ${s.straySidecarsRemoved.length} stray empty sidecar file(s) an earlier version left beside its backups: ${s.straySidecarsRemoved.join(', ')}.\n\n`
+        : '';
       const cacheLines = s.caches.map(c => `- ${c.file}: ${fmtBytes(c.bytes)}`).join('\n');
       // Link-intersect freshness: prospect data ages as competitors keep earning links, so
       // flag properties that HAVE link_prospects and roughly how stale it is — a re-run of
@@ -511,7 +534,8 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       const runLines = s.properties.filter(p => p.latestCrawlRun).map(p =>
         `- ${p.siteUrl ?? p.file}: latest crawl run ${p.latestCrawlRun!.status} (started ${p.latestCrawlRun!.startedAt.slice(0, 16).replace('T', ' ')})${p.latestCrawlRun!.error ? `: ${p.latestCrawlRun!.error}` : ''}${p.latestCrawlRun!.status === 'running' ? ' (if no job is running, it died with its server process)' : ''}`).join('\n');
       const md = `**Data dir:** ${s.dataDir} — total ${fmtBytes(s.totalBytes)}\n\n` +
-        `| Property | Size | GSC rows | Pages | Links | Snapshots | Findings | Last sync | Last completed crawl |\n|---|---|---|---|---|---|---|---|---|\n${rows}\n\n` +
+        `| Property | Size | GSC rows | Pages | Links | Snapshots | Findings | Last sync | Last completed crawl | GSC storage |\n|---|---|---|---|---|---|---|---|---|---|\n${rows}\n\n` +
+        `${gscLines ? `GSC storage not yet migrated:\n${gscLines}\n\n` : ''}` + bkBlock + strayBlock +
         `${runLines ? `Crawl runs that did not complete:\n${runLines}\n\n` : ''}` +
         `${liLines ? `Link-intersect prospects (may be stale — competitors keep earning links):\n${liLines}\n\n` : ''}` +
         `${cacheLines ? `Caches:\n${cacheLines}\n` : ''}Reports folder: ${fmtBytes(s.reportsBytes)}` +
@@ -526,20 +550,21 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'run_audit',
     {
       title: 'Run SEO audit',
-      description: 'Run the technical-SEO checks against synced data and return scored findings, ranked by expected clicks per dev-hour — Priority = (T × Y × C) / E (T = clicks at stake from real GSC data, Y = expected yield, C = certainty, E = effort hours). Crawl + GSC + URL-inspection checks. Set includeJudgement=true to include heuristic (N) checks.',
+      description: 'Run the technical-SEO checks against synced data and return scored findings, ranked by expected clicks per dev-hour — Priority = (T × Y × C) / E (T = clicks at stake from real GSC data, Y = expected yield, C = certainty, E = effort hours). Crawl + GSC + URL-inspection checks. Set includeJudgement=true to include heuristic (N) checks. Returns the counts (byCheck, bySeverity, byCategory, notCollected) and the top findings (topLimit, default 10, max 50) with trimmed evidence; each check\'s title and fix appear once in `checks`. query_audit is the drill-down: every finding of one check, full evidence.',
       inputSchema: {
         siteUrl: z.string(),
         scope: z.enum(['core', 'full']).optional(),
         categories: z.array(z.enum(CHECK_CATEGORIES)).optional(),
         includeJudgement: z.boolean().optional(),
+        topLimit: z.number().int().min(1).max(50).optional().describe('Top findings to return (default 10, max 50)'),
       },
     },
-    async ({ siteUrl, scope, categories, includeJudgement }) => {
-      const result = runAudit(dataDir(), siteUrl, { scope, categories, includeJudgement });
+    async ({ siteUrl, scope, categories, includeJudgement, topLimit }) => {
+      const result = runAudit(dataDir(), siteUrl, { scope, categories, includeJudgement, topLimit });
       await autoServeDashboard(); // spin up the browser dashboard so browserLink() hands over a live URL
       return {
         content: [{ type: 'text', text: buildAuditMarkdown(result, siteUrl) + browserLink(siteUrl) }],
-        structuredContent: { ...result, dashboardUrl: dashboardServerUrl() } as unknown as Record<string, unknown>,
+        structuredContent: { ...result, ...dashboardFields(siteUrl) } as unknown as Record<string, unknown>,
       };
     },
   );
@@ -684,8 +709,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       const r = await fn(update, signal);
       if (signal.aborted) return r;
       await autoServeDashboard();
-      const base = dashboardServerUrl();
-      return base && r && typeof r === 'object' ? { ...(r as Record<string, unknown>), dashboardUrl: base, dashboard: `${base}/dashboard?siteUrl=${encodeURIComponent(siteUrl)}` } : r;
+      return dashboardServerUrl() && r && typeof r === 'object' ? { ...(r as Record<string, unknown>), ...dashboardFields(siteUrl) } : r;
     };
   // #52: a crawl's progress as one readable line (stage, counts, rate, ETA) instead of raw JSON.
   const crawlProgressLine = (p: Record<string, unknown>): string | null => {
@@ -716,6 +740,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     }
     if (!detail || job.state !== 'completed' || !DATA_JOBS.has(job.type)) return head + prog;
     const link = (job.result as { dashboard?: string } | undefined)?.dashboard;
+    const containerNote = (job.result as { dashboardNote?: string } | undefined)?.dashboardNote;
     const siteUrl = (job.result as { siteUrl?: string } | undefined)?.siteUrl;
     const res = job.result as { blocking?: { blockedAsBot: number; okAsChrome: number; switchedToChrome: boolean }; crawl?: { blocking?: { blockedAsBot: number; okAsChrome: number; switchedToChrome: boolean } } } | undefined;
     const blk = res?.blocking ?? res?.crawl?.blocking; // refresh nests the crawl result
@@ -733,6 +758,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     const deferredLine = deferredMsg ? `\n\n⚠ GSC ${deferredMsg}` : '';
     return head + prog + blockLine + rlLine + deferredLine + (link
       ? `\n\n📊 The dashboard is updated with this data: ${link} (open it in your browser).`
+      : containerNote ? `\n\n📊 The dashboard is updated with this data. ${containerNote}`
       : `\n\n📊 The data is in. See it with get_dashboard${siteUrl ? ` for ${siteUrl}` : ''} (in chat), open_dashboard (browser tab) or export_report.`);
   };
   const jobStatus = async ({ jobId }: { jobId?: string }) => {
@@ -2391,6 +2417,10 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       }
       const { url } = await startDashboardServer(buildWebOpts(port));
       const open = siteUrl ? `${url}/dashboard?siteUrl=${encodeURIComponent(siteUrl)}` : `${url}/`;
+      if (!dashboardReachable()) {
+        const note = containerDashboardNote(siteUrl, open);
+        return { content: [{ type: 'text', text: note }], structuredContent: { url: null, base: null, containerUrl: open, note } };
+      }
       const portNote = port != null && !url.endsWith(`:${port}`)
         ? ` (already running on its original port — requested port ${port} ignored; stop=true first to move it)`
         : '';
@@ -2417,6 +2447,10 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       if (!base) { try { base = (await startDashboardServer(buildWebOpts())).url; } catch { base = null; } }
       if (!base) return { content: [{ type: 'text', text: `Couldn't start the local dashboard server here. Run get_dashboard for ${siteUrl} to see the dashboard in chat, or export_report for a shareable HTML file.` }], structuredContent: { url: null } };
       const url = `${base}/dashboard?siteUrl=${encodeURIComponent(siteUrl)}`;
+      if (!dashboardReachable()) {
+        const note = containerDashboardNote(siteUrl, url);
+        return { content: [{ type: 'text', text: `📊 ${note}` }], structuredContent: { url: null, base: null, containerUrl: url, note } };
+      }
       return { content: [{ type: 'text', text: `📊 Dashboard for ${siteUrl}: ${url}\nLive from the local database: summary, rank and clicks over time, top keywords, findings by priority, crawl health.` }], structuredContent: { url, base } };
     },
   );

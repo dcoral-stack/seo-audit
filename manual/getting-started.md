@@ -300,6 +300,26 @@ Then add `SAC_JOB_RUNNER=external` to the env of the server's gateway catalog en
 
 A job now reads `queued: waiting for the job runner` until the runner claims it. If it stays queued for over a minute with no runner checking in, the status tells you no runner seems to be running, with the command above. After about two minutes without a runner heartbeat it reads `queued (no runner)`, and it no longer blocks `data_storage` prune or repair. The runner does one job at a time; `SAC_RUNNER_CONCURRENCY=2` (or more) on the runner lets jobs for different properties run side by side. To update, remove the runner container and run the command again, so npx fetches the new release; a job that was running at that moment reads `interrupted`, so start it again.
 
+**The first call after a worker starts is slow.** Each gateway worker is a fresh container, and `npx` installs the package before the server can answer: about 60 seconds on a cold npm cache. That can outlast the client's tool-call timeout, and a client that retries can start extra workers, each installing again. Two ways round it:
+
+- **Pin the version** in the catalog entry's command (`npx -y -p @houtini/seo-audit-console@0.16.1 ...` rather than the bare name), so npx never has to look up "latest", and the runner and the server stay on the same release. If the entry mounts a named volume at `/root/.npm` (the npm cache), pre-warm it once after each upgrade, so workers start from a warm cache:
+
+  ```bash
+  docker run --rm -v sac-npm-cache:/root/.npm node:22-slim npx -y -p @houtini/seo-audit-console@0.16.1 node -e 0
+  ```
+
+- **Or build a small image with the package preinstalled** and point the catalog entry at it. Workers then start in a second or two:
+
+  ```dockerfile
+  FROM node:22-slim
+  RUN npm install -g @houtini/seo-audit-console@0.16.1
+  ENTRYPOINT ["seo-audit-console"]
+  ```
+
+  `docker build -t seo-audit-console:0.16.1 .`, then use that image (the runner runs from it too, with `--entrypoint seo-audit-runner`). Rebuild it for each release.
+
+**After upgrading, restart the MCP client.** Clients read the tool list once, when they connect, and keep it. Until Claude Desktop or Claude Code is restarted (fully, from the tray on Windows), tools added in the new release, such as `sync_crux`, stay invisible even though the server has them.
+
 ## Troubleshooting
 
 - **`list_properties` is empty or errors.** Either the client isn't connected to the server yet, `GOOGLE_APPLICATION_CREDENTIALS` isn't set (the error says so), or the service account hasn't been added to your property (step 2.3 above - the classic). Fix the config, then fully restart Claude Desktop from the tray.
@@ -310,6 +330,8 @@ A job now reads `queued: waiting for the job runner` until the runner claims it.
 - **Majestic errors instead of enriching.** The message comes straight from Majestic and names the cause - a bad key, or an allowance with nothing left in it. Enrichment costs roughly one unit per prospect (batched 100 per call, capped by `enrichLimit`), so a big `topN` on a small plan runs the balance down; results are cached for `MAJESTIC_CACHE_DAYS` (30 by default), so re-running the same intersect inside that window costs nothing.
 - **`pull_backlinks` errors even though DataForSEO works.** Backlinks is a separate DataForSEO subscription from SERP/Keywords/Labs - a 40204 error means it isn't activated on your account. The tool says so plainly when that's the cause.
 - **You changed the code and nothing changed.** The running MCP server holds the previous build. `npm run build`, then fully restart the client.
+- **A tool from the new release is missing after an upgrade** (`sync_crux`, say). The client cached the tool list when it connected. Fully restart Claude Desktop or Claude Code so it fetches the new list.
+- **Under the Docker MCP gateway, the first call times out or several workers appear.** A fresh worker spends about a minute in `npx` installing the package. Pin the version and pre-warm the npm cache, or use a preinstalled image: [Running under the Docker MCP gateway](#running-under-the-docker-mcp-gateway).
 
 Forget what's possible at any point? Ask *"run seo_audit_help"* - it returns the full menu with an example prompt for every feature.
 

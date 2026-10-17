@@ -8,6 +8,27 @@ Each release is tagged `vX.Y.Z` on the release commit (tagging lapsed between 0.
 `package.json`, `server.json` (x2) and `mcpb/manifest.json`, retitle `[Unreleased]` here, commit as
 `chore(release): X.Y.Z`, `git tag -a vX.Y.Z -m "X.Y.Z - <headline>"`, push the tag, `npm publish`.
 
+## [0.16.1] — 2026-10-17
+
+Reliability fixes from the live 0.16.0 test.
+
+### Upgrade notes
+- **Re-crawl to get the accessibility roll-up.** The crawl now records which elements fail the a11y checks; pages crawled before 0.16.1 keep one finding per page until the next crawl.
+- **Restart the MCP client after upgrading.** Clients cache the tool list when they connect, so new tools stay invisible until a restart.
+
+### Fixed
+- **Dashboard links under Docker.** Inside a container (Docker's `/.dockerenv`, Podman's `/run/.containerenv`, or a container cgroup) whose dashboard binds a random port without `SAC_DASHBOARD_BIND=0.0.0.0` + `SAC_DASHBOARD_PORT`, completed data jobs, `run_audit`, `open_dashboard` and `serve_dashboard` no longer present `http://127.0.0.1:<port>` as openable: they say the link only works inside the container and give the dashboard sidecar's `docker run` line, or `get_dashboard` in chat. Bare metal is unchanged.
+- **`run_audit` reply size.** `top` is parsed objects (finding `id`, check, URL, priority, traffic, effort, trimmed evidence), 10 by default with a new `topLimit` argument up to 50; each check's title and fix appear once, in a `checks` map and once in the markdown; evidence lists are cut to 3 with a `<key>Total` count. On a copy of a 2,300-finding site the reply fell from 58,392 to 20,200 characters. `query_audit` is still the drill-down.
+- **Priority calibration.** Asset findings (`image-oversized`, `image-legacy-format`, `static-asset-uncached`, `render-blocking-head-resources`, `broken-image`) and accessibility findings stake a tenth of the keyed page's clicks (`PAGE_EXPERIENCE_STAKE_SHARE`, recorded per finding as `effort.stakeShare`) instead of all of them, so an oversized image on the top page no longer outranks a high-severity CTR or traffic-decay finding on the same page. Ordering only; explained in [checks.md](manual/checks.md).
+- **Accessibility template noise.** `a11y-link-name`, `a11y-button-name` and `a11y-duplicate-id` report one finding per set of shared elements that sit on the same pages (`scope: "template"`, with the page count, sample pages and the element selectors), plus one per page for its own extras. On the test site: 415 to 107, 415 to 1, and 13 to 13 (page-specific ids).
+- **`data_storage` and backups.** Lists every `<db>.bak-*` backup per property with size and date (the GSC migration's marked), counts them in the total, and says they can be deleted once the migration or repair is confirmed; shows each property's GSC storage state (migrated, pending, migrating, or deferred with the reason, now recorded when a migration is refused for disk). The migration no longer leaves an empty `-wal` and a `-shm` beside its backup (it verified the copy on a read-only handle), and `data_storage` removes the ones 0.16.0 left.
+- **Runner wording.** A cleanly stopped runner keeps its registry row, marked stopped, so a queued job's advice says "the last runner stopped at <time>" rather than "no runner has ever checked in to this data directory".
+- **CrUX card alignment.** The distribution bars in the Crawl health CrUX card line up whatever the band badge says.
+- The reranker no longer logs the expected `device 'dml' unavailable, falling back` off Windows.
+
+### Docs
+- README Docker section and getting-started: a fresh gateway worker waits about a minute for `npx` to install; pin `@houtini/seo-audit-console@<version>`, pre-warm a mounted npm cache once after an upgrade, or build a three-line image with the package preinstalled. Restart the MCP client after upgrading.
+
 ## [0.16.0] — 2026-10-17
 
 ### Upgrade notes

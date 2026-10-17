@@ -118,7 +118,8 @@ function metricRow(cf: any, ff: FF, m: Metric): string {
   const val = fieldValue(m, v?.p75);
   const name = `<span class="fm-k" title="${esc(`${METRIC[m].name}, 75th percentile; ${thresholdText(cf, m)}`)}">${METRIC[m].label}</span>`;
   if (!val) return `<div class="fm-row">${name}<span class="fm-none">${NO_TRAFFIC}</span></div>`;
-  return `<div class="fm-row">${name}<span class="fm-v n">${esc(val)}</span>${bandBadge(v.band)}<div class="fm-dist">${distBar(v)}</div></div>`;
+  // An empty cell when there's no band keeps the bar in its own (fixed) column.
+  return `<div class="fm-row">${name}<span class="fm-v n">${esc(val)}</span>${bandBadge(v.band) || '<span></span>'}<div class="fm-dist">${distBar(v)}</div></div>`;
 }
 
 function breakdown(cf: any, ff: FF): string {

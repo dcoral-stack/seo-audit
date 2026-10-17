@@ -33,7 +33,7 @@ import { dataForSeoCredentials, optionalSecret, cruxApiKey } from './secrets.js'
  * - heartbeat the runner itself into the `runners` table, so a queued job's status can tell
  *   "waiting for a busy runner" from "no runner is running".
  * On SIGTERM / SIGINT it stops claiming, aborts its running jobs, records them as `interrupted`
- * with a clear message, removes its heartbeat row and closes the registry before exiting.
+ * with a clear message, marks its heartbeat row stopped (with the time) and closes the registry before exiting.
  */
 
 export interface JobRunnerOptions {
@@ -193,7 +193,7 @@ export class JobRunner {
   /**
    * Graceful shutdown: stop claiming, abort every running job (each finishes as `interrupted`
    * with RUNNER_STOPPED_ERROR), give them `shutdownGraceMs` to wind down, record any that ignored
-   * the abort as interrupted directly, drop the runner's heartbeat row and close the registry.
+   * the abort as interrupted directly, mark the runner's heartbeat row stopped and close the registry.
    */
   stop(reason = RUNNER_STOPPED_ERROR): Promise<void> {
     if (this.stopping) return this.stopping;

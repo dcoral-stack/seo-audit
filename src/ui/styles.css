@@ -829,13 +829,24 @@ select, select.sel, #cannSelect {
 .fcwv-win { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); margin-left: auto; }
 .fm-note { font-size: 11.5px; color: var(--text-muted); margin-bottom: 6px; line-height: 1.45; }
 .fm-rows { display: flex; flex-direction: column; }
-.fm-row { display: grid; grid-template-columns: 44px 64px auto minmax(0, 1fr); align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border-subtle); }
+/* The badge column is the same width on every row of a card. Each row used to be its own grid with an
+   auto badge column, so on a "Needs improvement" row the distribution bar started further right than on
+   a "Good" one. Rows are now subgrids of .fm-rows, whose badge column fits the card's widest badge; the
+   fallback without subgrid is a fixed column wide enough for "Needs improvement" (.fband's 10.5px mono
+   plus padding). */
+.fm-row { display: grid; grid-template-columns: 44px 64px 124px minmax(0, 1fr); align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border-subtle); }
+@supports (grid-template-columns: subgrid) {
+  .fm-rows { display: grid; grid-template-columns: 44px 64px auto minmax(0, 1fr); column-gap: 10px; }
+  .fm-row, .fm-sep { grid-column: 1 / -1; }
+  .fm-row { grid-template-columns: subgrid; }
+}
 .fm-row:first-child { border-top: 0; }
 .fm-k { font-family: var(--font-mono); font-size: 11.5px; font-weight: 600; color: var(--text-primary); cursor: help; }
 .fm-v { font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); font-variant-numeric: tabular-nums; }
 .fm-none { grid-column: 2 / -1; font-size: 12px; color: var(--text-muted); font-style: italic; }
 .fm-sep { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-faint); padding: 10px 0 2px; border-top: 1px solid var(--border-subtle); }
 .fm-sep + .fm-row { border-top: 0; }
+.fm-row > .fband { justify-self: start; }
 .fband { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--bg-inset); color: var(--text-secondary); white-space: nowrap; }
 .fband-good { color: var(--intent-success); background: var(--intent-success-bg); }
 .fband-ni { color: var(--intent-warning); background: var(--intent-warning-bg); }

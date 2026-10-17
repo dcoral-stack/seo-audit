@@ -397,7 +397,7 @@ export class Crawler {
          image_count, images_without_alt, images_empty_alt, images_empty_alt_content, fetched_as, images_missing_dimensions, canonical_count, canonical_relative,
          h2_count, heading_skips, rel_next, rel_prev, rel_amphtml, mixed_content_count, twitter_tags,
          has_microdata, has_rdfa, has_favicon, has_analytics, body_chunks, security_headers,
-         a11y_links_no_name, a11y_buttons_no_name, a11y_inputs_no_label, a11y_viewport_zoom_disabled, a11y_positive_tabindex, a11y_duplicate_ids)
+         a11y_links_no_name, a11y_buttons_no_name, a11y_inputs_no_label, a11y_viewport_zoom_disabled, a11y_positive_tabindex, a11y_duplicate_ids, a11y_samples)
        VALUES (@crawl_id,@url,@url_key,@status_code,@content_type,@content_encoding,@cache_control,
          @last_modified,@etag,@vary,@bytes,@response_time_ms,@depth,
          @is_internal,@indexable,@indexable_reason,@noindex,@title,@title_length,@meta_description,@meta_description_length,
@@ -406,7 +406,7 @@ export class Crawler {
          @image_count,@images_without_alt,@images_empty_alt,@images_empty_alt_content,@fetched_as,@images_missing_dimensions,@canonical_count,@canonical_relative,
          @h2_count,@heading_skips,@rel_next,@rel_prev,@rel_amphtml,@mixed_content_count,@twitter_tags,
          @has_microdata,@has_rdfa,@has_favicon,@has_analytics,@body_chunks,@security_headers,
-         @a11y_links_no_name,@a11y_buttons_no_name,@a11y_inputs_no_label,@a11y_viewport_zoom_disabled,@a11y_positive_tabindex,@a11y_duplicate_ids)
+         @a11y_links_no_name,@a11y_buttons_no_name,@a11y_inputs_no_label,@a11y_viewport_zoom_disabled,@a11y_positive_tabindex,@a11y_duplicate_ids,@a11y_samples)
        ON CONFLICT(url_key) DO NOTHING`,
     );
     // Robots-disallowed URLs are NOT fetched (we respect robots), but we record them as
@@ -648,6 +648,7 @@ export class Crawler {
           a11y_viewport_zoom_disabled: ex ? (ex.a11yViewportZoomDisabled ? 1 : 0) : null,
           a11y_positive_tabindex: ex ? ex.a11yPositiveTabindex : null,
           a11y_duplicate_ids: ex ? ex.a11yDuplicateIds : null,
+          a11y_samples: ex ? JSON.stringify(ex.a11ySamples) : null,
         });
 
         if (ex) {

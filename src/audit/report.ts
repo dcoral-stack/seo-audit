@@ -12,7 +12,6 @@ export const CAT_NAME: Record<string, string> = {
 };
 
 export function buildAuditMarkdown(r: AuditResult & { elapsedMs?: number }, siteUrl: string): string {
-  const p = (s: string): any => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
   const sev = r.bySeverity ?? {};
   const out: string[] = [
     `# SEO audit — ${siteUrl.replace(/^sc-domain:/, '')}`,
@@ -22,18 +21,22 @@ export function buildAuditMarkdown(r: AuditResult & { elapsedMs?: number }, site
   // Impact = priority normalised to the run's top finding (preserves magnitude: the #1 issue is
   // 100, a 10x-smaller one is 10). Shown as a size + index instead of a clicks "forecast" — the
   // raw expected-clicks figure reads as a promise, which it isn't. Real measured traffic stays.
-  const maxPrio = Math.max(1, ...(r.top ?? []).map((f: any) => f.priority || 0));
+  const maxPrio = Math.max(1, ...(r.top ?? []).map(f => f.priority || 0));
   const sizeOf = (idx: number): string => idx >= 50 ? 'XL' : idx >= 20 ? 'L' : idx >= 5 ? 'M' : 'S';
   out.push('', '## Top priorities (impact vs effort)');
-  (r.top ?? []).slice(0, 12).forEach((f: any, i: number) => {
-    const rec = p(f.recommendation), traf = p(f.traffic_at_risk), eff = p(f.effort);
-    const pth = (f.url_key || '—').replace(/^https?:\/\/[^/]+/, '') || '/';
-    const tr = (traf.clicks || traf.impressions) ? ` · ${traf.clicks || 0} clicks / ${traf.impressions || 0} impr` : '';
+  // Each check's fix is printed once, under its first finding: repeating it per finding was most of
+  // the reply on a big site (0.16.1).
+  const fixShown = new Set<string>();
+  (r.top ?? []).forEach((f, i) => {
+    const chk = r.checks?.[f.checkId];
+    const pth = (f.url || '—').replace(/^https?:\/\/[^/]+/, '') || '/';
+    const tr = (f.traffic.clicks || f.traffic.impressions) ? ` · ${f.traffic.clicks || 0} clicks / ${f.traffic.impressions || 0} impr` : '';
     const idx = Math.round((f.priority || 0) / maxPrio * 100);
-    const effort = eff.hours != null ? ` · ~${eff.hours}h` : '';
-    out.push(`${i + 1}. ${SEV_ICON[f.severity] ?? '·'} **${rec.title || f.check_id}** — \`${pth}\` · impact ${sizeOf(idx)} (${idx}/100)${effort}${tr}`);
-    if (rec.text) out.push(`   ${rec.text}`);
+    const effort = f.effort?.hours != null ? ` · ~${f.effort.hours}h` : '';
+    out.push(`${i + 1}. ${SEV_ICON[f.severity] ?? '·'} **${chk?.title || f.checkId}** — \`${pth}\` · impact ${sizeOf(idx)} (${idx}/100)${effort}${tr} · finding #${f.id}`);
+    if (chk?.fix && !fixShown.has(f.checkId)) { fixShown.add(f.checkId); out.push(`   ${chk.fix}`); }
   });
+  out.push('', `_Showing the top ${(r.top ?? []).length} by priority. \`query_audit\` with a check id lists every finding with full evidence; \`run_audit topLimit\` (up to 50) widens this list._`);
   const byCat: Record<string, string[]> = {};
   for (const c of r.byCheck ?? []) (byCat[c.category] ??= []).push(`${c.checkId ?? (c as any).check_id} (${c.count})`);
   out.push('', '## All issues by category');
