@@ -25,6 +25,7 @@
 import Database from 'better-sqlite3';
 import { existsSync, statSync, statfsSync, rmSync } from 'node:fs';
 import path from 'node:path';
+import { removeEmptySidecars } from './dataStorage.js';
 import {
   AGGREGATE_DAY_SQL, DATA_COLS, SEGMENTS, ensureGscRows, ensureTotalsGuard, gscStorageState, pickShape,
   segmentSql, setGscStorageState, shapeSql, syncViews, type GscStorageState, type ShapeStat,
@@ -98,6 +99,12 @@ export async function migrateGscStorage(db: Database.Database, dbFile: string, o
   const needBackup = state === 'pending';
   const need = (needBackup ? bytesBefore : 0) + headroomFor(bytesBefore);
   if (free < need) {
+    // Recorded so data_storage can say the migration is deferred, and why (state stays as it was).
+    const prev = (() => { try { return recorded.detail ? JSON.parse(recorded.detail) as Record<string, unknown> : {}; } catch { return {}; } })();
+    setGscStorageState(db, state, { detail: { ...prev, deferred: {
+      at: new Date().toISOString(), needBytes: need, freeBytes: free,
+      reason: `not enough free disk: needs ${gb(need)} next to the database${needBackup ? ` (a ${gb(bytesBefore)} backup plus working room)` : ''}, the volume had ${gb(free)}. Sync again after freeing space.`,
+    } } });
     return {
       ...result,
       needBytes: need,
@@ -122,9 +129,13 @@ export async function migrateGscStorage(db: Database.Database, dbFile: string, o
     // Online backup API, not a file copy: it yields a consistent snapshot even if another
     // connection (a crawl, the dashboard sidecar) checkpoints the WAL into the file meanwhile.
     await db.backup(backup);
-    const check = new Database(backup, { readonly: true, fileMustExist: true });
+    // Verify on a writable handle switched to a rollback journal: the copy inherits WAL mode, and a
+    // read-only handle on a WAL database leaves an empty -wal and a -shm beside it that it can't
+    // delete on close (0.16.0 left both next to every backup). DELETE mode removes them on close.
+    const check = new Database(backup, { fileMustExist: true });
     let copied = -1;
-    try { copied = count(check, 'search_analytics'); } finally { check.close(); }
+    try { check.pragma('journal_mode = DELETE'); copied = count(check, 'search_analytics'); } finally { check.close(); }
+    removeEmptySidecars(backup);
     if (copied !== rowsBefore) {
       for (const s of ['', '-wal', '-shm']) rmSync(backup + s, { force: true });
       throw new Error(`GSC storage migration (#65) stopped before changing anything: the backup at ${backup} holds ${copied} search_analytics rows, the database ${rowsBefore}.`);

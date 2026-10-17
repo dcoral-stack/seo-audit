@@ -505,8 +505,18 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         return { content: [{ type: 'text', text: `No databases in ${s.dataDir}${siteUrl ? ` matching ${siteUrl}` : ''} — run refresh_property first.` }], structuredContent: s as unknown as Record<string, unknown> };
       }
       const rows = s.properties.map(p =>
-        `| ${p.siteUrl ?? p.file} | ${fmtBytes(p.bytes)} | ${p.searchAnalytics.toLocaleString('en-US')}${p.searchAnalyticsSegments ? ` (+${p.searchAnalyticsSegments.toLocaleString('en-US')} segment)` : ''} | ${p.pages.toLocaleString('en-US')} | ${p.links.toLocaleString('en-US')} | ${p.pageSnapshots.toLocaleString('en-US')} | ${p.findings.toLocaleString('en-US')} | ${p.lastSynced?.slice(0, 10) ?? '—'} | ${p.lastCrawl?.slice(0, 10) ?? '—'} |`,
+        `| ${p.siteUrl ?? p.file} | ${fmtBytes(p.bytes)} | ${p.searchAnalytics.toLocaleString('en-US')}${p.searchAnalyticsSegments ? ` (+${p.searchAnalyticsSegments.toLocaleString('en-US')} segment)` : ''} | ${p.pages.toLocaleString('en-US')} | ${p.links.toLocaleString('en-US')} | ${p.pageSnapshots.toLocaleString('en-US')} | ${p.findings.toLocaleString('en-US')} | ${p.lastSynced?.slice(0, 10) ?? '—'} | ${p.lastCrawl?.slice(0, 10) ?? '—'} | ${p.gscStorage.state} |`,
       ).join('\n');
+      // GSC storage (#65): spell out anything that isn't simply migrated, with the reason.
+      const gscLines = s.properties.filter(p => p.gscStorage.state !== 'migrated').map(p => `- ${p.siteUrl ?? p.file}: ${p.gscStorage.note}`).join('\n');
+      // Backups beside the databases: the migration's (and repairs') copies are full-size files.
+      const bkLines = s.backups.map(b => `- ${b.file}: ${fmtBytes(b.bytes)}, ${b.modified ? b.modified.slice(0, 16).replace('T', ' ') : 'date unknown'}${b.kind === 'gsc-migration' ? ' (the GSC storage migration\'s backup)' : ''}`).join('\n');
+      const bkBlock = bkLines
+        ? `Backups (${fmtBytes(s.backupBytes)}, included in the total):\n${bkLines}\nEach can be deleted once you've confirmed the migration or repair it was taken for went through (the dashboard and an audit look right); nothing reads them.\n\n`
+        : '';
+      const strayBlock = s.straySidecarsRemoved.length
+        ? `Removed ${s.straySidecarsRemoved.length} stray empty sidecar file(s) an earlier version left beside its backups: ${s.straySidecarsRemoved.join(', ')}.\n\n`
+        : '';
       const cacheLines = s.caches.map(c => `- ${c.file}: ${fmtBytes(c.bytes)}`).join('\n');
       // Link-intersect freshness: prospect data ages as competitors keep earning links, so
       // flag properties that HAVE link_prospects and roughly how stale it is — a re-run of
@@ -524,7 +534,8 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       const runLines = s.properties.filter(p => p.latestCrawlRun).map(p =>
         `- ${p.siteUrl ?? p.file}: latest crawl run ${p.latestCrawlRun!.status} (started ${p.latestCrawlRun!.startedAt.slice(0, 16).replace('T', ' ')})${p.latestCrawlRun!.error ? `: ${p.latestCrawlRun!.error}` : ''}${p.latestCrawlRun!.status === 'running' ? ' (if no job is running, it died with its server process)' : ''}`).join('\n');
       const md = `**Data dir:** ${s.dataDir} — total ${fmtBytes(s.totalBytes)}\n\n` +
-        `| Property | Size | GSC rows | Pages | Links | Snapshots | Findings | Last sync | Last completed crawl |\n|---|---|---|---|---|---|---|---|---|\n${rows}\n\n` +
+        `| Property | Size | GSC rows | Pages | Links | Snapshots | Findings | Last sync | Last completed crawl | GSC storage |\n|---|---|---|---|---|---|---|---|---|---|\n${rows}\n\n` +
+        `${gscLines ? `GSC storage not yet migrated:\n${gscLines}\n\n` : ''}` + bkBlock + strayBlock +
         `${runLines ? `Crawl runs that did not complete:\n${runLines}\n\n` : ''}` +
         `${liLines ? `Link-intersect prospects (may be stale — competitors keep earning links):\n${liLines}\n\n` : ''}` +
         `${cacheLines ? `Caches:\n${cacheLines}\n` : ''}Reports folder: ${fmtBytes(s.reportsBytes)}` +

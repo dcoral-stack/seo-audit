@@ -97,6 +97,7 @@ scripts/*
 !scripts/probe-crawl-local.mjs
 !scripts/probe-checks-v2.mjs
 !scripts/probe-integrity.mjs
+!scripts/probe-data-storage.mjs
 !scripts/probe-probeurls.mjs
 !scripts/probe-triage404.mjs
 !scripts/probe-fts.mjs
