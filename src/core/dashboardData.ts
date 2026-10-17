@@ -10,7 +10,7 @@ import { loadBrandQueries, brandPredicate } from './brand.js';
 import { TITLE_MAX_CHARS, TITLE_MIN_CHARS, META_DESC_MAX_CHARS, META_DESC_MIN_CHARS } from './onPageLimits.js';
 import { SMALL_BASE_MIN, QUICK_WIN_MIN_IMPRESSIONS, QUICK_WIN_MAX_POSITION, TRAPPED_MIN_REF_DOMAINS, TRAPPED_MIN_DEPTH } from './displayRules.js';
 import { HTML_CT } from './sql.js';
-import { gscMixedShape } from './gscRows.js';
+import { gscMixedShape, segmentsMaxDate } from './gscRows.js';
 import { latestSerpFootprint, ensureFootprintTable, type SerpFootprint } from './serpFootprint.js';
 import { latestMarketSizing, ensureMarketTable, type MarketSizing } from './marketSizing.js';
 import { contentArchitecture, type TopicCluster } from '../audit/contentArchitecture.js';
@@ -69,6 +69,11 @@ export interface DashboardData {
   }[];
   deviceBreakdown?: { device: string; clicks: number; prevClicks: number; impressions: number; ctr: number; position: number }[];
   countryBreakdown?: { country: string; clicks: number; prevClicks: number; impressions: number }[];
+  /** The last day with device / country rows (null: never synced with segments). When it is before
+   *  the 28-day window, the breakdowns are empty and the UI says why instead of hiding them. */
+  segmentsLastDate?: string | null;
+  /** The first day of the 28-day window the breakdowns cover (the same window as the KPIs). */
+  breakdownWindowStart?: string;
   pagePerformance?: { urlKey: string; clicks: number; prevClicks: number; clicksChangePct: number | null; impressions: number; position: number; category: string }[];
   keywordMovement?: { query: string; firstPos: number; lastPos: number; delta: number; firstDate: string; lastDate: string; category: string }[];
   // Equity vs reality: per-page internal PageRank (x) vs GSC impressions (y), bucketed by template.
@@ -201,8 +206,9 @@ export interface DashboardData {
   pageMovers?: PageMovers | null;
   /** What data the dashboard holds (the UI names what it doesn't). */
   coverage?: Coverage;
-  /** Days holding both GSC row shapes (all-country AND segmented rows), or null. The summary
-   *  aggregations count each such day once; the older payload totals (summary, rankTrend, ...) don't. */
+  /** Days still holding both GSC row shapes (all-country AND segmented rows) in search_analytics,
+   *  or null. Only a pending or migrating database has any; every figure counts each such day once.
+   *  Null once the storage is migrated (0.16.2: the note was shown after migration too). */
   gscShape?: GscShape | null;
   /** Last 28 days vs the prior 28, clicks counted once per day (the Summary's verdict and tile). */
   clickWindows?: ClickWindows;
@@ -225,7 +231,10 @@ interface Totals { clicks: number; impressions: number; position: number }
 // (#65 changed where segment rows live, not the payload; the version probe reads both tables.)
 // 28: the real-data dashboard fixes (#68 follow-up): small-base clicksChangePct, cwvField detail, brand on exact-match domains.
 // 29: structureGraph.isolated (mapped pages with no in-content link, named in the Network tab).
-const PAYLOAD_VERSION = '29';
+// 30: gscShape only while the GSC storage is pending or migrating (never after the migration).
+// 31: auditDeltas[].excluded and findings.byCategory[].regrouped (regrouped checks left out of the counts).
+// 32: segmentsLastDate + breakdownWindowStart (the device / country panels' empty state, the coverage chip).
+const PAYLOAD_VERSION = '32';
 
 /** Build the dashboard payload for a property from its synced GSC history. */
 export function getDashboardData(dataDir: string, siteUrl: string): DashboardData {
@@ -1008,6 +1017,8 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
       topKeywords,
       deviceBreakdown,
       countryBreakdown,
+      segmentsLastDate: segmentsMaxDate(db.db),
+      breakdownWindowStart: new Date(Date.parse(`${maxDate}T00:00:00Z`) - 27 * 86_400_000).toISOString().slice(0, 10),
       pagePerformance,
       keywordMovement,
       monthly: monthlyClicks(db.db, maxDate),
@@ -1104,7 +1115,7 @@ function crawlSide(db: Database.Database, maxDate: string | null): Pick<Dashboar
     // latest delta for this run, not skipped: same scope and check set).
     const lastDelta = history.auditDeltas.filter(d => d.runId === lastRun.run_id).pop();
     const prevComparable = lastDelta && !lastDelta.skipped ? lastDelta.prevRunId : null;
-    const byCategory = findingsByCategory(db, lastRun.run_id, prevComparable);
+    const byCategory = findingsByCategory(db, lastRun.run_id, prevComparable, prevComparable ? lastDelta?.excluded?.checkIds ?? [] : []);
 
     findings = { runId: lastRun.run_id, total: lastRun.finding_count, finishedAt: lastRun.finished_at, byCheck, top, recommendations, byCategory };
   }

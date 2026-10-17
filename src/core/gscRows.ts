@@ -315,6 +315,24 @@ export function ensureGscRows(db: Database.Database): void {
   if (stored !== fingerprint(db)) refreshGscDayShapes(db);
 }
 
+/**
+ * The last day with device / country (segment) rows, in any storage layout: the segment table, plus
+ * (before the migration) the segment rows still in search_analytics. Index-backed: each lookup walks
+ * the date index from the top. Null when the property was only ever synced lite. A missing table (a
+ * read-only handle on a database this version never opened) reads as empty.
+ */
+export function segmentsMaxDate(db: Database.Database): string | null {
+  const max = (sql: string): string | null => {
+    try { return (db.prepare(sql).get() as { d: string | null } | undefined)?.d ?? null; } catch { return null; }
+  };
+  let segments = max(`SELECT MAX(date) d FROM ${SEGMENTS}`);
+  if (gscStorageState(db) !== 'done') {
+    const legacy = max(`SELECT date d FROM search_analytics WHERE ${segmentSql()} ORDER BY date DESC LIMIT 1`);
+    if (legacy && (!segments || legacy > segments)) segments = legacy;
+  }
+  return segments;
+}
+
 /** True when the views are present (a read-only handle on a database never opened by this version has none). */
 export function hasGscRows(db: Database.Database): boolean {
   return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = ?`).get(GSC_ROWS);
@@ -376,7 +394,13 @@ export function settleGscTotals(db: Database.Database, from: string, to: string,
   return { days: days.length, derivedDays: derived, recordedDays: recorded };
 }
 
-/** Days whose all-country and segment rows were both stored, for the UI note. Null when there are none. */
+/**
+ * Days whose all-country and segment rows are BOTH still stored in search_analytics, for the UI note
+ * ("each of those days counts once"). Only a pending or migrating database has any: once migrated,
+ * search_analytics holds totals only and `gsc_day_shape` is evidence (the days that were mixed, and
+ * the shape their totals came from), so there is nothing left to explain and this is null. A day
+ * the migration has moved carries `totals_from`; a day still mixed doesn't.
+ */
 export interface GscShape {
   mixedDays: number;
   from: string;
@@ -386,10 +410,14 @@ export interface GscShape {
 }
 export function gscMixedShape(db: Database.Database): GscShape | null {
   if (!hasGscRows(db)) return null;
-  const r = db.prepare(`SELECT COUNT(*) n, MIN(date) lo, MAX(date) hi FROM gsc_day_shape`).get() as { n: number; lo: string | null; hi: string | null };
+  const state = gscStorageState(db);
+  if (state === 'done') return null;
+  // Pending: every listed day is mixed. Migrating: only the days not yet moved (no totals_from).
+  const still = state === 'migrating' ? 'WHERE totals_from IS NULL' : '';
+  const r = db.prepare(`SELECT COUNT(*) n, MIN(date) lo, MAX(date) hi FROM gsc_day_shape ${still}`).get() as { n: number; lo: string | null; hi: string | null };
   if (!r.n || !r.lo || !r.hi) return null;
   const codes = new Set<number>();
-  for (const { shapes } of db.prepare(`SELECT shapes FROM gsc_day_shape`).all() as { shapes: string }[]) {
+  for (const { shapes } of db.prepare(`SELECT shapes FROM gsc_day_shape ${still}`).all() as { shapes: string }[]) {
     for (const s of JSON.parse(shapes) as ShapeStat[]) codes.add(s.shape);
   }
   return { mixedDays: r.n, from: r.lo, to: r.hi, shapes: [...codes].sort().map(c => SHAPE_NAMES[c]) };

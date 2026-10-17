@@ -223,6 +223,9 @@ export interface CategoryRow {
   capped: boolean;
   /** Since the previous comparable audit (same scope + check set). Null when there is no comparable pair. */
   opened: number | null; resolved: number | null;
+  /** Checks of this area left out of opened / resolved because their findings were regrouped
+   *  between the two audits (history.ts REGROUPED_CHECKS); the UI says so on the row. */
+  regrouped?: string[];
 }
 
 const PER_CHECK_CAP = 500; // engine.ts MAX_PER_CHECK: a check storing this many was truncated
@@ -231,7 +234,7 @@ const PER_CHECK_CAP = 500; // engine.ts MAX_PER_CHECK: a check storing this many
  * Findings grouped by category for one run. `prevRunId` = the previous COMPARABLE completed run
  * (from auditHistory's latest delta, which already enforces the same scope and check set), or null.
  */
-export function findingsByCategory(db: Database.Database, runId: string, prevRunId: string | null): CategoryRow[] {
+export function findingsByCategory(db: Database.Database, runId: string, prevRunId: string | null, regrouped: string[] = []): CategoryRow[] {
   const rows = db.prepare(
     `SELECT COALESCE(category,'other') category,
             COUNT(*) findings,
@@ -249,17 +252,28 @@ export function findingsByCategory(db: Database.Database, runId: string, prevRun
   ).all(runId) as { category: string }[]).map(r => r.category));
   const delta = new Map<string, { opened: number; resolved: number }>();
   if (prevRunId) {
-    // Keyed exactly like auditHistory: check_id + url_key ("site" when null).
-    const keys = `SELECT DISTINCT COALESCE(category,'other') category, check_id, COALESCE(url_key,'site') k FROM findings WHERE run_id = ?`;
+    // Keyed exactly like auditHistory: check_id + url_key ("site" when null), and leaving out the
+    // same regrouped checks, so the change column adds up to the verdict and the health chart.
+    const skip = regrouped.length ? ` AND check_id NOT IN (${regrouped.map(id => `'${id.replace(/'/g, "''")}'`).join(', ')})` : '';
+    const keys = `SELECT DISTINCT COALESCE(category,'other') category, check_id, COALESCE(url_key,'site') k FROM findings WHERE run_id = ?${skip}`;
     const diff = (a: string, b: string): { category: string; n: number }[] => db.prepare(
       `SELECT category, COUNT(*) n FROM (${keys} EXCEPT ${keys}) GROUP BY category`).all(a, b) as { category: string; n: number }[];
     for (const r of diff(runId, prevRunId)) delta.set(r.category, { opened: r.n, resolved: 0 });
     for (const r of diff(prevRunId, runId)) delta.set(r.category, { opened: delta.get(r.category)?.opened ?? 0, resolved: r.n });
   }
+  // Which area each regrouped check belongs to (from either run, so an area emptied by the regrouping still says so).
+  const regroupedBy = new Map<string, string[]>();
+  if (prevRunId && regrouped.length) {
+    for (const r of db.prepare(`SELECT DISTINCT COALESCE(category,'other') category, check_id FROM findings WHERE run_id IN (?, ?) AND check_id IN (${regrouped.map(() => '?').join(', ')})`)
+      .all(runId, prevRunId, ...regrouped) as { category: string; check_id: string }[]) {
+      regroupedBy.set(r.category, [...new Set([...(regroupedBy.get(r.category) ?? []), r.check_id])].sort());
+    }
+  }
   const out: CategoryRow[] = rows.map(r => ({
     ...r, site: !!r.site, capped: capped.has(r.category),
     opened: prevRunId ? (delta.get(r.category)?.opened ?? 0) : null,
     resolved: prevRunId ? (delta.get(r.category)?.resolved ?? 0) : null,
+    ...(regroupedBy.has(r.category) ? { regrouped: regroupedBy.get(r.category) } : {}),
   }));
   // An area fully resolved since the previous audit has no rows in this run: keep it visible.
   if (prevRunId) for (const [category, d] of delta) {

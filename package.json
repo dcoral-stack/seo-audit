@@ -1,6 +1,6 @@
 {
   "name": "@houtini/seo-audit-console",
-  "version": "0.16.1",
+  "version": "0.16.2",
   "mcpName": "io.github.houtini-ai/seo-audit-console",
   "description": "The complete technical SEO audit at conversation speed: Google Search Console history + a first-party crawl + on-demand DataForSEO, merged into one prioritised audit inside Claude - 143 checks ranked by recoverable clicks, with paste-ready fixes, keyword and content-gap research, and AI-search readiness.",
   "type": "module",
@@ -51,7 +51,7 @@
     "build:mcpb": "npm run build && node scripts/build-mcpb.mjs",
     "dev": "tsc -p tsconfig.server.json --watch",
     "start": "node dist/index.js",
-    "test": "npm run build:server && npm run smoke && npm run probe:jobs && npm run probe:runner && npm run probe:fts && npm run probe:review-0-15 && npm run probe:summary && npm run probe:gsc-rows && npm run probe:brand && npm run probe:ratelimit && npm run probe:signals && npm run probe:redirects && npm run probe:ecommerce && npm run probe:gsc-storage && npm run probe:hreflang && npm run probe:assets && npm run probe:soft404 && npm run probe:render-divergence && npm run probe:dashboard-rules && npm run probe:dashboard-container && npm run probe:audit-size && npm run probe:priority-calibration && npm run probe:a11y-rollup && npm run probe:data-storage && npm run probe:runner-stopped",
+    "test": "npm run build:server && npm run smoke && npm run probe:jobs && npm run probe:runner && npm run probe:fts && npm run probe:review-0-15 && npm run probe:summary && npm run probe:gsc-rows && npm run probe:brand && npm run probe:ratelimit && npm run probe:signals && npm run probe:redirects && npm run probe:ecommerce && npm run probe:gsc-storage && npm run probe:hreflang && npm run probe:assets && npm run probe:soft404 && npm run probe:render-divergence && npm run probe:dashboard-rules && npm run probe:dashboard-container && npm run probe:audit-size && npm run probe:priority-calibration && npm run probe:a11y-rollup && npm run probe:data-storage && npm run probe:runner-stopped && npm run probe:reply-latency && npm run probe:regrouped-deltas",
     "smoke": "node scripts/smoke.mjs",
     "probe:dashboard-rules": "node scripts/probe-dashboard-rules.mjs",
     "probe:runner-stopped": "node scripts/probe-runner-stopped.mjs",
@@ -110,7 +110,9 @@
     "probe:gsc-rows": "node scripts/probe-gsc-rows.mjs",
     "probe:gsc-storage": "node scripts/probe-gsc-storage.mjs",
     "probe:brand": "node scripts/probe-brand.mjs",
-    "probe:ratelimit": "node scripts/probe-ratelimit.mjs"
+    "probe:ratelimit": "node scripts/probe-ratelimit.mjs",
+    "probe:reply-latency": "node scripts/probe-reply-latency.mjs",
+    "probe:regrouped-deltas": "node scripts/probe-regrouped-deltas.mjs"
   },
   "engines": {
     "node": ">=20.0.0"

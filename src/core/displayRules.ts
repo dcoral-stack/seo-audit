@@ -3,6 +3,44 @@
 // a rule is written once and every tab reads it the same way. Each rule is a stated product
 // convention, not a benchmark, and the UI says so where it applies.
 
+// ── Audit area (check category) labels ───────────────────────────────────────────────────────
+/**
+ * The one display label per check category, for every surface that names an area (the Summary's
+ * "What's broken", the Issues filters and accordions, the run_audit report). 0.16.1 showed
+ * "accessibility" in lowercase because the UI's own map had no entry for it; categoryLabel never
+ * shows a raw id, even for a category added later without a label.
+ */
+export const CATEGORY_LABEL: Record<string, string> = {
+  integrity: 'Integrity', crawlability: 'Crawlability', indexation: 'Indexation', onpage: 'On-page',
+  content: 'Content', schema: 'Structured data', security: 'Security', performance: 'Performance',
+  accessibility: 'Accessibility', 'war-stories': 'Edge cases', merged: 'Search performance', agentic: 'AI / agent readiness',
+};
+export function categoryLabel(category: string | null | undefined, overrides: Record<string, string> = {}): string {
+  const c = category ?? 'other';
+  if (overrides[c]) return overrides[c];
+  if (CATEGORY_LABEL[c]) return CATEGORY_LABEL[c];
+  const words = c.replace(/[-_]+/g, ' ').trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Other';
+}
+
+// ── Device / country breakdowns: why they are empty ───────────────────────────────────────────
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** 'YYYY-MM-DD' as "5 Sep". */
+export const shortDay = (d: string): string => `${Number(d.slice(8, 10))} ${MON[Number(d.slice(5, 7)) - 1] ?? '?'}`;
+/**
+ * The device and country breakdowns come from segment rows, which only a `segments:true` sync
+ * writes. When the window has none, the panel says why rather than disappearing (on
+ * simracingcockpit.gg the per-country syncs stopped on 5 Sep, so a 28-day window from 18 Sep was
+ * empty and the panel silently hid). Null when there is nothing to explain: rows in the window, or
+ * a payload from before segmentsLastDate existed (undefined). Returns HTML (one <code>).
+ */
+export function breakdownsEmptyReason(o: { devices: number; countries: number; segmentsLastDate: string | null | undefined; windowStart: string | null | undefined }): string | null {
+  if (o.devices > 0 || o.countries > 0 || o.segmentsLastDate === undefined) return null;
+  if (o.segmentsLastDate === null) return 'No country or device data: this property is synced without segments. Run <code>sync_gsc</code> with <code>segments:true</code> to add the breakdowns.';
+  if (o.windowStart && o.segmentsLastDate < o.windowStart) return `No country/device data in this window: the last segment sync covered up to ${shortDay(o.segmentsLastDate)}. Run <code>sync_gsc</code> with <code>segments:true</code> to refresh.`;
+  return null;
+}
+
 // ── Small-base changes ───────────────────────────────────────────────────────────────────────
 /**
  * Below this prior value a change is shown in absolute terms ("+1 click"), never as a percentage:

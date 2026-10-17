@@ -4,7 +4,7 @@ import {
   attachSort, accordionItem, accordionSection, accordionControls,
   EChartWrapper, chartPalette, axisDefaults, tooltipDefaults, emptyState, countDelta, rankDelta,
 } from './lib/index.js';
-import { shareText, sharePct, quickWinsEmptyReason, trappedEmptyReason } from '../core/displayRules.js';
+import { shareText, sharePct, quickWinsEmptyReason, trappedEmptyReason, CATEGORY_LABEL, categoryLabel, breakdownsEmptyReason as emptyBreakdowns } from '../core/displayRules.js';
 import { TITLE_MAX_CHARS, META_DESC_MAX_CHARS } from '../core/onPageLimits.js';
 import { renderSearchTop, renderHealthTop, renderSideFreshness, drawNetwork, isolatedText, pctChg, SEV_ORDER, SEV_LABEL, type OverviewCtx } from './panels.js';
 import { renderSummary, type SummaryCtx } from './summary.js';
@@ -42,6 +42,8 @@ export interface DashboardData {
   dateAlignment?: { note: string };
   deviceBreakdown?: { device: string; clicks: number; prevClicks: number; impressions: number; ctr: number; position: number }[];
   countryBreakdown?: { country: string; clicks: number; prevClicks: number; impressions: number }[];
+  segmentsLastDate?: string | null;
+  breakdownWindowStart?: string;
   pagePerformance?: { urlKey: string; clicks: number; prevClicks: number; clicksChangePct: number | null; impressions: number; position: number; category: string }[];
   keywordMovement?: { query: string; firstPos: number; lastPos: number; delta: number; firstDate: string; lastDate: string; category: string }[];
   findings?: { runId: string; total: number; finishedAt: string | null; byCheck: any[]; top: any[]; recommendations?: any[] } | null;
@@ -248,11 +250,8 @@ app.ontoolresult = (result) => {
 
 // Window/container resizes are handled per-chart by the wrapper's ResizeObserver.
 
-const CAT_LABEL: Record<string, string> = {
-  integrity: 'Integrity', crawlability: 'Crawlability', indexation: 'Indexation', onpage: 'On-page',
-  content: 'Content', schema: 'Structured data', security: 'Security', performance: 'Performance',
-  'war-stories': 'Edge cases', merged: 'Search performance', agentic: 'AI / agent readiness',
-};
+// One label per area, shared with the Summary and the run_audit report (displayRules.ts).
+const CAT_LABEL: Record<string, string> = CATEGORY_LABEL;
 
 // Turn a finding's evidence JSON into a one-line, human example of the problem.
 function evidenceSummary(ev: Record<string, unknown>): string {
@@ -407,7 +406,7 @@ function renderRecommendations(fc: DashboardData['findings']): void {
         bodyHtml: `<div class="rec-fix"><span class="rec-label">Fix</span> ${esc(c.fix)}</div>${examplesHtml}`,
       });
     }).join('');
-    return accordionSection(CAT_LABEL[cat.category] || cat.category, cat.checks.length, items);
+    return accordionSection(categoryLabel(cat.category), cat.checks.length, items);
   }).join('');
 
   const ctrl = $('recsControls');
@@ -493,7 +492,7 @@ function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof p
     const maxC = Math.max(...cats.map(c => c[1]), 1);
     const drawArea = (): void => {
       areaEl.innerHTML = `<h4>By area</h4><div class="hint" style="font-size:11px">Whole run; click to scope the list.</div>` + cats.map(([k, n]) =>
-        `<button type="button" class="area-row${area === k ? ' active' : ''}" data-area="${esc(k)}" aria-pressed="${area === k}"><div class="ar-top"><span>${esc(CAT_LABEL[k] || k)}</span><b>${fmt(n)}</b></div>` +
+        `<button type="button" class="area-row${area === k ? ' active' : ''}" data-area="${esc(k)}" aria-pressed="${area === k}"><div class="ar-top"><span>${esc(categoryLabel(k))}</span><b>${fmt(n)}</b></div>` +
         `<div class="stat-track"><span style="width:${Math.max(2, (n / maxC) * 100).toFixed(1)}%;background:${area === k ? 'var(--accent)' : 'var(--chart-categorical-1)'}"></span></div></button>`).join('');
       areaEl.querySelectorAll<HTMLButtonElement>('[data-area]').forEach(b => {
         b.onclick = (): void => { area = area === b.dataset.area ? 'all' : b.dataset.area!; drawArea(); drawTable(); };
@@ -1252,9 +1251,13 @@ function render(data: DashboardData): void {
     : '<div class="hint">-</div>';
   // Hide breakdowns that carry only one value (e.g. a single-country property) - a one-row table is
   // noise, not insight. Show a block only with genuine variety (2+ rows); hide the card if neither has.
+  // Empty because no segment rows fall in the window (0.16.2): show the card and say why, never hide it.
+  const why = emptyBreakdowns({ devices: dv.length, countries: ct.length, segmentsLastDate: data.segmentsLastDate, windowStart: data.breakdownWindowStart });
   const showDev = dv.length >= 2, showCty = ct.length >= 2;
   const setVis = (id: string, on: boolean): void => { const e = document.getElementById(id); if (e) e.style.display = on ? '' : 'none'; };
-  setVis('deviceBlock', showDev); setVis('countryBlock', showCty); setVis('breakdownsCard', showDev || showCty);
+  const emptyEl = document.getElementById('breakdownsEmpty');
+  if (emptyEl) { emptyEl.innerHTML = why ?? ''; emptyEl.style.display = why ? '' : 'none'; }
+  setVis('deviceBlock', !why && showDev); setVis('countryBlock', !why && showCty); setVis('breakdownsCard', !!why || showDev || showCty);
 
   // Make the data tables click-to-sort by any column (the findings list is excluded - its rows come
   // in expand/detail pairs that re-ordering would break).

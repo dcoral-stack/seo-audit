@@ -15,7 +15,7 @@ import { robotsVerdict, rulesFromText } from '../core/robots.js';
 import { AI_BOTS } from '../core/aiBots.js';
 import { BAND_RANK, CWV_THRESHOLDS, cwvBand, type CwvBand, type CwvMetric } from '../core/CruxSync.js';
 import { loadBrandQueries, brandPredicate } from '../core/brand.js';
-import { GSC_ROWS, gscTotalsSource, hasGscRows } from '../core/gscRows.js';
+import { GSC_ROWS, gscStorageState, gscTotalsSource, hasGscRows } from '../core/gscRows.js';
 
 const rows = (c: CheckContext, sql: string, ...args: unknown[]): any[] => c.db.prepare(sql).all(...args);
 const one = (c: CheckContext, sql: string, ...args: unknown[]): any => c.db.prepare(sql).get(...args);
@@ -214,7 +214,11 @@ export function brandedClicks(c: CheckContext, brand: string, fromExcl: string, 
     const branded = loadBrandQueries(c.db, c.siteUrl) ? `CASE WHEN ${brandPredicate()} THEN clicks ELSE 0 END` : '0';
     const r = one(c, `SELECT COALESCE(SUM(${branded}),0) b, COALESCE(SUM(clicks),0) t
       FROM ${GSC_ROWS} WHERE query IS NOT NULL AND date > ? AND date <= ?`, fromExcl, toIncl);
-    const m = one(c, `SELECT COUNT(*) n FROM gsc_day_shape WHERE total_shape IS NOT NULL AND date > ? AND date <= ?`, fromExcl, toIncl);
+    // Days still stored in both shapes (a pending or part-migrated database); once migrated,
+    // gsc_day_shape is only evidence and no day is mixed (gscRows.ts gscMixedShape, 0.16.2).
+    const state = gscStorageState(c.db);
+    const m = state === 'done' ? null
+      : one(c, `SELECT COUNT(*) n FROM gsc_day_shape WHERE total_shape IS NOT NULL${state === 'migrating' ? ' AND totals_from IS NULL' : ''} AND date > ? AND date <= ?`, fromExcl, toIncl);
     return { branded: r.b, total: r.t, mixedDays: m?.n ?? 0 };
   }
   const lite = `(COALESCE(device,'') = '' AND COALESCE(country,'') = '')`;

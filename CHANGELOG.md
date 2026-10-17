@@ -8,6 +8,18 @@ Each release is tagged `vX.Y.Z` on the release commit (tagging lapsed between 0.
 `package.json`, `server.json` (x2) and `mcpb/manifest.json`, retitle `[Unreleased]` here, commit as
 `chore(release): X.Y.Z`, `git tag -a vX.Y.Z -m "X.Y.Z - <headline>"`, push the tag, `npm publish`.
 
+## [0.16.2] — 2026-10-17
+
+Fixes from the live 0.16.1 test on a 5.5 GB property.
+
+### Fixed
+- **Job tools reply at once.** `sync_gsc`, `start_crawl`, `sync_crux`, `refresh_property` and `data_storage check` return their job id before the job touches the database: the job body used to run in the microtask queue ahead of the tool's reply, so on the live property `sync_gsc` answered after 33.8 s and the gateway client timed out. The GSC search-type check reads the end rows of each table instead of scanning all of them (2.7 s on a warm 7.6M-row copy), and `sync_gsc`'s planned range is read on a read-only handle (two index-backed lookups). On a copy of that database the replies went from 2.7 s / 2.7 s / 1.5 s (`sync_gsc` / `refresh_property` / `sync_crux`, warm cache) to under 0.03 s.
+- **`data_storage` row counts are cached** in `_storage-counts.json` beside the databases, keyed by the size and modification time of each database and its WAL, so a listing only recounts what changed (the counts were most of a 9.1 s cold first call).
+- **No stale "two row shapes" banner after the GSC migration.** The Summary note about days stored in both all-country and per-country rows shows only while the storage is pending or migrating (counting the days not yet moved), never once migrated. The `nonbrand-decline-masked` evidence follows the same rule.
+- **Regrouped findings are not "resolved".** A check whose finding grain changed between two audits is left out of that pair's opened / resolved / carried counts, with the note "accessibility findings regrouped in 0.16.1; not counted": the 0.16.1 accessibility roll-up had made the live Summary read "759 resolved since the last audit", 730 of them re-keyed findings. Runs record the grain in `audit_runs.check_ids` (`a11y-link-name@2`); earlier runs have it read from their findings. The verdict, the "What's broken" change column and the health chart agree.
+- **"Accessibility", not "accessibility".** Every area label (Summary, Issues filters and accordions, the `run_audit` report) comes from one map, and an unlabelled category is capitalised rather than shown raw.
+- **Country and device breakdowns explain an empty window.** When the 28-day window has no segment rows (per-country syncs stopped before it), the Search performance card says when the last segment sync ended and to run `sync_gsc` with `segments:true`, instead of disappearing. The payload carries `segmentsLastDate`, and the Summary's coverage footer gains a "Device & country" chip.
+
 ## [0.16.1] — 2026-10-17
 
 Reliability fixes from the live 0.16.0 test.
