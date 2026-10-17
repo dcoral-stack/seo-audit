@@ -20,6 +20,9 @@ Each release is tagged `vX.Y.Z` on the release commit (tagging lapsed between 0.
 ### Added
 - Dashboard payload: `freshness`, read from the property database on every load (outside the cache), so the standalone dashboard sidecar shows the same job status as the MCP. Also `crawlHealth.urlFlow`, the canonical / redirect / not-found buckets with the most-linked example URL per bucket.
 
+### Fixed
+- **`triage_404s` suggested redirects for URLs that already redirect live, and let shared suffix tokens inflate matches** (#40). Redirect and review candidates are now probed live before bucketing (`verify:true` by default, up to 50 URLs, 30s): a URL that already 3xx's to a live page lands in a new `already-redirected` bucket with its live destination, so a suggestion never replaces a correct redirect; one answering 200 lands in `live-now`. Slug similarity weights tokens by how many live URLs carry them, so `stormforcegaming-buyers-guide` no longer matches `syncmesh-buyers-guide` on `buyers-guide` alone while a typo of a rare brand token still scores high. Archive targets (`/tag/`, `/category/`, `/author/`, `/page/N`) are discounted and flagged `weakTarget`.
+
 ## [0.14.0] — 2026-10-16
 
 Fixes and features from the 0.13.1 code review and the first field test (issues #10-#37, except the Docker gateway item in #9). 107 → 111 checks.
