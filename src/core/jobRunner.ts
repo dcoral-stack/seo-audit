@@ -109,6 +109,8 @@ export class JobRunner {
   private readonly log: (msg: string) => void;
   private readonly version: string;
   private readonly running = new Map<string, Promise<void>>();
+  /** Jobs whose cancel request has already been acted on: aborted (and logged) once, cleared when the job settles. */
+  private readonly cancelling = new Set<string>();
   private timers: ReturnType<typeof setInterval>[] = [];
   private stopping: Promise<void> | null = null;
   private ticking = false;
@@ -163,6 +165,7 @@ export class JobRunner {
       })
       .finally(() => {
         this.running.delete(job.id);
+        this.cancelling.delete(job.id);
         if (this.stopping) return;
         this.beat();
         // A slot is free: look for the next job straight away rather than on the next poll.
@@ -174,7 +177,11 @@ export class JobRunner {
 
   private pollCancels(): void {
     if (this.stopping) return;
+    // A cancelled job keeps its cancel flag (and its controller) until it settles, so it is listed on
+    // every poll while it winds down: abort and log it once.
     for (const id of this.jobs.cancelRequests()) {
+      if (this.cancelling.has(id)) continue;
+      this.cancelling.add(id);
       if (this.jobs.cancel(id)) this.log(`cancel requested for ${id}: aborting`);
     }
   }

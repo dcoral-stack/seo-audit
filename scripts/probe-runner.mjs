@@ -281,6 +281,25 @@ try {
     }
   }
 
+  // ── A cancelled job that is slow to wind down is aborted and logged once, not every poll ─────
+  {
+    const dir = path.join(root, 'cancel-once');
+    const logs = [];
+    // A crux job whose body ignores its abort signal for a while, so it is still running (with its
+    // cancel flag set) across many cancel polls.
+    const slowDeps = { dataDir: () => dir, cruxSync: { run: () => sleep(1_200).then(() => ({ ok: true })) } };
+    const runner = new JobRunner({ dataDir: dir, deps: slowDeps, pollMs: 50, cancelPollMs: 50, heartbeatMs: 100, log: m => logs.push(m) });
+    runner.start();
+    const mcp = JM({ dbPath: jobsDbPath(dir), runner: 'external' });
+    const id = submitJob(mcp, 'crux', { siteUrl: site }, noDeps, jobScopeFor(dir, site));
+    await waitFor(() => mcp.get(id)?.state === 'running', 5_000);
+    mcp.cancel(id);
+    const done = await waitFor(() => settled(mcp, id), 10_000);
+    const aborts = logs.filter(l => l.startsWith(`cancel requested for ${id}`)).length;
+    check('a slow-to-stop cancelled job is aborted and logged once across many polls', !!done && aborts === 1, `${aborts} cancel log lines; ${JSON.stringify(done)}`);
+    await runner.stop();
+  }
+
   // ── In-process mode is unchanged: submit() runs the kind here, no queued row ────────────────
   {
     const dir = path.join(root, 'inproc');
