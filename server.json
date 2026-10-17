@@ -65,6 +65,13 @@
           "isRequired": false,
           "format": "string",
           "isSecret": false
+        },
+        {
+          "name": "CRUX_API_KEY",
+          "description": "Chrome UX Report API key (optional, free Google Cloud key). Switches on sync_crux: real-user Core Web Vitals (LCP, INP, CLS) and the crux-field-* checks.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
         }
       ]
     }

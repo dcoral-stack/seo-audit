@@ -13,6 +13,7 @@ import type { CheckContext, CheckDef, RawFinding } from './checks.js';
 import { latestRobotsTxt } from '../core/robotsStore.js';
 import { robotsVerdict, rulesFromText } from '../core/robots.js';
 import { AI_BOTS } from '../core/aiBots.js';
+import { BAND_RANK, CWV_THRESHOLDS, cwvBand, type CwvBand, type CwvMetric } from '../core/CruxSync.js';
 
 const rows = (c: CheckContext, sql: string, ...args: unknown[]): any[] => c.db.prepare(sql).all(...args);
 const one = (c: CheckContext, sql: string, ...args: unknown[]): any => c.db.prepare(sql).get(...args);
@@ -125,6 +126,68 @@ function aiSearchBotFindings(c: CheckContext): RawFinding[] {
   return [{ urlKey: null, evidence: { robotsTxt: `${rb.origin}/robots.txt`, fetchedAt: rb.fetchedAt, searchBotsBlocked: blocked, trainingBotsBlocked: trainingBlocked, note: 'search/citation bots only; training-bot blocks are listed for context and are not an issue' } }];
 }
 
+// ── Item 4: CrUX field data ──────────────────────────────────────────────────────────────────
+/** A target's latest window counts only if it is within this many days of the newest window stored (a target that dropped out of CrUX is not "latest"). */
+export const CRUX_RECENT_DAYS = 14;
+/** crux-regression compares the newest window with the one 3 windows earlier (the last 4 windows). */
+export const CRUX_REGRESSION_WINDOWS = 4;
+
+interface CruxRow { scope: string; target: string; form_factor: string; period_first: string; period_last: string; p75: number | null; good: number | null; ni: number | null; poor: number | null; good_max: number | null; ni_max: number | null; source: string }
+
+function cruxLatest(c: CheckContext, metric: CwvMetric): CruxRow[] {
+  if (!tableExists(c, 'crux_metrics')) return [];
+  return rows(c, `SELECT m.* FROM crux_metrics m
+    WHERE m.metric = ? AND m.p75 IS NOT NULL
+      AND m.period_last = (SELECT MAX(period_last) FROM crux_metrics x WHERE x.scope=m.scope AND x.target=m.target AND x.form_factor=m.form_factor AND x.metric=m.metric AND x.p75 IS NOT NULL)
+      AND m.period_last >= date((SELECT MAX(period_last) FROM crux_metrics), '-${CRUX_RECENT_DAYS} days')
+      AND NOT EXISTS (SELECT 1 FROM crux_targets t WHERE t.scope=m.scope AND t.target=m.target AND t.form_factor=m.form_factor AND t.status='insufficient_data')
+    ORDER BY m.scope, m.target, m.form_factor`, metric) as CruxRow[];
+}
+
+function cruxEvidence(r: CruxRow, metric: CwvMetric, band: CwvBand): Record<string, unknown> {
+  const t = CWV_THRESHOLDS[metric];
+  return {
+    metric: t.label, scope: r.scope, target: r.target, formFactor: r.form_factor,
+    p75: r.p75, unit: t.unit || null, band,
+    thresholds: { good: t.good, poor: t.poor, source: 'Google (web.dev/articles/vitals): good <= good, poor > poor, at p75' },
+    distribution: { good: r.good, needsImprovement: r.ni, poor: r.poor },
+    binEdgesAsReturned: { goodMax: r.good_max, niMax: r.ni_max },
+    window: { first: r.period_first, last: r.period_last, source: r.source },
+  };
+}
+
+function cruxFieldCheck(metric: CwvMetric): (c: CheckContext) => RawFinding[] {
+  return (c) => cruxLatest(c, metric).flatMap(r => {
+    const band = cwvBand(metric, r.p75);
+    return band && band !== 'good' ? [{ urlKey: r.scope === 'url' ? r.target : null, evidence: cruxEvidence(r, metric, band) }] : [];
+  });
+}
+
+function cruxRegression(c: CheckContext): RawFinding[] {
+  const out: RawFinding[] = [];
+  const metrics: CwvMetric[] = ['largest_contentful_paint', 'interaction_to_next_paint', 'cumulative_layout_shift'];
+  if (!tableExists(c, 'crux_metrics')) return out;
+  const series = c.db.prepare(`SELECT period_last, p75, source FROM crux_metrics WHERE scope=? AND target=? AND form_factor=? AND metric=? AND p75 IS NOT NULL ORDER BY period_last DESC LIMIT ${CRUX_REGRESSION_WINDOWS}`);
+  for (const metric of metrics) {
+    for (const r of cruxLatest(c, metric)) {
+      const s = (series.all(r.scope, r.target, r.form_factor, metric) as { period_last: string; p75: number; source: string }[]).reverse();
+      if (s.length < 2) continue;
+      const from = cwvBand(metric, s[0].p75)!, to = cwvBand(metric, s[s.length - 1].p75)!;
+      if (BAND_RANK[to] <= BAND_RANK[from]) continue;
+      out.push({
+        urlKey: r.scope === 'url' ? r.target : null,
+        evidence: {
+          metric: CWV_THRESHOLDS[metric].label, scope: r.scope, target: r.target, formFactor: r.form_factor,
+          fromBand: from, toBand: to, windows: s.map(w => ({ periodLast: w.period_last, p75: w.p75, band: cwvBand(metric, w.p75) })),
+          thresholds: { good: CWV_THRESHOLDS[metric].good, poor: CWV_THRESHOLDS[metric].poor },
+          note: `p75 moved into a worse band within the last ${CRUX_REGRESSION_WINDOWS} 28-day windows (windows overlap: a trend, not separate months)`,
+        },
+      });
+    }
+  }
+  return out;
+}
+
 // ── The registry entries ─────────────────────────────────────────────────────────────────────
 export const SIGNAL_CHECKS: CheckDef[] = [
   {
@@ -152,5 +215,29 @@ export const SIGNAL_CHECKS: CheckDef[] = [
     title: 'AI search bots blocked in robots.txt',
     fix: 'robots.txt stops one or more AI SEARCH crawlers (the ones that fetch pages to cite in answers: OAI-SearchBot and ChatGPT-User for ChatGPT, Claude-SearchBot and Claude-User for Claude, PerplexityBot for Perplexity) from the site or from your top pages, so those assistants cannot cite you. Training crawlers (GPTBot, ClaudeBot, CCBot, Google-Extended...) are a separate choice and blocking them does not affect citations. To be cited while still opting out of training, allow the search bots and keep the training-bot Disallow lines.',
     run: aiSearchBotFindings,
+  },
+  {
+    id: 'crux-field-lcp', category: 'performance', severity: 'med', labels: ['G'], certainty: 1, effortBase: 5, fixType: 'per-page',
+    title: 'Real-user LCP not good (CrUX p75)',
+    fix: 'Chrome users\' Largest Contentful Paint at the 75th percentile is over Google\'s 2.5 s "good" threshold (poor above 4 s), measured over the latest 28-day CrUX window. The LCP sub-parts in the dashboard payload show which part to fix: server response (TTFB), resource load delay (discover the LCP image sooner: preload it, no lazy-load on it), load duration (smaller image, modern format, CDN) or render delay (render-blocking CSS/JS). Needs sync_crux.',
+    run: cruxFieldCheck('largest_contentful_paint'),
+  },
+  {
+    id: 'crux-field-inp', category: 'performance', severity: 'med', labels: ['G'], certainty: 1, effortBase: 5, fixType: 'per-page',
+    title: 'Real-user INP not good (CrUX p75)',
+    fix: 'Interaction to Next Paint at the 75th percentile is over Google\'s 200 ms "good" threshold (poor above 500 ms): taps and clicks take visibly long to respond. INP is field-only, so no lab tool reproduces it exactly. Break up long JavaScript tasks, defer third-party scripts, cut work in input handlers, and avoid large DOM updates on interaction. Needs sync_crux.',
+    run: cruxFieldCheck('interaction_to_next_paint'),
+  },
+  {
+    id: 'crux-field-cls', category: 'performance', severity: 'med', labels: ['G'], certainty: 1, effortBase: 3, fixType: 'per-page',
+    title: 'Real-user CLS not good (CrUX p75)',
+    fix: 'Cumulative Layout Shift at the 75th percentile is over Google\'s 0.1 "good" threshold (poor above 0.25): content jumps while people read. Give images, embeds and ad slots explicit dimensions, reserve space for late content, and avoid inserting content above what is already shown. Needs sync_crux.',
+    run: cruxFieldCheck('cumulative_layout_shift'),
+  },
+  {
+    id: 'crux-regression', category: 'performance', severity: 'high', labels: ['G'], certainty: 1, effortBase: 5, fixType: 'per-page',
+    title: 'Core Web Vital regressed into a worse band (CrUX)',
+    fix: 'A Core Web Vital\'s real-user p75 crossed into a worse Google band (good -> needs improvement -> poor) within the last four 28-day CrUX windows. Find what shipped around when it started (theme, plugin, script, image or hosting change) and roll it back or fix it. Needs sync_crux history.',
+    run: cruxRegression,
   },
 ];

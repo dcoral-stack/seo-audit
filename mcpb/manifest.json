@@ -47,7 +47,8 @@
         "DATAFORSEO_PASSWORD": "${user_config.dataforseo_password}",
         "DATAFORSEO_CACHE_DAYS": "${user_config.dataforseo_cache_days}",
         "MAJESTIC_API_KEY": "${user_config.majestic_api_key}",
-        "MAJESTIC_CACHE_DAYS": "${user_config.majestic_cache_days}"
+        "MAJESTIC_CACHE_DAYS": "${user_config.majestic_cache_days}",
+        "CRUX_API_KEY": "${user_config.crux_api_key}"
       }
     }
   },
@@ -100,6 +101,13 @@
       "default": 30,
       "min": 1,
       "max": 90,
+      "required": false
+    },
+    "crux_api_key": {
+      "type": "string",
+      "title": "CrUX API key (optional)",
+      "description": "Chrome UX Report API key - a free Google Cloud API key with the Chrome UX Report API enabled. Optional - adds real-user Core Web Vitals (LCP, INP, CLS) for your origin and top pages.",
+      "sensitive": true,
       "required": false
     }
   },

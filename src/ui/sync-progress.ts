@@ -21,6 +21,7 @@ const PHASES = [
   { key: 'crawl', label: 'Crawl' },
   { key: 'inspect', label: 'URL inspection' },
   { key: 'ranks', label: 'Rank history' },
+  { key: 'crux', label: 'CrUX field data' },
 ];
 
 let currentJobId: string | null = null;
@@ -104,6 +105,7 @@ function render(job: Job): void {
       if (p.failed) meta = `${p.failed} failed`;
     } else if (p.phase === 'inspect') { label = 'Inspecting top URLs (GSC, rate-limited)'; count = `${p.inspected ?? 0} inspected`; }
     else if (p.phase === 'ranks') { label = 'Fetching DataForSEO rank history'; count = p.periods ? `${p.periods} periods` : 'fetching…'; }
+    else if (p.phase === 'crux') { label = 'Fetching CrUX field data (Core Web Vitals)'; count = p.total ? `${p.done ?? 0} / ${p.total}` : 'starting…'; pct = p.total ? Math.min(100, ((p.done ?? 0) / p.total) * 100) : -1; }
     $('cur-label').textContent = label;
     $('cur-count').textContent = count;
     $('cur-meta').textContent = meta;
