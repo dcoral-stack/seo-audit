@@ -226,7 +226,8 @@ ok(Array.isArray(dash2?.freshness?.sources) && dash2.freshness.sources.length ==
 {
   const { getDataFreshness } = await import('../dist/core/dataFreshness.js');
   // The fixture connection is closed above (the audit/dashboard open their own); reopen for these checks.
-  const db = new AuditDatabase(dbPathFor(dataDir, site)).db;
+  const adb4 = new AuditDatabase(dbPathFor(dataDir, site));
+  const db = adb4.db;
   const page = (url, o = {}) => db.prepare(`INSERT INTO pages (${COLS.join(',')}) VALUES (${COLS.map(c => '@' + c).join(',')})`).run({ ...PAGE_DEFAULTS, ...o, url, url_key: o.url_key ?? k(url) });
   // A failed run that wrote nothing leaves c1's pages on screen: shownCrawl must say so.
   db.prepare(`INSERT INTO crawl_metadata (crawl_id,base_url,base_domain,status,urls_crawled,started_at,finished_at,error) VALUES ('c2','https://smoke.test','smoke.test','failed',0,datetime('now'),datetime('now'),'boom')`).run();
@@ -258,10 +259,13 @@ ok(Array.isArray(dash2?.freshness?.sources) && dash2.freshness.sources.length ==
   ok(after === before, `Missing canonical ignores noindex pages (${before} → ${after})`);
   // A crawled-but-unsynced property still reports freshness in the empty payload.
   const site2 = 'sc-domain:nosync.test';
-  const db2 = new AuditDatabase(dbPathFor(dataDir, site2)).db;
+  const adb5 = new AuditDatabase(dbPathFor(dataDir, site2));
+  const db2 = adb5.db;
   db2.prepare(`INSERT INTO crawl_metadata (crawl_id,base_url,base_domain,status,urls_crawled) VALUES ('x1','https://nosync.test','nosync.test','completed',3)`).run();
   const emptyDash = getDashboardData(dataDir, site2);
   ok(emptyDash.empty === true && Array.isArray(emptyDash.freshness?.sources) && emptyDash.freshness.sources.some(s => s.kind === 'crawl' && s.state === 'completed'), 'empty (no GSC) payload still carries freshness');
+  adb5.close();
+  adb4.close();
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
