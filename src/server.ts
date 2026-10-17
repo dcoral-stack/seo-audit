@@ -36,6 +36,7 @@ import { suggestPages } from './audit/opportunities.js';
 import { computeTopicGaps, type GapKeywordRow } from './audit/topicGaps.js';
 import { AuditDatabase } from './core/AuditDatabase.js';
 import { dbPathFor, sanitizeProperty, jobScopeFor, CONFIG_PATH, DEFAULT_DATA_DIR, resolveDataDir } from './core/paths.js';
+import { fmtDuration } from './core/crawlProgress.js';
 import Database from 'better-sqlite3';
 import { runQueryData, QUERYABLE_TABLES, FILTER_OPS, METRIC_FNS, truncateCell } from './core/queryData.js';
 import { ftsIndexFor, pendingBackfills, backfillInWorker, INLINE_BACKFILL_MAX_ROWS, type FtsIndex } from './core/fts.js';
@@ -674,11 +675,24 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       const base = dashboardServerUrl();
       return base && r && typeof r === 'object' ? { ...(r as Record<string, unknown>), dashboardUrl: base, dashboard: `${base}/dashboard?siteUrl=${encodeURIComponent(siteUrl)}` } : r;
     };
+  // #52: a crawl's progress as one readable line (stage, counts, rate, ETA) instead of raw JSON.
+  const crawlProgressLine = (p: Record<string, unknown>): string | null => {
+    if (typeof p.stage !== 'string' || typeof p.crawled !== 'number') return null;
+    const n = (v: unknown) => (typeof v === 'number' ? v.toLocaleString('en-GB') : '?');
+    const secs = (v: unknown) => fmtDuration(typeof v === 'number' ? v : null);
+    if (p.stage === 'fetching') {
+      const rate = typeof p.pagesPerSec === 'number' ? `${p.pagesPerSec} pages/s` : 'rate pending';
+      const eta = typeof p.etaSeconds === 'number' ? `ETA ${fmtDuration(p.etaSeconds)}` : 'ETA pending';
+      return `fetching: ${n(p.crawled)}/${n(p.maxPages)} pages, ${n(p.pagesRemaining)} queued, ${n(p.failed)} failed (${rate}, ${eta}, ${secs(p.elapsedSeconds)} elapsed)`;
+    }
+    if (p.stage === 'external-links' && typeof p.checked === 'number') return `external-links: ${n(p.checked)}/${n(p.total)} outbound targets checked, after ${n(p.crawled)} pages fetched`;
+    return `${p.stage}: post-crawl stage after ${n(p.crawled)} pages fetched${typeof p.linksSeen === 'number' ? ` and ${n(p.linksSeen)} links` : ''} (${secs(p.elapsedSeconds)} elapsed)`;
+  };
   const oneLineJob = (job: Job, detail = false): string => {
     const head = `Job ${job.id} (${job.type}): ${job.state}`;
     if (job.state === 'failed') return `${head}: ${job.error ?? 'unknown error'}${corruptionHint(job.error)}`;
     if (job.state === 'interrupted') return `${head}: ${job.error ?? 'the process running it exited before it finished.'}`;
-    const prog = Object.keys(job.progress).length ? ` ${JSON.stringify(job.progress).slice(0, 300)}` : '';
+    const prog = Object.keys(job.progress).length ? ` ${crawlProgressLine(job.progress) ?? JSON.stringify(job.progress).slice(0, 300)}` : '';
     if (!detail || job.state !== 'completed' || !DATA_JOBS.has(job.type)) return head + prog;
     const link = (job.result as { dashboard?: string } | undefined)?.dashboard;
     const siteUrl = (job.result as { siteUrl?: string } | undefined)?.siteUrl;
@@ -1026,7 +1040,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'check_sync_status',
     {
       title: 'Check sync status',
-      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A failed job\'s reason is in the text reply as well as in structuredContent.error. A job whose server process exited before it finished reads as "interrupted" (see README, Docker).',
+      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A running crawl reports its stage (fetching, writing-links, image-weights, resource-headers, link-graph, revalidation-probe, snapshot, external-links), pages crawled vs the cap, pages/sec and an ETA for the fetch stage, so a long crawl is never mistaken for a stalled one; poll every 60-120 s. A failed job\'s reason is in the text reply as well as in structuredContent.error. A job whose server process exited before it finished reads as "interrupted" (see README, Docker).',
       inputSchema: { jobId: z.string().optional() },
     },
     jobStatus,
@@ -1051,7 +1065,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'start_crawl',
     {
       title: 'Crawl a site (just the crawl)',
-      description: 'Update just the crawl: fetch the site into the local database (async job — poll with check_crawl_status). HTTP crawl; respects robots.txt; asset file-types are fetched with GET and the body is aborted unread (no download; HEAD can lie about status); internal-search / cart / wp-json / builder junk URLs are skipped by default. For a full refresh use refresh_property. excludePatterns adds extra URL regexes to skip (e.g. ["/author/","/tag/","/page/"]) to keep big crawls light. Every crawl also records each page\'s subresources (CSS, JS, fonts, images: type, first/third party, head/body, async/defer/preload) into page_resources without downloading them; headResources:true adds a header-only pass over the CSS/JS/font ones. After the crawl, every distinct outbound link target is checked (HEAD, ranged-GET fallback, host-throttled, cached 7 days in external_link_status; bot walls are "unverifiable", not broken) and run_audit reports external-broken / external-redirected — checkExternal:false skips it. Grain: one row per url_key, latest crawl. Joins: url_key → GSC/inspection/backlinks.',
+      description: 'Update just the crawl: fetch the site into the local database (async job — poll with check_crawl_status every 60-120 s; it reports the stage, pages crawled vs maxPages, pages/sec and an ETA). Large sites: maxPages up to 50000 (default 4000); a 10k-page crawl is typically 20-40 minutes and streams pages/links to SQLite as it goes, then runs the post-crawl stages (link graph, snapshot, outbound-link check). HTTP crawl; respects robots.txt; asset file-types are fetched with GET and the body is aborted unread (no download; HEAD can lie about status); internal-search / cart / wp-json / builder junk URLs are skipped by default. For a full refresh use refresh_property. excludePatterns adds extra URL regexes to skip (e.g. ["/author/","/tag/","/page/"]) to keep big crawls light. Every crawl also records each page\'s subresources (CSS, JS, fonts, images: type, first/third party, head/body, async/defer/preload) into page_resources without downloading them; headResources:true adds a header-only pass over the CSS/JS/font ones. After the crawl, every distinct outbound link target is checked (HEAD, ranged-GET fallback, host-throttled, cached 7 days in external_link_status; bot walls are "unverifiable", not broken) and run_audit reports external-broken / external-redirected — checkExternal:false skips it. Grain: one row per url_key, latest crawl. Joins: url_key → GSC/inspection/backlinks.',
       inputSchema: {
         siteUrl: z.string(),
         maxPages: z.number().int().min(1).max(50000).optional(),
@@ -1185,7 +1199,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'check_crawl_status',
     {
       title: 'Check crawl status',
-      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A failed job\'s reason is in the text reply as well as in structuredContent.error. A job whose server process exited before it finished reads as "interrupted" (see README, Docker).',
+      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A running crawl reports its stage (fetching, writing-links, image-weights, resource-headers, link-graph, revalidation-probe, snapshot, external-links), pages crawled vs the cap, pages/sec and an ETA for the fetch stage, so a long crawl is never mistaken for a stalled one; poll every 60-120 s. A failed job\'s reason is in the text reply as well as in structuredContent.error. A job whose server process exited before it finished reads as "interrupted" (see README, Docker).',
       inputSchema: { jobId: z.string().optional() },
     },
     jobStatus,

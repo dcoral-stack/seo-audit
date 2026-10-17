@@ -14,6 +14,7 @@ import { detectTemplates } from '../dist/audit/templates.js';
 import { suggestPages } from '../dist/audit/opportunities.js';
 import { getDashboardData } from '../dist/core/dashboardData.js';
 import { dbPathFor } from '../dist/core/paths.js';
+import { crawlRate, fmtDuration } from '../dist/core/crawlProgress.js';
 import { urlKey } from '../dist/core/url-key.js';
 
 const k = (u) => urlKey(u, { hostForm: 'apex' });
@@ -266,6 +267,17 @@ ok(Array.isArray(dash2?.freshness?.sources) && dash2.freshness.sources.length ==
   ok(emptyDash.empty === true && Array.isArray(emptyDash.freshness?.sources) && emptyDash.freshness.sources.some(s => s.kind === 'crawl' && s.state === 'completed'), 'empty (no GSC) payload still carries freshness');
   adb5.close();
   adb4.close();
+}
+
+// #52: crawl progress arithmetic.
+{
+  const r0 = crawlRate(0, 0, 5, 10000, 0);
+  ok(r0.pagesPerSec === null && r0.etaSeconds === null && r0.pagesRemaining === 5, 'crawlRate: no rate or ETA before the first page');
+  const r1 = crawlRate(600, 0, 9400, 10000, 300_000);
+  ok(r1.pagesPerSec === 2 && r1.etaSeconds === 4700 && r1.pagesRemaining === 9400, `crawlRate: 600 pages in 5 min = 2 pages/s, ETA 4700 s (${JSON.stringify(r1)})`);
+  const r2 = crawlRate(3900, 100, 5000, 4000, 60_000);
+  ok(r2.pagesRemaining === 100 && r2.pagesPerSec === 66.7, `crawlRate: the queue is capped by maxPages and failures count toward the rate (${JSON.stringify(r2)})`);
+  ok(fmtDuration(4700) === '1h 18m' && fmtDuration(252) === '4m 12s' && fmtDuration(9) === '9s' && fmtDuration(null) === 'unknown', 'fmtDuration formats s / m s / h m');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

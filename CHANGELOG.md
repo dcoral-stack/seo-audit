@@ -10,6 +10,12 @@ Each release is tagged `vX.Y.Z` on the release commit (tagging lapsed between 0.
 
 ## [Unreleased]
 
+### Added
+- **Crawl progress a client can read (#52).** `check_crawl_status` on a running crawl now reports the stage (`fetching`, `writing-links`, `image-weights`, `resource-headers`, `link-graph`, `revalidation-probe`, `snapshot`, `external-links`), pages crawled against `maxPages`, the queue, pages/sec and an ETA for the fetch stage, as a readable line and as `progress` fields. A 10,000-page recipe is in `manual/tools.md` under `start_crawl`.
+
+### Fixed
+- **Code and config drift from the 0.14.1 docs pass (#50).** The dashboard sidecar honours `data_location` (shared `resolveDataDir()`); the `.mcpb` Majestic cache default matches the server (30 days); `ranked_keywords aioOnly` and `HELP_TEXT` say exposure, not citation; `start_crawl` and `recon_targets` descriptions match the crawler (GET, body aborted) and the selection rule (positions 3-15 by impressions); `composition_cookbook` lists the 0.14/0.15 tables and FTS `match` and no longer claims `related_terms` returns SERP features or `fix_finding` writes `backlinks-to-404` redirects.
+
 ## [0.15.0] — 2026-10-17
 
 ### Removed

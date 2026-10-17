@@ -28,6 +28,9 @@ Just the crawl. Fetches the site into the local database: status, titles, H1s, m
 > Crawl mysite.com, 500 pages max
 > Crawl mysite.com but exclude /author/ and /tag/
 
+**Large crawls (10,000 pages).** `maxPages` goes up to 50,000 (default 4,000). Pages and links stream to SQLite in batches, so the crawl loop itself scales; the cost is in link rows (a dense site carries 150-300 links per page, so 10k pages is 1.5-3M link rows) and in the post-crawl stages that read them (link graph, snapshot, then the audit and the dashboard build). A sensible recipe: `maxPages: 10000`, the default `maxConcurrency` (8) and `delayMs` (250) for a host that is not yours to overload, higher only when you own the server and it is idle, `excludePatterns` for facet, filter and pagination URLs you do not need, and `check_crawl_status` every 60-120 s. Expect 20-40 minutes for the fetch stage at a few pages per second; the status line gives the live rate and ETA. If the crawl stops short of the cap it ran out of crawlable URLs, which is a valid result.
+> Crawl mysite.com with maxPages 10000, excluding /collections/ filter URLs, and check progress every two minutes
+
 ### `inspect_urls`
 Just the GSC URL Inspection data: Google's own view of coverage, indexing, its chosen canonical versus yours, and the last crawl time. Quota-limited, so it samples your top pages by clicks. Grain: one row per inspected URL.
 > Inspect the top 100 URLs on mysite.com
@@ -37,7 +40,7 @@ Ingests the DataForSEO monthly rank distribution and estimated traffic value int
 > Track ranks for mysite.com in the UK
 
 ### `check_sync_status` / `check_crawl_status`
-Poll any job by id, or list recent jobs - the two names are the same tool. A failed job's reason is in the reply text, with a repair pointer when it's database corruption. Every job-starting tool also returns its `jobId` as JSON in the text, so clients that only read text can poll it.
+Poll any job by id, or list recent jobs - the two names are the same tool. A failed job's reason is in the reply text, with a repair pointer when it's database corruption. Every job-starting tool also returns its `jobId` as JSON in the text, so clients that only read text can poll it. A running crawl reports its **stage** (`fetching`, then `writing-links`, `image-weights`, `resource-headers`, `link-graph`, `revalidation-probe`, `snapshot`, `external-links`), pages crawled against `maxPages`, the queue, pages/sec and an ETA for the fetch stage, so a 20-40 minute crawl never looks stalled. The ETA covers fetching only; the post-crawl stages are named instead of timed. Poll every 60-120 s.
 > Check the crawl status
 
 ### `probe_urls`
