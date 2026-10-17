@@ -12,6 +12,8 @@ import {
   assessField, fieldValue, fieldWindowLagDays, quickWinsEmptyReason, trappedEmptyReason,
 } from '../dist/core/displayRules.js';
 import { cwvFieldPayload } from '../dist/core/CruxSync.js';
+import { loadBrandQueries, spacedIsUncertain } from '../dist/core/brand.js';
+import { getDashboardData } from '../dist/core/dashboardData.js';
 import { AuditDatabase } from '../dist/core/AuditDatabase.js';
 import { computeHealth } from '../dist/audit/history.js';
 import { dbPathFor } from '../dist/core/paths.js';
@@ -115,6 +117,55 @@ console.log('empty-state reasons');
   ok(/2 backlinked pages stored/.test(stored) && !/connect|key/i.test(stored), `backlinks stored but no key: reads the stored data, not the key (${stored})`);
   ok(/DataForSEO key/.test(trappedEmptyReason({ backlinkPages: 0, hasKey: false })), 'nothing stored and no key: says a key is needed');
   ok(/pull_backlinks/.test(trappedEmptyReason({ backlinkPages: 0, hasKey: true })), 'nothing stored, key set: asks for pull_backlinks');
+}
+
+// ── 7. Brand on exact-match domains ──────────────────────────────────────────────────────────
+console.log('brand on exact-match domains');
+{
+  ok(spacedIsUncertain({ impressions: 68 }, { impressions: 0, clicks: 0 }), 'spaced phrase with impressions, one-word brand never searched: uncertain');
+  ok(!spacedIsUncertain({ impressions: 66444 }, { impressions: 7668, clicks: 180 }), 'SRC shape: spaced out-draws the one-word brand, but the one-word brand earns clicks: stays brand');
+  ok(!spacedIsUncertain({ impressions: 10 }, { impressions: 40, clicks: 0 }), 'the one-word brand out-draws the spaced phrase: stays brand');
+
+  const gsc = (site, host, rows) => {
+    const adb = new AuditDatabase(dbPathFor(dataDir, site));
+    adb.upsertProperty(site, 'apex');
+    const ins = adb.db.prepare(`INSERT INTO search_analytics (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,?,?,?,'','',?,?,0.1,8)`);
+    const u = `https://${host}/`;
+    adb.db.transaction(() => {
+      for (let t = Date.parse('2026-08-01'); t <= Date.parse('2026-09-30'); t += 86_400_000) {
+        const d = new Date(t).toISOString().slice(0, 10);
+        for (const [q, c, i] of rows) ins.run(d, q, u, u, c, i);
+      }
+    })();
+    return adb;
+  };
+  // directdrivewheels.com: the stem is the category; nobody types the brand as one word.
+  {
+    const site = 'sc-domain:directdrivewheels.test';
+    const adb = gsc(site, 'directdrivewheels.test', [['direct drive wheels', 1, 40], ['best direct drive wheels', 0, 20], ['moza r9 review', 2, 30]]);
+    const m = loadBrandQueries(adb.db, site);
+    ok(m.queries === 0 && m.uncertain?.reason === 'exact-match-domain' && m.uncertain.spellings.join() === 'direct drive wheels', `"direct drive wheels" is set aside as uncertain, not branded (${JSON.stringify(m)})`);
+    adb.close();
+    const b = getDashboardData(dataDir, site).brandedSplit;
+    ok(b.branded.clicks === 0 && b.nonBranded.clicks === 28 * 3, `branded split counts the generic phrase as non-brand (${b.branded.clicks} / ${b.nonBranded.clicks})`);
+    ok(b.uncertain?.spellings?.[0] === 'direct drive wheels', 'the payload carries the uncertain spelling for the UI');
+  }
+  // The same domain once people search the brand as one word: concatenated and dotted forms
+  // are always brand, and their clicks bring the spaced spelling back.
+  {
+    const site = 'sc-domain:directdrivewheelsuk.test';
+    const adb = gsc(site, 'directdrivewheelsuk.test', [['direct drive wheels uk', 0, 40], ['directdrivewheelsuk', 1, 5], ['directdrivewheelsuk.test', 0, 2]]);
+    const m = loadBrandQueries(adb.db, site);
+    ok(m.uncertain === null && ['directdrivewheelsuk', 'direct drive wheels uk'].every(v => m.variants.includes(v)), `joined spelling with clicks: spaced spelling counts as brand again (${m.variants.join(' | ')})`);
+    adb.close();
+  }
+  {
+    const site = 'sc-domain:directdrivewheelseu.test';
+    const adb = gsc(site, 'directdrivewheelseu.test', [['direct drive wheels eu', 0, 40], ['directdrivewheelseu.test', 0, 3]]);
+    const m = loadBrandQueries(adb.db, site);
+    ok(m.variants.includes('directdrivewheelseu') && m.uncertain?.spellings?.[0] === 'direct drive wheels eu', `the dotted form stays brand while the spaced form is uncertain (${JSON.stringify(m)})`);
+    adb.close();
+  }
 }
 
 rmSync(dataDir, { recursive: true, force: true });

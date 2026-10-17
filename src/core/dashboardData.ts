@@ -57,7 +57,7 @@ export interface DashboardData {
   quickWins?: { query: string; position: number; impressions: number; clicks: number; ctr: number; expectedCtr: number; type: 'striking' | 'snippet' | 'serp' | 'ok'; potential: number }[];
   contentDecay?: { urlKey: string; prevClicks: number; clicks: number; lost: number; dropPct: number; impressions: number; position: number }[];
   cannibalisationTable?: { query: string; urlCount: number; totalImpressions: number; totalClicks: number; verdict: 'split' | 'dominant'; crossType: boolean; urls: { url: string; impressions: number; clicks: number; position: number; template: string }[] }[];
-  brandedSplit?: { brand: string; variants: string[]; brandedQueries: number; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
+  brandedSplit?: { brand: string; variants: string[]; brandedQueries: number; uncertain: import('./brand.js').UncertainBrand | null; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
   topKeywords?: {
     query: string;
     clicks: number;
@@ -315,6 +315,8 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         brand: brand.token,
         variants: brand.variants,
         brandedQueries: brand.queries,
+        // Exact-match domain: the spaced spellings counted as non-brand, shown as uncertain.
+        uncertain: brand.uncertain,
         branded: { clicks: splitRow.bClk, impressions: splitRow.bImp },
         nonBranded: { clicks: splitRow.tClk - splitRow.bClk, impressions: splitRow.tImp - splitRow.bImp },
         priorBrandedClicks: priorRow.bClk,

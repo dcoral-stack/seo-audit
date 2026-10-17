@@ -146,8 +146,9 @@ function tiles(d: any): string {
       out.push(tile({
         label: 'Non-brand share', value: share == null ? '–' : `<span class="n">${share}%</span>`,
         foot: bs.priorNonBrandedClicks || bs.nonBranded.clicks ? `<span class="n">${countDelta(bs.nonBranded.clicks, bs.priorNonBrandedClicks)}</span><span class="tile-note">non-brand clicks</span>` : undefined,
-        sub: `of clicks · brand "${esc(bs.brand)}"`,
-        title: `Non-brand = queries that don't spell "${bs.brand}" in whole words, detected from the domain (a heuristic)${bs.variants?.length ? `. Counted as brand: ${bs.variants.map((v: string) => `"${v}"`).join(', ')}` : ''}.`,
+        sub: `of clicks · brand "${esc(bs.brand)}"${bs.uncertain ? ' <span class="brand-uncertain">uncertain (exact-match domain)</span>' : ''}`,
+        title: `Non-brand = queries that don't spell "${bs.brand}" in whole words, detected from the domain (a heuristic)${bs.variants?.length ? `. Counted as brand: ${bs.variants.map((v: string) => `"${v}"`).join(', ')}` : ''}.` +
+          (bs.uncertain ? ` Uncertain (exact-match domain): ${bs.uncertain.spellings.map((v: string) => `"${v}"`).join(', ')} counted as non-brand. On an exact-match domain the spaced spelling is also the generic search, so it counts as brand only when people also search the brand as one word: spaced spellings are set aside when they draw more impressions than the one-word brand and the one-word brand has earned no click.` : ''),
       }));
     } else {
       out.push(tile({ label: 'Non-brand share', value: '–', sub: 'brand not detected from the domain' }));

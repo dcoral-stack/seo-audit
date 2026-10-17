@@ -863,3 +863,4 @@ select, select.sel, #cannSelect {
 
 /* An empty chart collapses to its message (EChartWrapper.setEmpty) instead of a tall blank canvas. */
 .chart.chart-is-empty { height: 120px !important; }
+.brand-uncertain { color: var(--intent-warning); cursor: help; }

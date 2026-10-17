@@ -35,7 +35,7 @@ export interface DashboardData {
   quickWins?: { query: string; position: number; impressions: number; clicks: number; ctr: number; expectedCtr: number; type: 'striking' | 'snippet' | 'serp' | 'ok'; potential: number }[];
   contentDecay?: { urlKey: string; prevClicks: number; clicks: number; lost: number; dropPct: number; impressions: number; position: number }[];
   cannibalisationTable?: { query: string; urlCount: number; totalImpressions: number; totalClicks: number; verdict: 'split' | 'dominant'; crossType: boolean; urls: { url: string; impressions: number; clicks: number; position: number; template: string }[] }[];
-  brandedSplit?: { brand: string; variants?: string[]; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
+  brandedSplit?: { brand: string; variants?: string[]; uncertain?: { spellings: string[]; queries: number; impressions: number; clicks: number; joinedImpressions: number; joinedClicks: number } | null; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
   topKeywords?: { query: string; clicks: number; prevClicks: number; clicksChange: number; position: number; prevPosition: number }[];
   rankHistory?: { period: string; pos_1_3: number; pos_4_10: number; pos_11_20: number; pos_21_100: number; etv: number; keyword_count: number }[];
   dateAlignment?: { note: string };
@@ -324,7 +324,9 @@ function renderBrandedSplit(data: DashboardData): void {
   const b = data.brandedSplit;
   if (!b) { el.innerHTML = '<p class="muted">Brand could not be auto-detected from this property.</p>'; return; }
   const hint = $('brandedHint');
-  if (hint) hint.innerHTML = `Branded = queries that spell <strong>“${esc(b.brand)}”</strong> in whole words (auto-detected from the domain${b.variants?.length ? `; matched: ${b.variants.map(v => `“${esc(v)}”`).join(', ')}` : ''}). How much of your demand is people looking for you vs discovering you - last 28 days.`;
+  const un = b.uncertain;
+  if (hint) hint.innerHTML = `Branded = queries that spell <strong>“${esc(b.brand)}”</strong> in whole words (auto-detected from the domain${b.variants?.length ? `; counted: ${b.variants.map(v => `“${esc(v)}”`).join(', ')}` : ''}). How much of your demand is people looking for you vs discovering you - last 28 days.` +
+    (un ? ` <span class="brand-uncertain" title="${esc(`On an exact-match domain the spaced spelling is also the generic search, so it counts as brand only when people also search the brand as one word: spaced spellings are set aside when they draw more impressions than the one-word brand and the one-word brand has earned no click. Here: ${fmt(un.impressions)} impressions on the spaced spelling, ${fmt(un.joinedImpressions)} and ${fmt(un.joinedClicks)} clicks on the one-word brand, over the held history.`)}"><strong>Uncertain (exact-match domain):</strong> ${un.spellings.map(v => `“${esc(v)}”`).join(', ')} (${fmt(un.queries)} quer${un.queries === 1 ? 'y' : 'ies'}) counted as non-brand - it is also the generic search, and nobody has clicked the brand typed as one word.</span>` : '');
   const bc = b.branded.clicks, nc = b.nonBranded.clicks, tc = bc + nc;
   const bpct = tc ? (bc / tc) * 100 : 0, npct = tc ? 100 - bpct : 0;
   el.innerHTML =
