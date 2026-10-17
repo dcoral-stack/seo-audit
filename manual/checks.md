@@ -1,6 +1,6 @@
 # The check registry
 
-All 119 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
+All 126 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
 
 ## Reading the labels
 
@@ -12,13 +12,17 @@ A check can carry more than one label - `noindex-with-traffic` is D+G because th
 
 Every finding is priced the same way: priority = (traffic at stake × expected yield × certainty) / effort hours. So the list you get back is ordered by expected clicks per developer-hour, not by how alarming the check sounds.
 
-## Crawlability (16)
+## Crawlability (20)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
 | `broken-internal-links` | D | Internal links pointing at 4xx/5xx URLs | Repoint them to a live, canonical URL (`fix_finding` writes the 301). |
 | `content-only-in-rendered-dom` | D | Content or internal links that exist only after JavaScript runs (needs `render_pages`) | Server-side render or pre-render the critical content and in-site links so they're in the initial HTML - don't rely on client-side JS for primary navigation or copy. |
-| `redirect-chain` | D | Redirects of 2+ hops | Collapse to a single hop to the final URL. |
+| `redirect-chain` | D | Redirects of 2+ hops that stay on the site and resolve (keyed by the final page, whose row records the chain). Chains that leave the site, never resolve, loop, or run through a login/account/cart flow are not counted: a Shopify store's OAuth bounces used to read as ~1,300 chains | Collapse to a single hop to the final URL. |
+| `redirect-to-non-indexable` | D | An internal redirect whose final URL is a 4xx/5xx (not a 429/503 or a rate-limited fetch, which are unknown), a noindex page or a page canonicalised elsewhere. Excluded: a non-HTML target (a PDF), an http->https hop onto the same URL, and a backlinked source landing on a dead page (that's `backlinks-to-404`) | Point the redirect at the live, indexable, self-canonical replacement. |
+| `redirect-loop` | D | A redirect chain that revisits a URL, or is still redirecting after the crawler's 5-hop cap. Internal chains only; login/account/cart flows excluded | Fix the disagreeing rules so the URL resolves to a 200 in one hop. |
+| `temporary-redirect-with-equity` | D+G | A 302/303/307 first hop on a URL with equity: GSC clicks >= 1 or impressions >= 10 over the history held, a backlink, or an internal link from another page. Excluded: the homepage (a geo/locale 302 is deliberate), off-site and login/cart flows | Make it a 301/308 if the move is permanent, and repoint the internal links. |
+| `redirect-retired` | D+G | A URL that answered 200 in an earlier crawl's snapshot and now answers 404/410 with no redirect, with equity (same rule as above). A URL the latest crawl didn't reach is not "gone"; store products go to `product-gone-404`. Needs two crawls on different dates | 301 it to the closest live equivalent, or restore it. |
 | `internal-links-to-redirects` | D | Internal links that travel through a redirect | Repoint to the final URL - saves crawl budget and equity. |
 | `meta-nofollow` | D | Pages with meta robots nofollow | Remove it unless you mean to drop all link equity from the page. |
 | `deep-pages` | D | Pages 4+ body-link clicks from the homepage | Add in-content links from higher-level pages. |
@@ -33,7 +37,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `discover-crawl-waste` | D | Too much of the crawl going to redirects and non-indexable URLs (site-level - Discover leans on fast discovery) | Aim for almost everything Google crawls to be an indexable 200 - repoint links off redirects/404s and prune faceted/parameter URLs. |
 | `entity-internal-link-gap` | N (0.5) | Topically related pages (per Wikidata) with no link between them | Link the broader page to the more specific one - after verifying the entity match. Needs `resolve_entities`. |
 
-## Indexation (18)
+## Indexation (20)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -55,6 +59,8 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `indexable-not-in-sitemap` | D | Indexable pages the sitemap omits | Add them so Google discovers and prioritises them. |
 | `image-preview-restricted` | D | max-image-preview capped below large | Set max-image-preview:large - Discover strongly favours it - unless licensing forbids. |
 | `sitemap-lastmod-untrustworthy` | D | lastmod dates that are generator stamps, future-dated, or claim changes that didn't happen | Make lastmod reflect genuine content changes, or drop it - dishonest dates teach Google to ignore yours. |
+| `redirect-to-homepage` | D | A deep URL redirected to the bare homepage, which Google treats as a soft 404. `/index.html`-style aliases and locale roots (`/en`, `/en-au`) don't count; URLs with clicks or links are listed first | Redirect to the closest equivalent page, or let it 404/410. |
+| `product-gone-404` | D+G | A store product (Shopify `/products/`, WooCommerce `/product/`, or Product schema in the earlier snapshot) that answered 200 in an earlier crawl and now answers 404/410, with equity (GSC clicks >= 1 or impressions >= 10 over the history held, a backlink, or an internal link). Ranked by the clicks it earned. A product the latest crawl didn't reach, or a rate-limited fetch, is not reported | 301 to the replacement or parent category; keep an out-of-stock product live at 200 marked OutOfStock. |
 
 ## On-page (22)
 
@@ -94,7 +100,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `content-bloat` | D+N (0.6) | Very long unbroken sections | Split into focused, headed passages - AI grounding has sharp diminishing returns past a certain length, and density beats length. |
 | `ai-slop-signals` | N (0.5) | Copy tripping statistical tells of generic AI text (stock filler, uniform sentence lengths, identical section openers) | Rewrite the flagged sections with specifics only you can supply - and verify by reading first; competent human writing can trip these tells. |
 
-## Structured data (13)
+## Structured data (14)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -108,6 +114,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `rich-result-issues` | D+G | Rich-result issues Google itself reports via URL Inspection | Fix the listed issues - this is Google's own validation, not ours, so it's authoritative. |
 | `article-date-illogical` | D | Article dateModified earlier than datePublished | Fix the dates - an impossible pair undermines trust in the markup. |
 | `article-no-author` | D | Article schema where no Article node names an author (an `@id` reference to a named Person counts) | Add a Person author and a visible byline - AI-search guidance rewards a demonstrable first-hand point of view. |
+| `merchant-listing-incomplete` | N (0.5), low | Product markup on a store page missing what [Google's merchant listings](https://developers.google.com/search/docs/appearance/structured-data/merchant-listing) use. Required: `image`, an `Offer` (an `AggregateOffer` alone isn't accepted), `price` and `priceCurrency` (directly or in `priceSpecification`). Recommended: `availability`, `itemCondition`. Store product pages with no offers at all roll up into one site-level finding, because a quote-only product has no price and is not a merchant listing. A review page's Product without offers is skipped | Fix the product template once; ignore it for quote-only products. |
 | `duplicate-article-entities` | D (0.9) | More than one Article entity on one URL, typically an SEO plugin's graph plus a theme- or block-embedded Article | Emit one Article per page: remove the second source or merge it into the graph with the same `@id`. |
 | `discover-generic-article-type` | D+N (0.5) | Article schema using only the generic `Article` type where a more specific one fits | Use `NewsArticle` / `LiveBlogPosting` / `ProfilePage` where it genuinely applies - it unlocks richer Discover/News treatment. |
 | `discover-image-schema` | D | Article schema that declares no `image` (Discover cards need a large image) | Add an `image` (≥1200px wide, ideally 16:9 / 4:3 / 1:1 crops), matching the main visible image. |
