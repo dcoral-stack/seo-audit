@@ -14,7 +14,9 @@ import { contentArchitecture, type TopicCluster } from '../audit/contentArchitec
 import { auditHistory, backfillAuditHealth, computeHealth, healthBand, HEALTH_DEFINITION, type AuditHistory } from '../audit/history.js';
 import {
   monthlyClicks, yearOnYear, summaryEvents, driftSummary, findingsByCategory, clicksAtRiskByCheck, aiOverviewSummary, pageMovers, coverage,
+  gscShapeRules, clickWindows,
   type MonthlyClicks, type YearOnYear, type SummaryEvent, type DriftSummary, type CategoryRow, type AiOverviewSummary, type PageMovers, type Coverage,
+  type GscShape, type ClickWindows,
 } from './summaryData.js';
 
 export interface DashboardData {
@@ -177,6 +179,11 @@ export interface DashboardData {
   pageMovers?: PageMovers | null;
   /** What data the dashboard holds (the UI names what it doesn't). */
   coverage?: Coverage;
+  /** Days holding both GSC row shapes (all-country AND segmented rows), or null. The summary
+   *  aggregations count each such day once; the older payload totals (summary, rankTrend, ...) don't. */
+  gscShape?: GscShape | null;
+  /** Last 28 days vs the prior 28, clicks counted once per day (the Summary's verdict and tile). */
+  clickWindows?: ClickWindows;
 }
 
 interface Totals { clicks: number; impressions: number; position: number }
@@ -185,7 +192,8 @@ interface Totals { clicks: number; impressions: number; position: number }
 // invalidated even if the underlying GSC/crawl data hasn't changed. Part of the cache version key.
 // 22: crawl-health urlFlow counts redirects from redirect_sources. 23: healthHistory + auditDeltas.
 // 24: site summary aggregations (monthly, yoy, events, drift, byCategory, clicksAtRisk, aiOverview,
-//     pageMovers, coverage, agentReadiness.bots) and the crawl-only payload when there is no GSC.
+//     pageMovers, coverage, agentReadiness.bots, gscShape, clickWindows) and the crawl-only payload
+//     when there is no GSC.
 const PAYLOAD_VERSION = '24';
 
 /** Build the dashboard payload for a property from its synced GSC history. */
@@ -426,6 +434,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     // Crawl / audit / probe side of the payload, shared with the no-GSC path: findings, health and
     // its history, index coverage, agent readiness, drift, AI Overview, coverage and event ticks.
     const side = crawlSide(db.db, maxDate);
+    const shape = gscShapeRules(db.db);
     const totalInternalPages = side.coverage!.crawlPages;
 
     // Security / HTTPS coverage (V2 view): share of 200 internal pages carrying each header.
@@ -955,9 +964,11 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
       countryBreakdown,
       pagePerformance,
       keywordMovement,
-      monthly: monthlyClicks(db.db, maxDate),
-      yoy: yearOnYear(db.db, maxDate),
-      pageMovers: pageMovers(db.db, maxDate),
+      monthly: monthlyClicks(db.db, maxDate, shape),
+      yoy: yearOnYear(db.db, maxDate, shape),
+      pageMovers: pageMovers(db.db, maxDate, 3, shape),
+      clickWindows: clickWindows(db.db, maxDate, shape),
+      gscShape: shape.shape,
       serpFootprint: latestSerpFootprint(db.db),
       marketSizing: latestMarketSizing(db.db),
     };

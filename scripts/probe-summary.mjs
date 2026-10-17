@@ -208,6 +208,32 @@ function audit(db, runId, at, crawlId, findings, checkIds = CHECKS) {
   ok(d.drift.staleness?.newestCrawl === 'c3', 'drift: a newer unsnapshotted crawl sets staleness, so the UI shows the banner instead of the counts');
 }
 
+// ── 5b. Mixed GSC row shapes (all-country AND per-country rows for the same days) ─────────────
+// Found live on simracingcockpit.gg: a plain SUM counts those days twice. Clicks come from the
+// all-country rows, impressions from the per-country rows, each day once.
+{
+  const { site, adb, db } = property('mixed');
+  const ins = db.prepare(`INSERT INTO search_analytics (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  db.transaction(() => {
+    for (let t = Date.parse('2026-08-01'); t <= Date.parse('2026-10-10'); t += DAY) {
+      const d = iso(t);
+      const u = 'https://x.test/p';
+      ins.run(d, 'q', u, u, '', '', 10, 50, 0.2, 3);                    // all-country (lite): clicks right, impressions short
+      if (d <= '2026-09-05') { ins.run(d, 'q', u, u, '', 'gbr', 6, 70, 0.1, 3); ins.run(d, 'q', u, u, '', 'usa', 4, 30, 0.1, 3); } // per-country: 10 clicks, 100 impressions
+    }
+  })();
+  adb.close();
+  const d = getDashboardData(dataDir, site);
+  ok(d.gscShape?.mixedDays === 36 && d.gscShape.from === '2026-08-01' && d.gscShape.to === '2026-09-05', `gscShape: 36 mixed days reported (${JSON.stringify(d.gscShape)})`);
+  const aug = d.monthly.months.find(m => m.month === '2026-08');
+  ok(aug.clicks === 310 && aug.impressions === 3100, `monthly: a mixed month counts each day once - clicks from all-country rows, impressions from per-country (${aug.clicks} / ${aug.impressions})`);
+  const sep = d.monthly.months.find(m => m.month === '2026-09');
+  ok(sep.clicks === 300 && sep.impressions === 5 * 100 + 25 * 50, `monthly: a month that changes shape mid-way (${sep.clicks} / ${sep.impressions})`);
+  ok(d.clickWindows.current === 280 && d.clickWindows.prior === 280, `clickWindows: 280 vs 280, not inflated by the mixed days (${d.clickWindows.current} vs ${d.clickWindows.prior})`);
+  ok(d.summary.prior.clicks > d.clickWindows.prior, `the older summary totals still double-count (${d.summary.prior.clicks}); the Summary reads clickWindows`);
+  ok(d.pageMovers.gaining.length === 0 && d.pageMovers.losing.length === 0, 'pageMovers: no phantom loser from doubled prior clicks');
+}
+
 // ── 6. AI bots: one list, robots verdicts per RFC 9309 group matching ─────────────────────────
 {
   const robots = 'User-agent: *\nDisallow: /cart\n\nUser-agent: GPTBot\nAllow: /\n\nUser-agent: CCBot\nDisallow: /\n';
