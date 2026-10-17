@@ -4,7 +4,7 @@
 // the Summary tab (summary.ts) replaced the Overview as the landing view and they moved to the tabs
 // they belong to. Pure HTML-string + ECharts builders; dashboard.ts owns the data load, the chart
 // registry and the tab shell, and passes them in.
-import { esc, fmtNum, delta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
+import { esc, fmtNum, fmtCompact, fmtDate, delta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
 
 const fmt = fmtNum;
 import type { DashboardData } from './dashboard.js';
@@ -44,7 +44,7 @@ export function ago(at: string | null | undefined, now = Date.now()): string {
   if (s < 3600) return `${Math.round(s / 60)}m ago`;
   if (s < 86400 * 2) return `${Math.round(s / 3600)}h ago`;
   if (s < 86400 * 60) return `${Math.round(s / 86400)}d ago`;
-  return at.slice(0, 10);
+  return fmtDate(at);
 }
 
 const stateDot = (state: string): string =>
@@ -66,8 +66,8 @@ function trendMultiples(d: Dash, ctx: OverviewCtx): void {
   if (!t.length) { ctx.wrap('spTrendChart').setEmpty('No Search Console data yet - run sync_gsc', col); return; }
   const dates = t.map((x: any) => x.date);
   const series = [
-    { name: 'Clicks', data: t.map((x: any) => x.clicks), color: col.accent, inverse: false, fmtV: (v: number) => fmt(v) },
-    { name: 'Impressions', data: t.map((x: any) => x.impressions), color: col.categorical[0], inverse: false, fmtV: (v: number) => fmt(v) },
+    { name: 'Clicks', data: t.map((x: any) => x.clicks), color: col.accent, inverse: false, fmtV: (v: number) => fmtCompact(v) },
+    { name: 'Impressions', data: t.map((x: any) => x.impressions), color: col.categorical[0], inverse: false, fmtV: (v: number) => fmtCompact(v) },
     { name: 'Avg position', data: t.map((x: any) => (x.position > 0 ? Math.round(x.position * 10) / 10 : null)), color: col.categorical[1], inverse: true, fmtV: (v: number) => v.toFixed(1) },
   ];
   const H = 23, GAP = 9, TOP = 7;
@@ -83,7 +83,7 @@ function trendMultiples(d: Dash, ctx: OverviewCtx): void {
     xAxis: series.map((_, i) => ({
       type: 'category', gridIndex: i, data: dates, boundaryGap: false,
       axisLine: { lineStyle: { color: col.border } }, axisTick: { show: false },
-      axisLabel: i === series.length - 1 ? { color: col.axisText, fontSize: 10.5, fontFamily: monoFont(), formatter: (v: string) => v.slice(5) } : { show: false },
+      axisLabel: i === series.length - 1 ? { color: col.axisText, fontSize: 10.5, fontFamily: monoFont(), formatter: (v: string) => fmtDate(v, true), hideOverlap: true } : { show: false },
     })),
     yAxis: series.map((s, i) => ({
       type: 'value', gridIndex: i, inverse: s.inverse, scale: s.inverse, splitNumber: 2,
@@ -146,11 +146,13 @@ export function drawNetwork(d: Dash, ctx: OverviewCtx, id: string, opts: { compa
   const keep = new Set(nodes.map((n: any) => n.id));
   const catOf = (n: any): number => ((n.status == null || n.status >= 300) ? 2 : (n.indexable ? 0 : 1));
   const maxIpr = Math.max(...nodes.map((n: any) => n.ipr), 1);
-  const labelCut = opts.compact ? 0.85 : 0.8;
+  // Label only the highest-PageRank hubs (the rest are in the tooltip): more labels overlap.
+  const narrow = (document.getElementById(id)?.clientWidth ?? 800) < 500;
+  const labelled = new Set([...nodes].sort((a: any, b: any) => b.ipr - a.ipr).slice(0, opts.compact || narrow ? 6 : 10).map((n: any) => n.id));
   const gnodes = nodes.map((n: any) => ({
     id: n.id, name: n.id, value: n.ipr, category: catOf(n),
     symbolSize: (opts.compact ? 4 : 5) + Math.round((n.ipr / maxIpr) * (opts.compact ? 18 : 26)),
-    label: (n.ipr / maxIpr >= labelCut && !ctx.redacted)
+    label: (labelled.has(n.id) && !ctx.redacted)
       ? { show: true, formatter: ctx.shortPath(n.id, 22), color: col.muted, fontSize: 10, fontFamily: monoFont() } : { show: false },
     _s: n.status, _d: n.depth,
   }));
@@ -158,7 +160,9 @@ export function drawNetwork(d: Dash, ctx: OverviewCtx, id: string, opts: { compa
   ctx.wrap(id).setOption({
     aria: { enabled: true },
     tooltip: { ...tooltipDefaults(col, 'item'), formatter: (p: any) => p.dataType === 'edge' ? '' : `${esc(ctx.shortPath(p.data.id, 48))}<br/>iPR ${p.data.value} · status ${p.data._s ?? '-'} · depth ${p.data._d ?? '-'}` },
-    legend: opts.compact ? undefined : { top: 10, left: 12, data: ['Healthy', 'Non-indexable', 'Broken / redirected'], textStyle: { color: col.text, fontSize: 12 }, itemWidth: 9, itemHeight: 9, icon: 'circle' },
+    // No in-canvas legend: force-placed nodes ignore the layout box and ran under it. The card's
+    // hint names the three colours.
+    legend: undefined,
     series: [{
       type: 'graph', layout: 'force', roam: !opts.compact, draggable: !opts.compact,
       categories: [
@@ -166,13 +170,15 @@ export function drawNetwork(d: Dash, ctx: OverviewCtx, id: string, opts: { compa
         { name: 'Non-indexable', itemStyle: { color: col.amber } },
         { name: 'Broken / redirected', itemStyle: { color: col.red } },
       ],
-      force: opts.compact ? { repulsion: 60, edgeLength: [18, 60], gravity: 0.14 } : { repulsion: 95, edgeLength: [30, 110], gravity: 0.08 },
+      force: opts.compact ? { repulsion: 60, edgeLength: [18, 60], gravity: 0.14 } : { repulsion: 90, edgeLength: [30, 100], gravity: 0.16 },
       data: gnodes,
       links: sg.edges.filter((e: any) => keep.has(e.source) && keep.has(e.target)).map((e: any) => ({ source: e.source, target: e.target })),
       lineStyle: { color: edgeColor, width: 0.7, opacity: 1, curveness: 0.06 },
       itemStyle: { borderColor: col.surface, borderWidth: 1.5 },
       emphasis: { focus: 'adjacency', lineStyle: { color: col.accent, width: 1.4, opacity: 1 }, label: { show: !ctx.redacted } },
       label: { position: 'right' },
+      labelLayout: { hideOverlap: true },
+      top: 12, bottom: 12, left: 12, right: 12,
     }],
   });
   return true;
@@ -250,7 +256,7 @@ export function renderHealthTop(d: Dash, ctx: OverviewCtx): void {
   if (flowEl && flow.length) {
     const tone: Record<string, string> = { bad: 'dot-bad', warn: 'dot-high', muted: 'dot-never' };
     flowEl.innerHTML = `<table><thead><tr><th>Type</th><th class="num">URLs</th><th class="num">Share</th><th>Most-linked example</th></tr></thead><tbody>${flow.map(r =>
-      `<tr><td><span class="dot ${tone[r.tone] ?? 'dot-never'}" style="margin-right:8px"></span>${esc(r.label)}</td><td class="num">${fmt(r.count)}</td><td class="num">${Math.round((r.count / ch.totalPages) * 100)}%</td><td class="url" title="${esc(r.example ?? '')}">${esc(r.example ? ctx.shortPath(r.example, 60) : '-')}</td></tr>`).join('')}</tbody></table>`;
+      `<tr><td><span class="lbl-dot"><span class="dot ${tone[r.tone] ?? 'dot-never'}"></span>${esc(r.label)}</span></td><td class="num">${fmt(r.count)}</td><td class="num">${Math.round((r.count / ch.totalPages) * 100)}%</td><td class="url" title="${esc(r.example ?? '')}">${esc(r.example ? ctx.shortPath(r.example, 60) : '-')}</td></tr>`).join('')}</tbody></table>`;
   }
 }
 

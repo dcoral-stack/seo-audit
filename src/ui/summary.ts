@@ -8,7 +8,7 @@
 //   - samples say "n of M"; thresholds are stated product rules, shown where they apply;
 //   - every number carries class "n" so redact mode (?redact=1) blurs it, and charts drop their
 //     numeric axes and tooltips when redacted.
-import { esc, fmtNum, sparkline, delta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
+import { esc, fmtNum, fmtCompact, sparkline, delta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
 import { buildVerdict, direction } from '../core/summaryVerdict.js';
 import { ago, SEV_LABEL } from './panels.js';
 
@@ -141,7 +141,7 @@ function tiles(d: any): string {
       yoyTxt = yp == null ? 'no clicks a year ago' : `<span class="n">${yp >= 0 ? '+' : '−'}${Math.abs(Math.round(yp))}%</span> on a year ago`;
     } else if (yoy) yoyTxt = 'year-on-year needs 13 months';
     out.push(tile({
-      label: 'Organic clicks · 28d', value: `<span class="n">${fmt(c)}</span>`,
+      label: 'Organic clicks · 28d', value: `<span class="n">${fmtCompact(c)}</span>`,
       foot: `${p ? `<span class="n">${delta(((c - p) / p) * 100)}</span>` : '<span class="chg flat">no prior clicks</span>'}${months.length >= 2 ? sparkline(months) : ''}`,
       sub: yoyTxt, title: `Last 28 days to ${d.dateRange?.maxDate ?? ''} vs the prior 28.${yoy?.available ? ` Year-on-year: the same 28 days 52 weeks earlier (${yoy.priorWindow.start} to ${yoy.priorWindow.end}).` : ''}${months.length >= 2 ? ` Sparkline: ${months.length} complete months.` : ''}`,
     }));

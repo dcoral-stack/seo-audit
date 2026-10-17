@@ -754,6 +754,33 @@ select, select.sel, #cannSelect {
   .chart.chart-month, .chart.chart-health { height: 250px; }
 }
 
+/* ── Design QA pass (summary PR) ───────────────────────────────────────────────────────── */
+/* Issues: the issue title gets the width; URL and fix truncate instead. */
+#findingsTable td.fi-issue { min-width: 260px; }
+#findingsTable td.url { max-width: 170px; }
+#findingsTable td.fi-issue { max-width: 380px; }
+.fi-fixline { margin: 3px 0 0 22px; font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 340px; }
+/* A status dot stays on the line of its label when the cell wraps. */
+.lbl-dot { display: inline-flex; align-items: baseline; gap: 8px; }
+.lbl-dot .dot { flex: none; transform: translateY(-1px); }
+/* Content research results: article titles read as text, not code. */
+.research-out .rec-url { font-family: var(--font); font-size: 13px; }
+.ca-more { align-self: flex-start; margin-top: 4px; }
+/* Grid children holding tables must be allowed to shrink (else the page scrolls sideways). */
+.twocol > div { min-width: 0; }
+@media (max-width: 560px) {
+  /* Tables scroll inside their card; text columns keep a readable width instead of one word a line. */
+  .findings-table td:not(.num), .findings-table th:not(.num) { min-width: 120px; }
+  .findings-table td.url { max-width: 180px; }
+  #findingsTable td.fi-issue { min-width: 200px; }
+  .fi-fixline { max-width: 200px; }
+  .metric-card .metric-sub { white-space: normal; }
+  .rec-acc summary { flex-wrap: wrap; row-gap: 6px; }
+  .rec-acc .rec-title { flex: 1 1 100%; order: 2; }
+  .rec-acc .rec-count { order: 3; }
+  .rec-acc .rec-chev { order: 1; margin-left: auto; }
+}
+
 /* Redact mode covers every number on the Summary (charts drop their numeric axes and tooltips). */
 .redacted [data-panel="summary"] .n,
 .redacted [data-panel="summary"] .chg,

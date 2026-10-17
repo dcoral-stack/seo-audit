@@ -258,13 +258,13 @@
         </div>
         <div class="chart-card">
           <h3>Ranking distribution over time</h3>
-          <div class="hint">Impressions by position bucket - top-3 dominance vs page-2 drift, last 90 days</div>
+          <div class="hint">Impressions by Search Console average position bucket, last 90 days.</div>
           <p class="sr-only" id="distSummary"></p>
           <div class="chart" id="distChart" role="img" aria-label="Ranking distribution over time"></div>
         </div>
         <div class="chart-card">
           <h3>Search visibility over time - DataForSEO</h3>
-          <div class="hint">Ranking keywords by position bucket each month, with estimated traffic value (red line)</div>
+          <div class="hint">Ranking keywords by position bucket each month (top), and estimated traffic value (bottom).</div>
           <p class="sr-only" id="rankHistSummary"></p>
           <div class="chart" id="rankHistChart" role="img" aria-label="DataForSEO ranking distribution over time"></div>
           <div class="hint" id="alignNote"></div>
@@ -318,7 +318,7 @@
         </div>
         <div class="chart-card">
           <h3>Where your link equity flows vs where traffic comes from</h3>
-          <div class="hint">Internal PageRank share vs organic traffic share, by template. A tall blue bar with little green beside it = equity flowing into a dead end.</div>
+          <div class="hint">Internal PageRank share vs organic traffic share, by template. A long blue bar with a short teal one beside it = equity flowing into a dead end.</div>
           <p class="sr-only" id="mismatchSummary"></p>
           <div class="chart" id="mismatchChart" role="img" aria-label="Internal equity share versus organic traffic share by template"></div>
         </div>
@@ -338,7 +338,7 @@
           <h3>Top linked pages - and their status</h3>
           <div class="hint">Your most internally-linked URLs. A non-200 status near the top means lots of internal links point at a dead or redirected page - a direct equity leak.</div>
           <p class="sr-only" id="topLinkedSummary"></p>
-          <div id="topLinkedTable"></div>
+          <div id="topLinkedTable" class="findings-table"></div>
         </div>
         <div class="chart-card" id="trappedCard">
           <h3>Trapped authority - pages the web trusts that you've buried</h3>
