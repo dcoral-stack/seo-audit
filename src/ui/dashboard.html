@@ -12,7 +12,7 @@
       <div class="brand"><span class="brand-dot" aria-hidden="true"></span><span class="brand-name">SEO Audit Console</span></div>
       <div class="side-property" id="sideProperty"><span class="side-label">Property</span><div class="site" id="site"></div></div>
       <nav class="tabs nav" id="tabs" role="tablist" aria-orientation="vertical">
-        <button class="tab-btn nav-item active" data-panel="overview" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg><span>Overview</span></button>
+        <button class="tab-btn nav-item active" data-panel="summary" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg><span>Summary</span></button>
         <button class="tab-btn nav-item" data-panel="issues" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span>Issues &amp; fixes</span></button>
         <button class="tab-btn nav-item" data-panel="health" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Crawl health</span></button>
         <button class="tab-btn nav-item" data-panel="architecture" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M11 7.2 6.2 15.8M13 7.2l4.8 8.6M7.5 18h9"/></svg><span>Network</span></button>
@@ -25,7 +25,7 @@
     </aside>
     <div class="main">
       <header class="topbar header">
-        <h1 class="page-title" id="pageTitle">Overview</h1>
+        <h1 class="page-title" id="pageTitle">Summary</h1>
         <div class="header-right">
           <div class="range" id="range"></div>
           <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle light or dark theme" title="Toggle light / dark"></button>
@@ -35,50 +35,58 @@
     <div class="loading" id="loading">Loading dashboard…</div>
     <div id="content" style="display:none">
 
-      <section class="tab-panel active" data-panel="overview" role="tabpanel">
-        <div class="kpis" id="ovKpis"></div>
+      <section class="tab-panel active" data-panel="summary" role="tabpanel">
+        <div class="chart-card sum-fresh" id="sumFresh" aria-label="Data freshness"></div>
+        <div class="chart-card sum-verdict" id="sumVerdict"></div>
+        <div class="kpis sum-tiles" id="sumTiles"></div>
         <div class="grid g-8-4">
-          <div class="chart-card">
-            <div class="card-head"><div><h3>Search performance over time</h3><div class="hint">Daily clicks, impressions and average position, one chart each on a shared timeline.</div></div><span class="src" id="ovTrendSrc"></span></div>
-            <p class="sr-only" id="ovTrendSummary"></p>
-            <div class="chart chart-multiples" id="ovTrendChart" role="img" aria-label="Clicks, impressions and average position over time"></div>
+          <div class="chart-card" id="sumTrendCard">
+            <div class="card-head"><div><h3>Organic clicks by month</h3><div class="hint">Up to 16 months, with each crawl and audit marked under the axis.</div></div><span class="src" id="sumTrendSrc"></span></div>
+            <div class="sum-legend" id="sumTrendLegend"></div>
+            <p class="sr-only" id="sumTrendSummary"></p>
+            <div class="chart chart-month" id="sumTrendChart" role="img" aria-label="Monthly organic clicks"></div>
+            <div class="sum-note" id="sumTrendNote"></div>
           </div>
-          <div class="chart-card" id="ovFindingsCard">
-            <div class="card-head"><div><h3>Findings by priority</h3><div class="hint">The latest audit, ranked by impact ÷ effort.</div></div><span class="src" id="ovFindingsSrc"></span></div>
-            <div id="ovFindings"></div>
-          </div>
-        </div>
-        <div class="grid g-6-6">
-          <div class="chart-card">
-            <div class="card-head"><div><h3>Crawl health</h3><div class="hint">Status mix and where URLs leak, from the latest crawl.</div></div><span class="src" id="ovCrawlSrc"></span></div>
-            <div id="ovCrawl"></div>
-          </div>
-          <div class="chart-card">
-            <div class="card-head"><div><h3>Site network</h3><div class="hint">The highest-PageRank pages and the in-content links between them.</div></div><button class="link-btn" type="button" data-goto="architecture">Open network →</button></div>
-            <p class="sr-only" id="ovNetSummary"></p>
-            <div class="chart chart-net" id="ovNetChart" role="img" aria-label="Crawl network preview"></div>
+          <div class="chart-card" id="sumHealthCard">
+            <div class="card-head"><div><h3>Health and audit change</h3><div class="hint">Health per audit, and issues opened vs resolved between audits.</div></div><span class="src" id="sumHealthSrc"></span></div>
+            <p class="sr-only" id="sumHealthSummary"></p>
+            <div class="chart chart-health" id="sumHealthChart" role="img" aria-label="Health score per audit and issues opened versus resolved"></div>
+            <div id="sumHealthNotes"></div>
           </div>
         </div>
         <div class="grid g-6-6">
           <div class="chart-card">
-            <div class="card-head"><div><h3>Top keywords</h3><div class="hint">Last 28 days vs the prior 28, by clicks.</div></div><button class="link-btn" type="button" data-goto="search">All keywords →</button></div>
-            <div id="ovKeywords" class="findings-table"></div>
+            <div class="card-head"><div><h3>What's broken, by area</h3><div class="hint">The latest audit by category. Click a row for its issues.</div></div><span class="src" id="sumAreasSrc"></span></div>
+            <div id="sumAreas"></div>
           </div>
           <div class="chart-card">
-            <div class="card-head"><div><h3>Top pages</h3><div class="hint">Last 28 days vs the prior 28, by clicks.</div></div><button class="link-btn" type="button" data-goto="search">All pages →</button></div>
-            <div id="ovPages" class="findings-table"></div>
+            <div class="card-head"><div><h3>Do this first</h3><div class="hint">The five highest-impact fixes. Click one for its findings.</div></div><button class="link-btn" type="button" data-goto="issues">All issues →</button></div>
+            <div id="sumActions"></div>
           </div>
         </div>
-        <div class="chart-card">
-          <div class="card-head"><div><h3>Jobs and data freshness</h3><div class="hint">What each data source last wrote to this property&#39;s database.</div></div></div>
-          <div id="ovJobs"></div>
+        <div class="grid g-4-4-4">
+          <div class="chart-card">
+            <div class="card-head"><div><h3>Changed since the last crawl</h3><div class="hint">The two latest crawls compared, field by field.</div></div></div>
+            <div id="sumDrift"></div>
+          </div>
+          <div class="chart-card">
+            <div class="card-head"><div><h3>Ranking mix</h3><div class="hint">Where impressions sit, now vs the prior 28 days.</div></div></div>
+            <div id="sumMix"></div>
+          </div>
+          <div class="chart-card">
+            <div class="card-head"><div><h3>Gaining and losing pages</h3><div class="hint">The biggest click changes.</div></div><button class="link-btn" type="button" data-goto="search">All pages →</button></div>
+            <div id="sumMovers"></div>
+          </div>
         </div>
-        <div class="chart-card" id="execCard">
-          <h3>Executive summary</h3>
-          <div class="hint">An at-a-glance read of performance, the biggest opportunities, and what to fix first - in plain language.</div>
-          <div id="execSummary"></div>
+        <div class="chart-card" id="sumAiCard">
+          <div class="card-head"><div><h3>AI search</h3><div class="hint">Readiness for AI agents, which AI crawlers robots.txt lets in, and AI Overview presence.</div></div></div>
+          <div id="sumAi"></div>
         </div>
-        <div class="exportbar" id="exportbar"></div>
+        <div class="sum-coverage" id="sumCoverage"></div>
+        <div class="chart-card" id="exportCard">
+          <div class="card-head"><div><h3>Data exports</h3><div class="hint">The tables behind this dashboard, as CSV.</div></div></div>
+          <div class="exportbar" id="exportbar"></div>
+        </div>
       </section>
 
       <section class="tab-panel" data-panel="issues" role="tabpanel">
@@ -91,6 +99,7 @@
           </div>
           <div id="issuesListView">
             <p class="sr-only" id="findingsSummary"></p>
+            <div id="issuesFocus"></div>
             <div class="sev-chips" id="sevChips" role="group" aria-label="Filter findings by severity"></div>
             <div class="issues-grid">
               <aside class="by-area" id="byArea" aria-label="Findings by area"></aside>
@@ -106,6 +115,10 @@
 
       <section class="tab-panel" data-panel="health" role="tabpanel">
         <div class="kpis" id="healthKpis"></div>
+        <div class="chart-card" id="healthMixCard">
+          <div class="card-head"><div><h3>Status mix</h3><div class="hint">Response classes across the crawl, and the share that's indexable, canonicalised, redirected or not found.</div></div><span class="src" id="healthMixSrc"></span></div>
+          <div id="healthMix"></div>
+        </div>
         <div class="chart-card" id="urlFlowCard">
           <div class="card-head"><div><h3>Canonical, redirect and not-found breakdown</h3><div class="hint">Internal URLs that redirect, 404, or point their canonical elsewhere, each with its most-linked example.</div></div></div>
           <div id="urlFlow" class="findings-table"></div>
@@ -223,6 +236,21 @@
 
       <section class="tab-panel" data-panel="search" role="tabpanel">
         <div class="metrics" id="metrics"></div>
+        <div class="chart-card">
+          <div class="card-head"><div><h3>Search performance over time</h3><div class="hint">Daily clicks, impressions and average position, one chart each on a shared timeline.</div></div><span class="src" id="spTrendSrc"></span></div>
+          <p class="sr-only" id="spTrendSummary"></p>
+          <div class="chart chart-multiples" id="spTrendChart" role="img" aria-label="Clicks, impressions and average position over time"></div>
+        </div>
+        <div class="grid g-6-6">
+          <div class="chart-card">
+            <div class="card-head"><div><h3>Top keywords</h3><div class="hint">Last 28 days vs the prior 28, by clicks.</div></div></div>
+            <div id="spKeywords" class="findings-table"></div>
+          </div>
+          <div class="chart-card">
+            <div class="card-head"><div><h3>Top pages</h3><div class="hint">Last 28 days vs the prior 28, by clicks.</div></div></div>
+            <div id="spPages" class="findings-table"></div>
+          </div>
+        </div>
         <div class="chart-card" id="brandedCard">
           <h3>Branded vs non-branded</h3>
           <div class="hint" id="brandedHint">How much of your search demand is people looking for you (brand) vs discovering you (non-brand) - last 28 days.</div>

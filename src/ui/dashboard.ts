@@ -4,7 +4,8 @@ import {
   attachSort, formatTrend, accordionItem, accordionSection, accordionControls,
   EChartWrapper, chartPalette, axisDefaults, tooltipDefaults, emptyState,
 } from './lib/index.js';
-import { renderOverview, renderHealthTop, renderSideFreshness, drawNetwork, pctChg, SEV_ORDER, SEV_LABEL, type OverviewCtx } from './overview.js';
+import { renderSearchTop, renderHealthTop, renderSideFreshness, drawNetwork, pctChg, SEV_ORDER, SEV_LABEL, type OverviewCtx } from './panels.js';
+import { renderSummary, type SummaryCtx } from './summary.js';
 
 // Local view types (avoid importing core, which pulls node-only deps into the bundle).
 interface Totals { clicks: number; impressions: number; ctr: number; position: number }
@@ -155,7 +156,7 @@ async function downloadCsv(filename: string, rows: unknown[][]): Promise<void> {
 
 let currentData: DashboardData | null = null;
 // The full Network force layout is expensive; when its tab is hidden at render time the draw is
-// deferred until the tab is first shown (the Overview preview still draws its 90-node subset).
+// deferred until the tab is first shown.
 let pendingNetworkDraw: (() => void) | null = null;
 const ARIA = { aria: { enabled: true } }; // ECharts-generated screen-reader description
 
@@ -296,74 +297,6 @@ function findingDetailHtml(f: any): string {
     `</div>`;
 }
 
-// Executive summary - synthesises the dashboard data into a plain-language read: a traffic verdict,
-// where the biggest opportunities are, what's urgent, and a prioritised "start here" action list.
-function renderExecSummary(data: DashboardData): void {
-  const el = $('execSummary'); if (!el) return;
-  const c = data.summary?.current, p = data.summary?.prior;
-  if (!c) { el.innerHTML = '<p class="muted">Run a sync to populate the summary.</p>'; return; }
-
-  const pct = (a: number, b: number): number => b ? Math.round((a - b) / b * 100) : (a > 0 ? 100 : 0);
-  const clkPct = pct(c.clicks, p?.clicks ?? 0);
-  const arrow = (n: number): string => n > 0 ? `${icons.triangleUp} ${n}%` : n < 0 ? `${icons.triangleDown} ${Math.abs(n)}%` : 'flat';
-  const dir = clkPct > 3 ? 'growing' : clkPct < -3 ? 'declining' : 'holding steady';
-  const posShift = p ? Math.round((p.position - c.position) * 10) / 10 : 0; // positive = improved (lower rank number)
-  const lead = `Organic search is <strong>${dir}</strong>: <strong>${fmt(c.clicks)}</strong> clicks and <strong>${fmt(c.impressions)}</strong> impressions in the last 28 days (clicks ${arrow(clkPct)} vs the prior 28), at an average position of <strong>${c.position.toFixed(1)}</strong>${posShift ? ` (${posShift > 0 ? 'improved' : 'slipped'} ${Math.abs(posShift)} spot${Math.abs(posShift) === 1 ? '' : 's'})` : ''}.`;
-
-  const fc = data.findings;
-  const critCount = fc?.byCheck?.filter((b: any) => b.severity === 'crit').reduce((s: number, b: any) => s + b.count, 0) ?? 0;
-  const recoverable = (data.quickWins ?? []).reduce((s, q) => s + (q.type === 'snippet' || q.type === 'striking' ? q.potential : 0), 0);
-  const clkCls = clkPct > 0 ? 'up' : clkPct < 0 ? 'down' : 'flat';
-
-  // LEFT (60%): the narrative + the prioritised action list.
-  const main: string[] = [`<p class="exec-lead">${lead}</p>`];
-  if (fc && fc.byCheck?.length) {
-    const bySev: Record<string, number> = {};
-    for (const b of fc.byCheck) bySev[b.severity] = (bySev[b.severity] ?? 0) + b.count;
-    const cnt = (id: string): number => fc.byCheck.filter((b: any) => b.check_id === id).reduce((s: number, b: any) => s + b.count, 0);
-
-    const ctr = cnt('ctr-below-expected');
-    const strike = data.strikingDistance?.length ?? cnt('striking-distance');
-    const cann = data.cannibalisation?.length ?? cnt('keyword-cannibalisation');
-    const opp: string[] = [];
-    if (ctr) opp.push(`<strong>${ctr}</strong> page${ctr > 1 ? 's' : ''} rank well but are under-clicked - a title/meta rewrite is the fastest lever`);
-    if (strike) opp.push(`<strong>${strike}</strong> quer${strike > 1 ? 'ies' : 'y'} sit in striking distance (page 2) and could reach page 1 with a small push`);
-    if (cann) opp.push(`<strong>${cann}</strong> quer${cann > 1 ? 'ies are' : 'y is'} cannibalised across multiple URLs`);
-    if (opp.length) main.push(`<p><span class="exec-tag">Opportunities</span> ${opp.join('; ')}.</p>`);
-
-    const crit = bySev['crit'] ?? 0, high = bySev['high'] ?? 0;
-    if (crit || high) {
-      const worst = fc.top?.find((f: any) => f.severity === 'crit') ?? fc.top?.[0];
-      const worstTitle = worst ? safeJson(worst.recommendation).title : '';
-      main.push(`<p><span class="exec-tag urgent">Fix first</span> ${crit ? `<strong>${crit}</strong> critical` : ''}${crit && high ? ' and ' : ''}${high ? `<strong>${high}</strong> high-severity` : ''} issue${(crit + high) > 1 ? 's' : ''} need attention${worstTitle ? ` - starting with “${esc(worstTitle)}”` : ''}.</p>`);
-    }
-
-    const seen = new Set<string>(); const actions: any[] = [];
-    for (const f of fc.top ?? []) { if (actions.length >= 4) break; if (seen.has(f.check_id)) continue; seen.add(f.check_id); actions.push(f); }
-    if (actions.length) {
-      const lis = actions.map(f => {
-        const rec = safeJson(f.recommendation), ev = safeJson(f.evidence);
-        const where = f.url_key ? esc(shortPath(f.url_key)) : (ev.query ? `“${esc(String(ev.query))}”` : 'site-wide');
-        const sz = (f.size ?? '').toString();
-        return `<li><span class="impact impact-${sz.toLowerCase() || 's'}">${esc(sz || '–')}</span> ${esc(rec.title || f.check_id)} <span class="exec-where">- ${where}</span></li>`;
-      }).join('');
-      main.push(`<div class="exec-actions"><div class="exec-actions-title">Start here - your highest-impact fixes</div><ol>${lis}</ol></div>`);
-    }
-  } else {
-    main.push('<p class="muted">Run <code>run_audit</code> to populate findings and the prioritised action list.</p>');
-  }
-
-  // RIGHT (40%): the scorecard - the three numbers an SEO weighs first, in one shaded box.
-  const stat = (num: string, label: string, color = ''): string =>
-    `<div class="es-stat"><div class="es-num"${color ? ` style="color:${color}"` : ''}>${num}</div><div class="es-lbl">${label}</div></div>`;
-  const score =
-    stat(`${fmt(c.clicks)} <span class="chg ${clkCls}">${arrow(clkPct)}</span>`, 'clicks · last 28d') +
-    stat(String(critCount), `critical issue${critCount === 1 ? '' : 's'}`, critCount ? 'var(--red)' : 'var(--green)') +
-    stat(fmt(recoverable), 'clicks recoverable');
-
-  el.innerHTML = `<div class="exec-grid"><div class="exec-main">${main.join('')}</div><aside class="exec-score">${score}</aside></div>`;
-}
-
 // Branded vs non-branded split - transparent brand match, surfaced so the user can verify it.
 function renderBrandedSplit(data: DashboardData): void {
   const el = $('brandedSplit'); if (!el) return;
@@ -450,6 +383,8 @@ function renderRecommendations(fc: DashboardData['findings']): void {
 
 // Findings: severity count-chips (click to filter) + a prioritised table with a
 // priority mini-bar and single-line fix text. Replaces the old non-actionable treemap.
+/** Set by renderFindings: scope the Issues list to an area and/or one check (used by the Summary). */
+let issuesFilter: ((f: { area?: string; check?: string }) => void) | null = null;
 function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof palette>): void {
   const chipsEl = $('sevChips'), tableEl = $('findingsTable');
   if (!fc || !fc.byCheck.length) {
@@ -463,6 +398,7 @@ function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof p
   const maxPrio = Math.max(...fc.top.map(f => f.priority), 0.0001);
   let active = 'all';
   let area = 'all';
+  let check: string | null = null; // set from the Summary's "Do this first"; cleared from the chip
 
   // Severity health bar - proportion of all findings by severity, at a glance
   const HB_CLASS: Record<string, string> = { crit: 'hb-crit', high: 'hb-high', med: 'hb-med', low: 'hb-low', info: 'hb-low' };
@@ -475,7 +411,14 @@ function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof p
   const drawTable = (): void => {
     // Full list, no pagination - the .grid-virtual class (content-visibility:auto)
     // keeps long lists cheap to render.
-    const list = fc.top.filter(f => (active === 'all' || f.severity === active) && (area === 'all' || f.category === area));
+    const list = fc.top.filter(f => (active === 'all' || f.severity === active) && (area === 'all' || f.category === area) && (!check || f.check_id === check));
+    const focus = document.getElementById('issuesFocus');
+    if (focus) {
+      const title = check ? (safeJson(fc.top.find(f => f.check_id === check)?.recommendation ?? '').title || check) : '';
+      focus.innerHTML = check ? `<span class="focus-chip">Showing one check: ${esc(title)} <button type="button" aria-label="Show all checks">×</button></span>` : '';
+      const btn = focus.querySelector('button');
+      if (btn) btn.onclick = (): void => { check = null; drawTable(); };
+    }
     const rows = list.map((f, i) => {
       const rec = safeJson(f.recommendation), traf = safeJson(f.traffic_at_risk), ev = safeJson(f.evidence);
       const path = f.url_key ? shortPath(f.url_key) : '-';
@@ -494,7 +437,7 @@ function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof p
     });
     tableEl.innerHTML = rows.length
       ? healthBar + `<table class="grid-virtual"><thead><tr><th>Sev</th><th>Issue</th><th>URL</th><th class="num">Clicks</th><th class="num">Impr</th><th>Impact</th><th>Fix</th></tr></thead><tbody>${rows.join('')}</tbody></table>`
-      : healthBar + '<p class="muted">No findings at this severity in the top results.</p>';
+      : healthBar + `<p class="muted">${check ? 'None of this check’s findings are among the 50 highest-priority findings listed here - switch to <strong>By category</strong> for every check.' : 'No findings at this severity in the top results.'}</p>`;
     tableEl.querySelectorAll<HTMLElement>('.fi-row').forEach(row => {
       const toggle = (): void => {
         const det = row.nextElementSibling as HTMLElement | null;
@@ -524,6 +467,7 @@ function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof p
       });
     };
     drawArea();
+    issuesFilter = (f): void => { area = f.area ?? 'all'; check = f.check ?? null; active = 'all'; drawArea(); drawTable(); };
   }
   filterGroup(
     chipsEl,
@@ -543,7 +487,16 @@ function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof p
 function render(data: DashboardData): void {
   $('loading').style.display = 'none';
   renderSideFreshness(data); // the sidebar lives outside #content: show job status even with no GSC data
-  if (data.empty || !data.summary) { $('empty').style.display = 'flex'; return; }
+  if (data.empty || !data.summary) {
+    // No Search Console yet. With a crawl or an audit the Summary still has plenty to say (health,
+    // issues, changes, AI readiness, coverage) and Issues & fixes works; the GSC-driven tabs are
+    // disabled with the reason, instead of rendering zeros.
+    const crawlSide = !!(data as any).coverage?.crawlPages || !!data.findings;
+    if (!crawlSide) { $('empty').style.display = 'flex'; return; }
+    renderCrawlOnly(data);
+    return;
+  }
+  document.querySelectorAll<HTMLButtonElement>('.tab-btn').forEach(b => { b.disabled = false; b.removeAttribute('title'); });
   $('content').style.display = 'block';
   $('site').textContent = data.siteUrl;
   const dr = data.dateRange;
@@ -573,14 +526,13 @@ function render(data: DashboardData): void {
   const axis = axisDefaults(col);
   const axisNum = axisDefaults(col, { numeric: true });
 
-  // Stitch-direction views: Overview (KPIs, small multiples, findings, crawl health, network
-  // preview, top keywords/pages, jobs), the crawl-health header, and the sidebar freshness block.
+  // The Summary (landing view), the crawl-health header + status mix, and the Search performance
+  // trend + top tables (the last two moved from the retired Overview).
   const octx: OverviewCtx = { wrap, col, shortPath, safeJson, redacted: document.documentElement.classList.contains('redacted') };
-  renderOverview(data, octx);
+  renderSummary(data, summaryCtx(col));
+  renderSearchTop(data, octx);
   renderHealthTop(data, octx);
 
-  // Executive summary - plain-language read of performance + the prioritised "start here" list
-  renderExecSummary(data);
   renderBrandedSplit(data);
   // Audit findings - severity filter chips + prioritised table, then the categorised report
   renderFindings(data.findings, col);
@@ -1251,9 +1203,51 @@ function render(data: DashboardData): void {
   renderResearch(data);
   renderTrapped(data);
   setupTabs();
-  // Deep-link a tab (?tab=links) so a headless capture / shared link opens that panel on load.
-  const wantTab = new URLSearchParams(location.search).get('tab');
-  if (wantTab) (document.querySelector(`.tab-btn[data-panel="${wantTab}"]`) as HTMLButtonElement | null)?.click();
+  openDeepLinkedTab();
+}
+
+// Deep-link a tab (?tab=links) so a headless capture / shared link opens that panel on load.
+// ?tab=overview (the retired landing tab) opens the Summary.
+function openDeepLinkedTab(): void {
+  const raw = new URLSearchParams(location.search).get('tab');
+  const wantTab = raw === 'overview' ? 'summary' : raw;
+  if (wantTab) (document.querySelector(`.tab-btn[data-panel="${wantTab}"]:not([disabled])`) as HTMLButtonElement | null)?.click();
+}
+
+function summaryCtx(col: ReturnType<typeof palette>): SummaryCtx {
+  return {
+    wrap, col, shortPath, safeJson, catLabel: CAT_LABEL,
+    redacted: document.documentElement.classList.contains('redacted'),
+    gotoIssues: (f): void => {
+      (document.querySelector('.tab-btn[data-panel="issues"]') as HTMLButtonElement | null)?.click();
+      const list = document.getElementById('issuesListView'), grouped = document.getElementById('issuesGroupedView');
+      if (list && grouped) { list.style.display = 'block'; grouped.style.display = 'none'; }
+      document.querySelectorAll('#issuesToggle .seg-btn').forEach(b => b.classList.toggle('active', (b as HTMLElement).dataset.view === 'list'));
+      issuesFilter?.(f);
+      document.getElementById('findingsCard')?.scrollIntoView({ block: 'start' });
+    },
+  };
+}
+
+/** No Search Console data, but a crawl / audit exists: the Summary and Issues, other tabs disabled. */
+function renderCrawlOnly(data: DashboardData): void {
+  $('empty').style.display = 'none';
+  $('content').style.display = 'block';
+  $('site').textContent = data.siteUrl;
+  $('range').textContent = 'no Search Console data';
+  const col = palette();
+  renderSummary(data, summaryCtx(col));
+  renderFindings(data.findings, col);
+  renderRecommendations(data.findings);
+  buildExportBar(data);
+  const usable = new Set(['summary', 'issues']);
+  document.querySelectorAll<HTMLButtonElement>('.tab-btn').forEach(b => {
+    const on = usable.has(b.dataset.panel ?? '');
+    b.disabled = !on;
+    if (on) b.removeAttribute('title'); else b.title = 'Needs Search Console data - run sync_gsc';
+  });
+  setupTabs();
+  openDeepLinkedTab();
 }
 
 // Table sorting lives in the display library (lib/data-grid.ts: attachSort).
@@ -1268,7 +1262,7 @@ function setupTabs(): void {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
       document.querySelectorAll<HTMLElement>('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === panel));
       const title = document.getElementById('pageTitle');
-      if (title) title.textContent = btn.textContent?.trim() || 'Overview';
+      if (title) title.textContent = btn.textContent?.trim() || 'Summary';
       // Scroll to the top only for a real click: programmatic .click() (deep-link restore on every
       // re-render, [data-goto] cross-links) must not lose the reader's place.
       if (ev.isTrusted) window.scrollTo({ top: 0 });
