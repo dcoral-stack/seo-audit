@@ -1,6 +1,6 @@
 # The dashboard and reports
 
-Two ways to look at everything at once: the interactive dashboard rendered right in the chat (*"show me the dashboard for mysite.com"*), and the same thing exported as a single shareable HTML file (*"export the report"*). Both are built from your synced data, both are organised into eight tabs - with a report hub on the Overview to jump straight to any of them - and every number in them traces back to a datapoint in your database.
+Two ways to look at everything at once: the interactive dashboard rendered right in the chat (*"show me the dashboard for mysite.com"*), and the same thing exported as a single shareable HTML file (*"export the report"*). Both are built from your synced data, both are organised into eight tabs - with a sidebar to jump straight to any of them - and every number in them traces back to a datapoint in your database.
 
 The dashboard uses a neutral light or dark theme: it follows the host's theme in chat and your system preference in the export, and there's a light/dark toggle in the header if you want to override it. Numbers are tabular and right-aligned throughout, missing values render as a dash rather than a zero, and detail lives in the tooltips rather than on the canvas.
 
@@ -8,21 +8,21 @@ Run `refresh_property` first, and `run_audit` if you want the findings populated
 
 ## Overview
 
-![The Overview tab - executive summary, critical issues, recoverable clicks](../assets/dashboard-overview.png)
+![The Overview tab - KPI strip, search performance over time, findings by priority, crawl health and the site network](../assets/dashboard-overview.png)
 
-A **Site Health Score** (0-100, banded Weak / Fair / Good / Excellent) headlines the tab - the share of crawled pages with no critical or high finding, defined in plain sight rather than as a black box. Below it, the executive summary: clicks and impressions for the last 28 days against the prior period, the headline finding counts, and the top issues by impact. It's the tab you'd screenshot for a stakeholder - the state of the property in one screen. At the top sits a **report hub** - a card per report with a live stat on it (findings count, pages crawled, clicks) - so you can jump straight to any tab.
+A **Site Health Score** (0-100, banded Weak / Fair / Good / Excellent) sits in the KPI strip across the top, next to clicks, impressions, CTR and average position - the share of crawled pages with no critical or high finding, defined in plain sight rather than as a black box. Further down, the executive summary: clicks and impressions for the last 28 days against the prior period, the headline finding counts, and the top issues by impact. It's the tab you'd screenshot for a stakeholder - the state of the property in one screen. Between the KPI strip and the summary sit search performance over time, findings by priority, crawl health, a site-network preview, top keywords and pages, and a jobs and data-freshness panel; the sidebar takes you to any tab.
 
 ## Issues & fixes
 
-![The Issues & fixes tab - prioritised findings with impact and size](../assets/tab-issues.png)
+![The Issues & fixes tab - prioritised findings with impact and size, filterable by area](../assets/tab-issues.png)
 
 The audit findings, two ways: a **prioritised list** (the same order `run_audit` returns - expected clicks per developer-hour) and a **by-category view with fixes**, where each check groups its affected pages with the remediation attached.
 
 Each finding shows an **impact score (0-100, normalised to the run's biggest finding)** and a **size badge (S / M / L / XL)** rather than a raw clicks forecast. That's deliberate: the underlying model estimates recoverable clicks, but presenting a precise number would read as a promise, and it isn't one. Real measured traffic stays real; estimates stay relative.
 
-## Site health
+## Crawl health
 
-![The Site health tab - classic crawl diagnostics as stat bars](../assets/site-health.png)
+![The Crawl health tab - the canonical, redirect and not-found breakdown and classic crawl diagnostics as stat bars](../assets/crawl-health.png)
 
 If you grew up on desktop crawlers, this tab is home. The classic crawl diagnostics as clean stat bars: **response codes**, **indexability reasons** (with the *why* for every non-indexable URL), **response-time** and **HTML-size buckets** (measured on estimated transfer, not raw bytes), **crawl depth**, and title/meta issue counts. Below the bars, the lists: server errors (5xx), pages over a second, and the heaviest images your pages load - sampled from response headers during the crawl, so the image bytes are never downloaded.
 
@@ -30,7 +30,7 @@ It also carries the thematic reports a dedicated crawler would, each appearing w
 
 ## Opportunities
 
-![The Opportunities tab - quick wins, decay and cannibalisation](../assets/tab-opps.png)
+![The Opportunities tab - the quick-wins matrix, the biggest quick wins and content decay](../assets/tab-opps.png)
 
 Where the growth work lives:
 
@@ -58,13 +58,13 @@ The Search Console view you wish Google shipped - and because the history lives 
 
 Tables export to CSV where you'd want them to.
 
-## Architecture
+## Network
 
-![The Architecture tab - equity vs reality](../assets/tab-arch.png)
+![The Network tab - equity vs reality, and the top linked pages with their status](../assets/tab-network.png)
 
 The structural story - where your internal link equity goes versus where your traffic comes from:
 
-- **Site structure map** - a force-directed graph of your internal link skeleton: the top pages by internal PageRank and the in-content links between them. Node size is internal PageRank; colour is health (green indexable, amber non-indexable, red broken or redirected), so a cluster of amber or red high up is a structural problem you can see at a glance. Drag to explore, scroll to zoom, click a node to open the page.
+- **Site network** - a force-directed graph of your internal link skeleton: the top pages by internal PageRank and the in-content links between them. Node size is internal PageRank; colour is health (green indexable, amber non-indexable, red broken or redirected), so a cluster of amber or red high up is a structural problem you can see at a glance. Drag to explore, scroll to zoom, click a node to open the page.
 - **Equity flow vs traffic by template** - each template's share of internal PageRank against its share of impressions. A template hoarding equity while earning nothing is a structural decision worth revisiting.
 - **Equity vs reality, every URL** - the scatter of internal PageRank against impressions. The corners are the findings: high equity + no traffic (wasted authority), high traffic + no equity (underlinked winners, and the pages a redesign would quietly kill).
 - **Top linked pages and their status** - your most internally linked URLs with their live HTTP status. A non-200 high on this list is an equity leak in plain sight.
