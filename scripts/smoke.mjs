@@ -268,6 +268,110 @@ ok(Array.isArray(dash2?.freshness?.sources) && dash2.freshness.sources.length ==
   adb4.close();
 }
 
+// ── Audit history (summary page, slice 2): migration, per-run health, backfill, deltas ──────────
+{
+  const Database = (await import('better-sqlite3')).default;
+  const { auditHistory, backfillAuditHealth, computeHealth } = await import('../dist/audit/history.js');
+
+  // a) Migration on an OLD-shape DB: audit_runs without status/health/check_ids upgrades in place.
+  const oldPath = dbPathFor(dataDir, 'sc-domain:oldshape.test');
+  const raw = new Database(oldPath);
+  raw.exec(`CREATE TABLE audit_runs (run_id TEXT PRIMARY KEY, crawl_id TEXT, scope TEXT, gsc_window_start TEXT, gsc_window_end TEXT,
+            integrity_ok INTEGER, started_at TEXT, finished_at TEXT, finding_count INTEGER DEFAULT 0);
+            INSERT INTO audit_runs (run_id, scope, started_at, finished_at, finding_count) VALUES ('legacy','core','2026-01-01 00:00:00','2026-01-01 00:00:05',3);`);
+  raw.close();
+  const NEW_COLS = ['health_score', 'health_error_pages', 'health_total_pages', 'health_basis', 'check_ids', 'server_version'];
+  let a1 = new AuditDatabase(oldPath);
+  const colsNow = new Set(a1.db.prepare(`PRAGMA table_info(audit_runs)`).all().map(c => c.name));
+  a1.close();
+  let threwAgain = null;
+  try { a1 = new AuditDatabase(oldPath); a1.close(); } catch (e) { threwAgain = e.message; }
+  const legacyRaw = new Database(oldPath, { readonly: true });
+  const legacy = legacyRaw.prepare(`SELECT finding_count, health_score FROM audit_runs WHERE run_id='legacy'`).get();
+  legacyRaw.close();
+  ok(NEW_COLS.every(c => colsNow.has(c)) && !threwAgain && legacy?.finding_count === 3 && legacy.health_score === null,
+    `old-shape audit_runs upgrades in place, idempotently, keeping its rows (missing: ${NEW_COLS.filter(c => !colsNow.has(c)).join(',') || 'none'}${threwAgain ? `; reopen threw ${threwAgain}` : ''})`);
+
+  // b) Health written on a new audit: the dashboard's formula, plus crawl + check set + version.
+  //    (Section 5 added a page since the first audit, so re-audit and compare on the fresh run.)
+  const r1 = runAudit(dataDir, site, { scope: 'full', includeJudgement: true });
+  const h1 = new AuditDatabase(dbPath);
+  const row = h1.db.prepare(`SELECT * FROM audit_runs WHERE run_id=?`).get(r1.runId);
+  const live = computeHealth(h1.db, r1.runId);
+  h1.close();
+  const ids = row?.check_ids ? JSON.parse(row.check_ids) : [];
+  ok(row?.health_basis === 'audit' && row.health_score === live?.score && row.health_total_pages === live?.totalPages && row.crawl_id === 'c1'
+    && Array.isArray(ids) && ids.includes('missing-title') && typeof row.server_version === 'string',
+    `runAudit stores health ${row?.health_score} (${row?.health_error_pages}/${row?.health_total_pages}), crawl ${row?.crawl_id}, ${ids.length} check ids, v${row?.server_version}`);
+  const dashNow = getDashboardData(dataDir, site);
+  ok(dashNow.healthScore?.score === row?.health_score, `dashboard tile and stored run share one formula (${dashNow.healthScore?.score} = ${row?.health_score})`);
+
+  // c) Deltas between real runs: an identical re-run is comparable (nothing opened or resolved);
+  //    a run with a different check set, and one with a different scope, are skipped with reasons.
+  const r2 = runAudit(dataDir, site, { scope: 'full', includeJudgement: true });
+  const r3 = runAudit(dataDir, site, { scope: 'full', includeJudgement: false });
+  const r4 = runAudit(dataDir, site, { scope: 'core', includeJudgement: false });
+  const d = getDashboardData(dataDir, site).auditDeltas ?? [];
+  const at = (id) => d.find(x => x.runId === id);
+  ok(at(r2.runId) && !at(r2.runId).skipped && at(r2.runId).opened === 0 && at(r2.runId).resolved === 0 && at(r2.runId).carried > 0 && at(r2.runId).prevRunId === r1.runId,
+    `identical re-run is a comparable pair (${JSON.stringify(at(r2.runId))})`);
+  ok(at(r3.runId)?.skipped === 'check-set-changed' && at(r3.runId).opened === null, `changed check set is skipped (${at(r3.runId)?.skipped})`);
+  ok(at(r4.runId)?.skipped === 'different-scope', `different scope is skipped (${at(r4.runId)?.skipped})`);
+
+  // d) Arithmetic over synthetic runs + the backfill rules, on a crawl-only property (no GSC).
+  const hs = 'sc-domain:history.test';
+  const ha = new AuditDatabase(dbPathFor(dataDir, hs));
+  const hd = ha.db;
+  const crawl = (id, s, f) => hd.prepare(`INSERT INTO crawl_metadata (crawl_id,base_url,base_domain,status,started_at,finished_at) VALUES (?,?,?,'completed',?,?)`).run(id, 'https://history.test', 'history.test', s, f);
+  const snap = (cid, urls) => urls.forEach(u => hd.prepare(`INSERT INTO page_snapshots (crawl_id,url_key,captured_at,status_code) VALUES (?,?,?,200)`).run(cid, u, '2026-05-01 00:00:00'));
+  const CK = JSON.stringify(['a', 'b']);
+  const run = (id, started, o = {}) => hd.prepare(`INSERT INTO audit_runs (run_id,scope,started_at,finished_at,status,check_ids) VALUES (?,?,?,?,?,?)`)
+    .run(id, 'core', started, started, o.status === undefined ? 'completed' : o.status, o.checks === undefined ? CK : o.checks);
+  const fnd = (rid, check, url, sev = 'high') => hd.prepare(`INSERT INTO findings (run_id,check_id,severity,url_key) VALUES (?,?,?,?)`).run(rid, check, sev, url);
+  // Crawl k1 (snapshotted, 4 pages), then k2 (never snapshotted). Legacy runs: no status, no check set.
+  crawl('k1', '2026-05-01T09:00:00.000Z', '2026-05-01T09:05:00.000Z'); snap('k1', ['u1', 'u2', 'u3', 'u4']);
+  crawl('k2', '2026-05-03T09:00:00.000Z', '2026-05-03T09:05:00.000Z');
+  run('L1', '2026-05-02 10:00:00', { status: null, checks: null }); fnd('L1', 'a', 'u1'); fnd('L1', 'b', 'u2', 'low');
+  run('L2', '2026-05-04 10:00:00', { status: null, checks: null });
+  // Comparable runs (same scope + check set), with a failed run between two of them.
+  run('S1', '2026-05-05 10:00:00'); fnd('S1', 'a', 'u1'); fnd('S1', 'a', 'u2'); fnd('S1', 'b', null);
+  run('S2', '2026-05-06 10:00:00'); fnd('S2', 'a', 'u2'); fnd('S2', 'a', 'u3'); fnd('S2', 'b', null); fnd('S2', 'b', null);
+  run('F1', '2026-05-07 10:00:00', { status: 'failed' });
+  run('S3', '2026-05-08 10:00:00'); fnd('S3', 'a', 'u3');
+  run('S4', '2026-05-09 10:00:00', { checks: JSON.stringify(['a', 'b', 'c']) });
+  ha.close();
+
+  const emptyH = getDashboardData(dataDir, hs); // no GSC → the empty payload, but the history still ships
+  const hh = new Map((emptyH.healthHistory ?? []).map(p => [p.runId, p]));
+  ok(hh.get('L1')?.score === 75 && hh.get('L1').errorPages === 1 && hh.get('L1').totalPages === 4 && hh.get('L1').basis === 'snapshot:k1',
+    `backfill rebuilds a past run from its crawl's snapshots (${JSON.stringify(hh.get('L1'))})`);
+  ok(hh.get('L2')?.score === null && hh.get('L2').basis === 'none:no-snapshot', `backfill leaves NULL when the crawl has no snapshots (${JSON.stringify(hh.get('L2'))})`);
+  ok(!hh.has('F1'), 'failed runs are not in the health history');
+  const hdl = emptyH.auditDeltas ?? [];
+  const dx = (id) => hdl.find(x => x.runId === id);
+  ok(dx('L2')?.skipped === 'check-set-unknown' && dx('S1')?.skipped === 'check-set-unknown', `runs without a recorded check set are skipped (${dx('L2')?.skipped}, ${dx('S1')?.skipped})`);
+  // S1 {a|u1, a|u2, b|site} → S2 {a|u2, a|u3, b|site}: opened 1 (a|u3), resolved 1 (a|u1), carried 2.
+  ok(dx('S2')?.opened === 1 && dx('S2').resolved === 1 && dx('S2').carried === 2, `S1→S2 opened/resolved/carried 1/1/2 (${JSON.stringify(dx('S2'))})`);
+  ok(dx('F1')?.skipped === 'run-failed', `failed run carries a skipped reason (${dx('F1')?.skipped})`);
+  ok(dx('S3')?.prevRunId === 'S2' && dx('S3').opened === 0 && dx('S3').resolved === 2 && dx('S3').carried === 1, `S2→S3 steps over the failed run: 0/2/1 (${JSON.stringify(dx('S3'))})`);
+  ok(dx('S4')?.skipped === 'check-set-changed', `S3→S4 check set changed (${dx('S4')?.skipped})`);
+  const ha2 = new AuditDatabase(dbPathFor(dataDir, hs));
+  const again = backfillAuditHealth(ha2.db);
+  const hist2 = auditHistory(ha2.db);
+  ha2.close();
+  ok(again.visited === 0 && hist2.healthHistory.length === 6, `backfill runs once (second pass visited ${again.visited}, ${hist2.healthHistory.length} points)`);
+
+  // e) Two crawls overlapping before a run: the page set is ambiguous → NULL, never a guess.
+  const aa = new AuditDatabase(dbPathFor(dataDir, 'sc-domain:ambig.test'));
+  aa.db.prepare(`INSERT INTO crawl_metadata (crawl_id,base_url,base_domain,status,started_at,finished_at) VALUES ('x1','https://a.test','a.test','completed','2026-05-01T09:00:00.000Z','2026-05-01T09:05:00.000Z'),('x2','https://a.test','a.test','completed','2026-05-01T09:00:00.005Z','2026-05-01T09:04:59.000Z')`).run();
+  aa.db.prepare(`INSERT INTO page_snapshots (crawl_id,url_key,captured_at) VALUES ('x1','u1','2026-05-01'),('x2','u1','2026-05-01')`).run();
+  aa.db.prepare(`INSERT INTO audit_runs (run_id,scope,started_at,finished_at) VALUES ('A1','core','2026-05-01 09:06:00','2026-05-01 09:06:01')`).run();
+  backfillAuditHealth(aa.db);
+  const amb = aa.db.prepare(`SELECT health_score, health_basis FROM audit_runs WHERE run_id='A1'`).get();
+  aa.close();
+  ok(amb.health_score === null && amb.health_basis === 'none:ambiguous-crawl', `overlapping crawls leave the run NULL (${amb.health_basis})`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 rmSync(dataDir, { recursive: true, force: true });
 if (fail) process.exitCode = 1;
