@@ -99,21 +99,50 @@ const HOST_NOTE: Record<string, string> = {
 };
 const KIND_LABEL: Record<string, string> = { 'host-home-scheme': 'homepage, other scheme', 'host-home-host': 'homepage, other host (www/apex)', 'host-deep': 'deep URL, other scheme and/or host' };
 
+/** What a failing twin did, in a few words, for the one-line summary. */
+const HOST_SHORT: Record<string, string> = {
+  'serves-200': 'answers 200', 'temporary-redirect': 'temporary redirect', 'redirect-chain': 'redirect chain', 'wrong-target': 'redirects elsewhere',
+};
+
+/**
+ * ONE finding per page (the homepage, the deep URL), listing every twin of it that failed: the
+ * homepage's scheme twin and host twin used to be two rows with the same title on the same URL,
+ * which read as a duplicate. `summary` names them all ("2 of 2 variants not redirected in one 301:
+ * http://..., https://www..."); `twins` holds each one's status, redirects and verdict.
+ */
 function hostVariantSplit(c: CheckContext): RawFinding[] {
   const equity = equityLookup(c);
-  return siteProbes(c, 'host-%')
-    .filter(p => (HOST_FAIL as string[]).includes(p.verdict))
-    .map(p => {
-      const k = keyOf(c, p.variant_of);
-      const eq = k ? equity(k) : null;
+  const byPage = new Map<string, any[]>();
+  for (const p of siteProbes(c, 'host-%')) {
+    const key = String(p.variant_of ?? '');
+    (byPage.get(key) ?? byPage.set(key, []).get(key)!).push(p);
+  }
+  const out: { eq: Equity | null; f: RawFinding }[] = [];
+  for (const [canonicalUrl, probes] of byPage) {
+    const failing = probes.filter(p => (HOST_FAIL as string[]).includes(p.verdict));
+    if (!failing.length) continue;
+    const answered = probes.filter(p => p.verdict !== 'unknown').length;
+    const k = keyOf(c, canonicalUrl || null);
+    const eq = k ? equity(k) : null;
+    const twins = failing.map(p => {
       const chain = parseChain(p.redirect_chain);
-      return { eq, f: { urlKey: k, evidence: {
-        variant: p.url, tests: KIND_LABEL[p.variant_type] ?? p.variant_type, canonicalUrl: p.variant_of, verdict: p.verdict,
-        firstStatus: p.status, redirects: chain.map(h => `${h.status} ${h.location}`), hops: chain.length, finalUrl: p.final_url, finalStatus: p.final_status,
-        canonical: p.canonical, crawlId: p.crawl_id, probedAt: p.probed_at, ...(eq ? { equity: eq, rule: EQUITY_RULE } : {}),
-        note: HOST_NOTE[p.verdict],
-      } } };
-    })
+      return {
+        variant: p.url, tests: KIND_LABEL[p.variant_type] ?? p.variant_type, verdict: p.verdict, firstStatus: p.status,
+        redirects: chain.map(h => `${h.status} ${h.location}`), hops: chain.length, finalUrl: p.final_url, finalStatus: p.final_status,
+        canonical: p.canonical, note: HOST_NOTE[p.verdict],
+      };
+    });
+    const list = twins.map(t => `${t.variant} (${HOST_SHORT[t.verdict] ?? t.verdict})`).join(', ');
+    out.push({ eq, f: { urlKey: k, evidence: {
+      summary: `${failing.length} of ${answered} ${answered === 1 ? 'variant' : 'variants'} not redirected in one 301: ${list}`,
+      canonicalUrl, failing: failing.length, probed: answered,
+      verdicts: [...new Set(twins.map(t => t.verdict))].join(', '),
+      twins, crawlId: failing[0].crawl_id, probedAt: failing[0].probed_at,
+      ...(eq ? { equity: eq, rule: EQUITY_RULE } : {}),
+      note: twins.map(t => `${t.variant} ${t.note}`).join('; '),
+    } } });
+  }
+  return out
     .sort((a, b) => (b.eq ? equityWeight(b.eq) : 0) - (a.eq ? equityWeight(a.eq) : 0))
     .map(x => x.f);
 }
@@ -135,7 +164,7 @@ export const PROBE_CHECKS: CheckDef[] = [
   {
     id: 'host-variant-split', category: 'indexation', severity: 'high', labels: ['D'], certainty: 1, effortBase: 2, fixType: 'global',
     title: 'http/https or www/apex variant not redirected in one 301',
-    fix: 'Every http:// and www/apex twin of a URL should answer ONE permanent redirect (301 or 308) to the same path on the canonical scheme and host. A twin that answers 200 splits links and crawl budget between two copies of the site; a 302/307 or a chain slows consolidation. Set the redirect at the CDN or server for the whole host, keeping the path and query. Evidence: at the end of every crawl, the scheme and host twins of the homepage and of the most-linked deep page are requested (at most three requests). A twin that does not resolve or times out is unknown, not a finding.',
+    fix: 'Every http:// and www/apex twin of a URL should answer ONE permanent redirect (301 or 308) to the same path on the canonical scheme and host. A twin that answers 200 splits links and crawl budget between two copies of the site; a 302/307 or a chain slows consolidation. Set the redirect at the CDN or server for the whole host, keeping the path and query. Evidence: at the end of every crawl, the scheme and host twins of the homepage and of the most-linked deep page are requested (at most three requests); one finding per page lists every twin of it that failed. A twin that does not resolve or times out is unknown, not a finding.',
     run: hostVariantSplit, collected: hostVariantNote,
   },
 ];
