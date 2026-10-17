@@ -83,7 +83,7 @@ export function buildJobDeps(dataDir: string, env: NodeJS.ProcessEnv = process.e
   // Optional keys read placeholder-safe (#58), the same helpers as the MCP server.
   const dfsCreds = dataForSeoCredentials(env);
   const dfs = dfsCreds
-    ? new DataForSeoClient(dfsCreds.user, dfsCreds.pass, path.join(dataDir, 'dataforseo-cache.db'), dfsCacheDaysFromEnv())
+    ? new DataForSeoClient(dfsCreds.user, dfsCreds.pass, path.join(dataDir, 'dataforseo-cache.db'), dfsCacheDaysFromEnv(env))
     : null;
   const rankTracker = dfs ? new RankTracker(dfs, dataDir) : null;
   const majesticKey = optionalSecret('MAJESTIC_API_KEY', env);
