@@ -47,7 +47,7 @@ Real-user Core Web Vitals from the Chrome UX Report API: p75 and the good / need
 > Get Core Web Vitals field data for these three URLs
 
 ### `check_sync_status` / `check_crawl_status`
-Poll any job by id, or list recent jobs - the two names are the same tool. A failed job's reason is in the reply text, with a repair pointer when it's database corruption. Every job-starting tool also returns its `jobId` as JSON in the text, so clients that only read text can poll it. A running crawl reports its **stage** (`fetching`, then `writing-links`, `image-weights`, `resource-headers`, `link-graph`, `revalidation-probe`, `snapshot`, `external-links`), pages crawled against `maxPages`, the queue, pages/sec and an ETA for the fetch stage, so a 20-40 minute crawl never looks stalled. The ETA covers fetching only; the post-crawl stages are named instead of timed. When the host rate limits the crawl, or it is a Shopify store, the line says so and gives the current concurrency, the URLs retried and any not fetched (`progress.rateLimited` / `result.rateLimited`: `events`, `currentConcurrency`, `minConcurrency`, `maxConcurrency`, `retried`, `unfetched`). Poll every 60-120 s.
+Poll any job by id, or list recent jobs - the two names are the same tool. A failed job's reason is in the reply text, with a repair pointer when it's database corruption. Every job-starting tool also returns its `jobId` as JSON in the text, so clients that only read text can poll it. A running crawl reports its **stage** (`fetching`, then `writing-links`, `image-weights`, `resource-headers`, `link-graph`, `revalidation-probe`, `snapshot`, `site-probes`, `external-links`), pages crawled against `maxPages`, the queue, pages/sec and an ETA for the fetch stage, so a 20-40 minute crawl never looks stalled. The ETA covers fetching only; the post-crawl stages are named instead of timed. When the host rate limits the crawl, or it is a Shopify store, the line says so and gives the current concurrency, the URLs retried and any not fetched (`progress.rateLimited` / `result.rateLimited`: `events`, `currentConcurrency`, `minConcurrency`, `maxConcurrency`, `retried`, `unfetched`). Poll every 60-120 s.
 
 Jobs are also recorded in `_jobs.db` in the data directory, so a finished job's result can still be read after the server restarts. A job whose server process exited before it finished reads as `interrupted` rather than vanishing; under the Docker MCP gateway that usually means the container was removed between calls (see [Docker and the Docker MCP gateway](../README.md#docker-and-the-docker-mcp-gateway)). A completed sync, crawl, inspection or refresh starts the local dashboard server and gives you the link to the updated dashboard.
 > Check the crawl status
@@ -74,7 +74,7 @@ One named check, with every affected URL and its full evidence. The drill-down a
 > Run the keyword-cannibalisation check on mysite.com with evidence
 
 ### `list_checks`
-The whole check catalogue - all 137, with categories and labels. The same list, annotated, is [checks.md](checks.md).
+The whole check catalogue - all 143, with categories and labels. The same list, annotated, is [checks.md](checks.md).
 > What does the audit check for?
 
 ### `list_templates`
@@ -125,7 +125,7 @@ Semantic near-duplicate detection, run locally. A small sentence-embedding model
 > Find near-duplicate pages on mysite.com
 
 ### `render_pages`
-The *Response vs Render* check: render a bounded, sampled set of pages in headless Chromium and diff the rendered DOM against the raw HTML the crawler fetched, surfacing content and internal links that exist **only** after JavaScript (what a first-pass crawl, and Google before it renders, can miss) as `content-only-in-rendered-dom`. Opt-in: it needs the optional browser (`npm i playwright && npx playwright install chromium`), runs as a separate async job (never part of the normal crawl - poll `check_crawl_status`), and degrades with a clear install hint when the browser isn't present. `limit` caps pages (default 10, likeliest JS-dependent first); the HTTP audit is unaffected either way.
+The *Response vs Render* check: render a bounded, sampled set of pages in headless Chromium and diff the rendered DOM against the raw HTML the crawler fetched, surfacing content and internal links that exist **only** after JavaScript (what a first-pass crawl, and Google before it renders, can miss) as `content-only-in-rendered-dom`, and what JavaScript changes: the canonical (`canonical-changed-by-js`), the title (`title-changed-by-js`), noindex in either direction (`noindex-changed-by-js`), and main content it removes (`hydration-content-loss`). Each row records both canonicals, both robots meta values, the X-Robots-Tag header, main-content words on both sides and the raw status. Opt-in: it needs the optional browser (`npm i playwright && npx playwright install chromium`), runs as a separate async job (never part of the normal crawl - poll `check_crawl_status`), and degrades with a clear install hint when the browser isn't present. `limit` caps pages (default 10, likeliest JS-dependent first); the HTTP audit is unaffected either way.
 > Render the top pages on mysite.com and show what only appears after JavaScript
 
 ### `check_agent_readiness`

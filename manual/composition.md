@@ -29,7 +29,7 @@ Grain is the thing that trips people up when composing - what one row means, per
 | `external_link_status` | one outbound link target | Live status, redirect chain and a verdict (ok / redirected / broken / unverifiable), cached 7 days. |
 | `page_resources` / `resource_assets` | one subresource on one page / one CSS, JS or font file | What each page loads (type, first or third party, head or body, async/defer/preload); the header-only pass (`headResources:true`) adds status, size and caching per file. |
 | `image_assets` | one image | Size and status from the response headers, and how many pages use it. |
-| `probes` | one URL fetched by `probe_urls` with `persist:true` | Status, redirect chain, canonical, robots, content hash and cache headers. |
+| `probes` | one URL fetched by `probe_urls` with `persist:true`, or by the crawl's own site probes (`source = 'site-probe'`, the latest crawl's only) | Status, redirect chain, canonical, robots, content hash and cache headers. Site probes also carry `crawl_id`, `variant_type` (`soft404-root`, `soft404-section`, `host-home-scheme`, `host-home-host`, `host-deep`) and a `verdict`. |
 | `url_inspection` | one inspected URL | Google's own view: coverage state, Google's canonical versus yours, last crawl time, rich results. Sampled from your top pages by clicks. |
 | `sitemap_urls` | one sitemap URL | With its declared lastmod, captured at crawl time. |
 | `rank_history` | one month, for the property's own domain | DataForSEO rank distribution plus estimated traffic value (from `track_ranks`). |

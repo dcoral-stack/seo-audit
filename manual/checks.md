@@ -1,6 +1,6 @@
 # The check registry
 
-All 137 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
+All 143 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
 
 ## Reading the labels
 
@@ -12,7 +12,7 @@ A check can carry more than one label - `noindex-with-traffic` is D+G because th
 
 Every finding is priced the same way: priority = (traffic at stake × expected yield × certainty) / effort hours. So the list you get back is ordered by expected clicks per developer-hour, not by how alarming the check sounds.
 
-Zero findings from a check normally means it passed. The exception is a check whose source table is empty because the data was never collected (the asset checks read `page_resources`, `resource_assets` and `image_assets`): `run_audit` lists those under **Not collected** with the step that collects the data, so an empty table never reads as a clean bill of health.
+Zero findings from a check normally means it passed. The exception is a check whose source table is empty because the data was never collected (the asset checks read `page_resources`, `resource_assets` and `image_assets`; `soft-404-handling` and `host-variant-split` read the crawl's site probes; the four JS-render divergence checks read `render_audit`, filled by `render_pages`): `run_audit` lists those under **Not collected** with the step that collects the data, so an empty table never reads as a clean bill of health.
 
 ## Crawlability (21)
 
@@ -40,7 +40,7 @@ Zero findings from a check normally means it passed. The exception is a check wh
 | `discover-crawl-waste` | D | Too much of the crawl going to redirects and non-indexable URLs (site-level - Discover leans on fast discovery) | Aim for almost everything Google crawls to be an indexable 200 - repoint links off redirects/404s and prune faceted/parameter URLs. |
 | `entity-internal-link-gap` | N (0.5) | Topically related pages (per Wikidata) with no link between them | Link the broader page to the more specific one - after verifying the entity match. Needs `resolve_entities`. |
 
-## Indexation (25)
+## Indexation (29)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -56,6 +56,10 @@ Zero findings from a check normally means it passed. The exception is a check wh
 | `index-bloat` | D+G | Indexable pages with no impressions in 90 days | Consolidate, improve, or noindex/prune - after confirming it isn't seasonal or new. |
 | `broken-canonical-target` | D | Canonicals pointing at broken, redirecting, noindexed or chained targets | Point the canonical at a live, indexable, self-canonical HTTPS URL. |
 | `soft-404-shell` | D+G | Pages serving 200 that Google flags as soft 404 | Populate the page with real content, or return a true 404/410. |
+| `soft-404-handling` | D | The site answers 200 for URLs that don't exist, or redirects them to the homepage or another 200 page. At the end of every crawl two random URLs that can't exist are requested (one at the root, one under the busiest section): one site-level finding. Also each crawled 200 page whose title (any segment around a `|`/`-` separator) or H1 is wholly a not-found message ("404", "Page not found", "Nothing found"...; an article about 404s doesn't match), highest equity first. A probe that was rate limited or got no answer is unknown | Answer 404 (or 410) for unknown URLs, not 200 and not a homepage redirect; on a single-page app, have the server 404 unknown routes. |
+| `canonical-changed-by-js` | D | The rel=canonical in the rendered DOM differs from the raw HTML's: JS added, removed or rewrote it (normalised URLs, so a trailing slash alone doesn't count). Google may use either. Needs `render_pages`; rows rendered before 0.16.0 report the change without both values | Put the final canonical in the server HTML and keep client code off it. |
+| `noindex-changed-by-js` | D | noindex (robots meta, or the X-Robots-Tag header, which holds on both sides) in the raw HTML and not after JS, or the reverse. A raw noindex removed by JS doesn't work: Google can skip rendering a raw-noindex page. Needs `render_pages` rows from 0.16.0 on; older rows report not collected | Decide, and set it server-side with no client-side change. |
+| `host-variant-split` | D | An http/https or www/apex twin of the homepage or of the most-linked deep page answers 200, a temporary redirect (302/307), a chain, or lands on a different URL, instead of one 301/308 to the same path on the canonical host. At most three requests per crawl; a twin that doesn't resolve is unknown, not a finding; not run for an IP address, localhost or a host with a port | Redirect every twin in one permanent hop at the CDN or server, keeping the path and query. |
 | `broken-hreflang-target` | D | hreflang alternates that are 4xx/5xx, noindex, or a URL that redirected in the latest crawl (from `redirect_sources`; before #55 group C redirecting alternates were skipped). A rate-limited fetch or a legacy stored 429/503 is unknown, not broken; alternates on hosts we didn't crawl are not judged | Point every alternate at a live, indexable URL - one bad alternate drops the whole cluster. |
 | `hreflang-no-return-tag` | D | hreflang annotations a crawled, live, indexable target never reciprocates (x-default is not required to return). Alternates that canonicalise elsewhere, and pages that are themselves canonicalised, are left to `hreflang-canonical-conflict` | Add the return tag - Google ignores one-way hreflang. |
 | `canonical-cross-host` | D | A 200 page whose canonical names a different host (an old domain, staging, a CDN or sister host, a subdomain). The www/apex twin and an http/https switch don't count. Pages with equity (GSC clicks >= 1 or impressions >= 10, a backlink, or an internal link) are listed first | Make the canonical self-referencing on this host, or redirect if the move is real. |
@@ -70,12 +74,13 @@ Zero findings from a check normally means it passed. The exception is a check wh
 | `redirect-to-homepage` | D | A deep URL redirected to the bare homepage, which Google treats as a soft 404. `/index.html`-style aliases and locale roots (`/en`, `/en-au`) don't count; URLs with clicks or links are listed first | Redirect to the closest equivalent page, or let it 404/410. |
 | `product-gone-404` | D+G | A store product (Shopify `/products/`, WooCommerce `/product/`, or Product schema in the earlier snapshot) that answered 200 in an earlier crawl and now answers 404/410, with equity (GSC clicks >= 1 or impressions >= 10 over the history held, a backlink, or an internal link). Ranked by the clicks it earned. A product the latest crawl didn't reach, or a rate-limited fetch, is not reported | 301 to the replacement or parent category; keep an out-of-stock product live at 200 marked OutOfStock. |
 
-## On-page (23)
+## On-page (24)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
 | `missing-title` | D | No title tag | Add a unique, descriptive title (~50-60 chars). |
 | `duplicate-title` | D | The same title on multiple indexable pages | Make each one unique. |
+| `title-changed-by-js` | D | The `<title>` after JS differs from a non-empty raw title, or JS empties it (a title only present after JS is `content-only-in-rendered-dom`). Needs `render_pages` | Render the final title on the server; if the client sets it, make it the same text. |
 | `title-too-long` | D | Titles over ~60 chars | Trim so the primary keyword sits inside the visible length. |
 | `missing-meta-description` | D | No meta description | Add a unique one (~120-155 chars). |
 | `meta-description-length` | D | Meta descriptions over ~160 chars | Tighten so it isn't truncated. |
@@ -98,11 +103,12 @@ Zero findings from a check normally means it passed. The exception is a check wh
 | `discover-max-image-preview` | D | Article-template pages without `max-image-preview:large` (no large Google Discover card) | Add the directive via meta robots or an X-Robots-Tag header - usually one site-wide template change. |
 | `discover-missing-og` | D | Article-template pages missing `og:title` or `og:image` (Discover builds cards straight from Open Graph) | Add both; size og:image ≥1200px wide at 16:9, and write og:title for click-through. |
 
-## Content (6)
+## Content (7)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
 | `thin-content` | D+N (0.6) | Pages under ~200 words of body text | Expand or consolidate. |
+| `hydration-content-loss` | D | The rendered main content (`<main>` or `[role=main]`, else the body without nav/header/footer/aside) keeps at most 50% of the raw main content's words, where the raw had at least 200. The threshold is ours; Google publishes none. Rows rendered before 0.16.0 use whole-body words, labelled. Needs `render_pages` | Fix the client so it keeps the server's content (look for hydration errors, failed client fetches, a script that replaces the copy). |
 | `near-duplicate-content` | N (0.7) | Pages that are semantically near-identical (local embedding cosine ≥ threshold) | Consolidate to one canonical page or genuinely differentiate them. Populate with `find_duplicates` first; verify each pair before merging. |
 | `poor-chunkability` | D | 400+ words with no heading structure | Break the copy into headed sections - AI search and snippets lift self-contained passages, and a wall of text gives them nothing to quote. |
 | `low-extractability` | D+N (0.5) | Sections that open with "it / this / they" and never name their subject | Open key sections by naming the entity - lifted out of context, these passages read as meaningless. |
