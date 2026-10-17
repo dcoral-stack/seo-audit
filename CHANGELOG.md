@@ -10,6 +10,10 @@ Each release is tagged `vX.Y.Z` on the release commit (tagging lapsed between 0.
 
 ## [Unreleased]
 
+### Added
+- **Audit history schema (site summary page, slice 2).** `audit_runs` gains `health_score`, `health_error_pages`, `health_total_pages`, `health_basis`, `check_ids` (the sorted check ids that ran) and `server_version`, added in place by the ensure-migration. `runAudit` writes them, plus the `crawl_id` it read (never recorded before), in the same completion update as `status='completed'`. The health formula now lives in one helper (`src/audit/history.ts`) shared by the dashboard tile and the stored value. Past runs are backfilled once, lazily, on the first dashboard build: only where the run's crawl can be identified unambiguously and its `page_snapshots` exist; otherwise the score stays NULL and `health_basis` says why (`none:no-snapshot`, `none:ambiguous-crawl`, …). `check_ids` stays NULL for past runs.
+- Dashboard payload (version 23): `healthHistory` (score per completed run, with its basis) and `auditDeltas` (opened / resolved / carried findings between consecutive completed runs, keyed on `check_id` + `url_key`). A pair is compared only when scope and check set match; otherwise it carries a `skipped` reason (`different-scope`, `check-set-changed`, `check-set-unknown`), and failed or interrupted runs carry `run-<state>`. Both also ship in the no-GSC payload. No UI yet.
+
 ## [0.15.0] — 2026-10-17
 
 ### Removed
