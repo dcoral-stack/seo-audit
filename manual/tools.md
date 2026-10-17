@@ -13,7 +13,7 @@ Lists the Search Console properties the service account can see. Your connectivi
 > List my Search Console properties
 
 ### `refresh_property`
-The "sync everything" verb: GSC sync → site crawl → URL inspection → rank history, one background job with a live progress panel. GSC sync is **incremental** - the first run pulls the window (default last 90 days; pass `startDate` to go deeper), later runs fetch only the new days. Set `segments:true` to also pull device/country breakdowns (heavier on large sites), `full:true` to force a complete re-pull, or turn individual phases off (`crawl:false` etc.).
+The "sync everything" verb: GSC sync → site crawl → URL inspection → rank history → CrUX field data (when `CRUX_API_KEY` is set), one background job with a live progress panel. GSC sync is **incremental** - the first run pulls the window (default last 90 days; pass `startDate` to go deeper), later runs fetch only the new days. Set `segments:true` to also pull device/country breakdowns (heavier on large sites), `full:true` to force a complete re-pull, or turn individual phases off (`crawl:false` etc.).
 > Refresh sc-domain:mysite.com
 > Refresh mysite.com but skip the crawl
 
@@ -41,6 +41,11 @@ Just the GSC URL Inspection data: Google's own view of coverage, indexing, its c
 Ingests the DataForSEO monthly rank distribution and estimated traffic value into `rank_history`, so rank charts get a real time axis reconciled with your GSC dates. One call per refresh, cached 20 days. Pass `location` once ("United Kingdom", "Australia", or a code) - it's saved per property.
 > Track ranks for mysite.com in the UK
 
+### `sync_crux`
+Real-user Core Web Vitals from the Chrome UX Report API: p75 and the good / needs-improvement / poor shares for **LCP, INP and CLS**, plus FCP, TTFB, round-trip time, the four LCP sub-parts (TTFB, resource load delay, load duration, render delay), the LCP resource type and the navigation-type mix (back/forward-cache share). It collects the origin and your top 50 URLs by GSC clicks (`limit` changes that, `urls` replaces it), each on phone and desktop. A target's first pull backfills about 25 weekly 28-day windows of history; after that each run adds the newest window, at most once a week per target (`force:true` overrides). A URL without enough Chrome traffic answers "not found"; that's recorded as `insufficient_data`, not an error, and re-asked after 28 days. Free, but needs `CRUX_API_KEY` (see [getting-started.md](getting-started.md#crux-key-optional)); calls are throttled under the API's 150 a minute, so a first full pull takes a minute or two. `refresh_property` runs it too once the key is set. Feeds `crux-field-lcp` / `-inp` / `-cls` and `crux-regression`, and the dashboard payload's `cwvField`. Grain: target × form factor × metric × 28-day window in `crux_metrics` (plus `crux_fractions`, and `crux_targets` for which targets have data). The windows overlap, a week apart, so read them as a trend and never add them up. Joins: `target` is the `url_key` for URL rows.
+> Pull CrUX field data for mysite.com
+> Get Core Web Vitals field data for these three URLs
+
 ### `check_sync_status` / `check_crawl_status`
 Poll any job by id, or list recent jobs - the two names are the same tool. A failed job's reason is in the reply text, with a repair pointer when it's database corruption. Every job-starting tool also returns its `jobId` as JSON in the text, so clients that only read text can poll it. A running crawl reports its **stage** (`fetching`, then `writing-links`, `image-weights`, `resource-headers`, `link-graph`, `revalidation-probe`, `snapshot`, `external-links`), pages crawled against `maxPages`, the queue, pages/sec and an ETA for the fetch stage, so a 20-40 minute crawl never looks stalled. The ETA covers fetching only; the post-crawl stages are named instead of timed. When the host rate limits the crawl, or it is a Shopify store, the line says so and gives the current concurrency, the URLs retried and any not fetched (`progress.rateLimited` / `result.rateLimited`: `events`, `currentConcurrency`, `minConcurrency`, `maxConcurrency`, `retried`, `unfetched`). Poll every 60-120 s.
 > Check the crawl status
@@ -67,7 +72,7 @@ One named check, with every affected URL and its full evidence. The drill-down a
 > Run the keyword-cannibalisation check on mysite.com with evidence
 
 ### `list_checks`
-The whole check catalogue - all 111, with categories and labels. The same list, annotated, is [checks.md](checks.md).
+The whole check catalogue - all 119, with categories and labels. The same list, annotated, is [checks.md](checks.md).
 > What does the audit check for?
 
 ### `list_templates`

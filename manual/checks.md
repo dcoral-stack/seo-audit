@@ -1,6 +1,6 @@
 # The check registry
 
-All 111 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
+All 119 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
 
 ## Reading the labels
 
@@ -12,7 +12,7 @@ A check can carry more than one label - `noindex-with-traffic` is D+G because th
 
 Every finding is priced the same way: priority = (traffic at stake × expected yield × certainty) / effort hours. So the list you get back is ordered by expected clicks per developer-hour, not by how alarming the check sounds.
 
-## Crawlability (15)
+## Crawlability (16)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -29,13 +29,16 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `pagination-canonical-to-page-1` | D | Page 2+ canonicalising back to page 1 | Make each paginated page self-canonical, or items linked only from deep pages drop out of the crawl. |
 | `sitemap-orphan` | D | Sitemap URLs nothing on the site links to | Add internal links - sitemap discovery alone earns little authority. |
 | `robots-blocked-with-traffic` | D+G | robots.txt-disallowed URLs Google still shows and users still land on | Unblock it so it can rank properly, or unblock AND noindex (a blocked page can never see the noindex). |
+| `ai-search-bot-blocked` | D | robots.txt (as the latest crawl fetched it) blocks an AI **search** crawler - OAI-SearchBot, ChatGPT-User, Claude-SearchBot, Claude-User, PerplexityBot, Perplexity-User, DuckAssistBot - from the whole site or from any of your top 50 pages by clicks. One site-level finding listing each bot and the group that blocks it. Training crawlers (GPTBot, ClaudeBot, CCBot, Google-Extended, Bytespider...) are listed for context only: blocking them is a choice, not an issue | Allow the search bots so assistants can cite you; keep the training-bot Disallow lines if you want to opt out of training. |
 | `discover-crawl-waste` | D | Too much of the crawl going to redirects and non-indexable URLs (site-level - Discover leans on fast discovery) | Aim for almost everything Google crawls to be an indexable 200 - repoint links off redirects/404s and prune faceted/parameter URLs. |
 | `entity-internal-link-gap` | N (0.5) | Topically related pages (per Wikidata) with no link between them | Link the broader page to the more specific one - after verifying the entity match. Needs `resolve_entities`. |
 
-## Indexation (16)
+## Indexation (18)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
+| `site-wide-indexing-alarm` | D+G | **Critical, one site-level finding.** Any of: the homepage carries noindex; more than half of the sitemap's crawled 200 URLs (min 5) carry noindex; robots.txt disallows `/` for Googlebot (RFC 9309 most-specific group); or the number of distinct pages earning impressions fell more than 20% week on week (last 7 finalised GSC days vs the 7 before, prior week at least 20 pages). Each trigger cites its rows | Usually a staging setting that shipped - remove it today, resubmit the sitemap and request indexing of the homepage. |
+| `snippet-restricted` | D | Indexable pages with `nosnippet` or `max-snippet:0` in the robots meta tag, or in an X-Robots-Tag header that applies to Google (a header scoped to another bot doesn't count). Google documents that these also keep the page out of AI Overviews and AI Mode | Remove the directive (or use `max-snippet:-1`); hide a single passage with `data-nosnippet` instead. |
 | `canonical-relative` | D | Canonicals declared as relative URLs | Use an absolute https URL - relative canonicals are error-prone. |
 | `multiple-canonical` | D | More than one rel=canonical on a page | Keep exactly one; conflicting canonicals let Google pick, or ignore both. |
 | `noindex-with-traffic` | D+G | A noindexed page still earning clicks | Remove the noindex if the page should rank - it demonstrably does. |
@@ -117,7 +120,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `non-https` | D | Pages served over HTTP | Serve over HTTPS and 301 the HTTP version. |
 | `missing-hsts` | D | No Strict-Transport-Security header | Add it with a sensible max-age. |
 
-## Performance (6)
+## Performance (10)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -126,6 +129,10 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `uncompressed-html` | D | HTML served without gzip/brotli | Enable compression - usually a one-line server or CDN setting. |
 | `no-304-revalidation` | D | Servers that advertise Last-Modified/ETag but re-serve full 200s to conditional requests | Configure the server to answer 304 Not Modified - it saves bandwidth on every revalidating crawler and signals stability to Googlebot. |
 | `high-yield-cwv-fail` | D+G | Pages earning real clicks while failing lab Core Web Vitals (needs `page_lighthouse`) | Prioritise CWV work here - this is where engineering effort has measurable ROI. |
+| `crux-field-lcp` | G | Real-user Largest Contentful Paint at p75 over Google's 2.5 s "good" line (poor above 4 s), latest 28-day CrUX window, origin and URL level, phone and desktop separately (needs `sync_crux`) | Use the LCP sub-parts (TTFB, load delay, load duration, render delay) to pick the fix. |
+| `crux-field-inp` | G | Real-user Interaction to Next Paint at p75 over 200 ms (poor above 500 ms) - the field-only Core Web Vital no lab tool measures (needs `sync_crux`) | Break up long tasks, defer third-party scripts, lighten input handlers. |
+| `crux-field-cls` | G | Real-user Cumulative Layout Shift at p75 over 0.1 (poor above 0.25) (needs `sync_crux`) | Give media and ad slots dimensions; reserve space for late content. |
+| `crux-regression` | G | A Core Web Vital whose p75 moved into a worse band (good, needs improvement, poor) between the 4th-newest and the newest CrUX window (needs `sync_crux` history) | Find what shipped when it started and roll it back or fix it. |
 | `discover-slow-response` | D+N (0.5) | Article-template pages whose fetch wall-time exceeds ~600ms (a proxy, not a measured TTFB) | Aim for server response under 600ms - ideal under 200ms - since Discover favours freshly-crawlable content; confirm with a real TTFB before prioritising. |
 
 ## Accessibility (7)
@@ -142,7 +149,7 @@ A deterministic subset of the [axe-core](https://github.com/dequelabs/axe-core) 
 | `a11y-positive-tabindex` | D | Elements with `tabindex` greater than 0 | Use `tabindex="0"`/`-1` and order the DOM instead - positive values break keyboard focus order (axe tabindex). |
 | `image-empty-alt-content` | N (0.5) | Images with `alt=""` inside the main content (main/article/figure, outside nav/header/footer) | Give content images descriptive alt text; keep `alt=""` only for genuinely decorative ones. |
 
-## The merged checks (23)
+## The merged checks (24)
 
 These are the ones that need both datasets - your crawl (what the site says) joined to Search Console (what Google did about it). In my experience this family is where most of the recoverable traffic hides.
 
@@ -154,6 +161,7 @@ These are the ones that need both datasets - your crawl (what the site says) joi
 | `traffic-decay` | G | Pages whose clicks fell sharply against the previous 28 days | Refresh the content and check for lost rankings. |
 | `lost-queries` | G | Queries that drove clicks last period and drive none now | Find the page that ranked and win it back. |
 | `position-slipping` | G | Page-1 rankings that worsened by 3+ positions | Investigate before the clicks follow the position down. |
+| `nonbrand-decline-masked` | G | Total clicks flat or up (no more than 5% down) while non-brand clicks fell more than 15% on the prior 28 days (finalised days, prior non-brand at least 100 clicks). Brand = whole-token match of the domain label, the same heuristic as the dashboard's branded split, named in the evidence; a day holding both GSC row shapes is counted once | Brand demand is hiding a ranking loss - work through traffic-decay, lost-queries and position-slipping. |
 | `rising-pages` | G | Pages gaining clicks fast | Reinforce with internal links and related content while the momentum is there. |
 | `stale-content` | D+G | Pages unmodified for over a year with clicks down year-on-year | Refresh and expand it, and re-date only once the content has changed. |
 | `traffic-to-dead-url` | D+G | Google still sending traffic to a URL that returns 4xx/5xx | Recover the page or 301 it - you rank for a page that no longer works. |
