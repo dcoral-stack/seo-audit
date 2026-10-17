@@ -62,7 +62,7 @@ Turns the crawl's 404 list into a short redirect map. Each dead URL gets where i
 ## The audit
 
 ### `run_audit`
-Runs the full check registry over the joined data and returns scored findings ranked by expected clicks per developer-hour: priority = (traffic at stake × yield × certainty) / effort. `categories` filters (crawlability, indexation, onpage, content, schema, security, performance, accessibility, merged); `includeJudgement:true` adds the heuristic (N) checks, which are off by default.
+Runs the full check registry over the joined data and returns scored findings ranked by expected clicks per developer-hour: priority = (traffic at stake × yield × certainty) / effort. `categories` filters (crawlability, indexation, onpage, content, schema, security, performance, accessibility, merged); `includeJudgement:true` adds the heuristic (N) checks, which are off by default. A check whose source data was never collected (the asset checks before a `headResources:true` crawl, say) is listed under *Not collected* with how to collect it, rather than reading as passed.
 > Run an SEO audit on mysite.com
 > Run an SEO audit on mysite.com, indexation and schema only, with judgement findings
 
@@ -72,7 +72,7 @@ One named check, with every affected URL and its full evidence. The drill-down a
 > Run the keyword-cannibalisation check on mysite.com with evidence
 
 ### `list_checks`
-The whole check catalogue - all 131, with categories and labels. The same list, annotated, is [checks.md](checks.md).
+The whole check catalogue - all 137, with categories and labels. The same list, annotated, is [checks.md](checks.md).
 > What does the audit check for?
 
 ### `list_templates`

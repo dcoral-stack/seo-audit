@@ -44,6 +44,10 @@ export function buildAuditMarkdown(r: AuditResult & { elapsedMs?: number }, site
     out.push('', '## Indexability (crawled URLs)', `- ✅ indexable: ${idx.indexable ?? 0}`);
     for (const [reason, n] of notIndexable) out.push(`- ✗ ${reason}: ${n}`);
   }
+  if (r.notCollected?.length) {
+    out.push('', '## Not collected (unknown, not passed)');
+    for (const n of r.notCollected) out.push(`- \`${n.checkId}\`: ${n.note}`);
+  }
   if (r.elapsedMs != null) out.push('', `_Audit computed in ${(r.elapsedMs / 1000).toFixed(1)}s._`);
   out.push('', `_\`export_report siteUrl:"${siteUrl}"\` → a shareable interactive HTML dashboard._`);
   return out.join('\n');

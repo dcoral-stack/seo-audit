@@ -9,6 +9,7 @@ import { SIGNAL_CHECKS } from './checks-signals.js';
 import { REDIRECT_CHECKS, redirectChainFindings } from './checks-redirects.js';
 import { ECOMMERCE_CHECKS } from './checks-ecommerce.js';
 import { HREFLANG_CHECKS, HREFLANG_EXISTING_CHECKS } from './checks-hreflang.js';
+import { ASSET_CHECKS } from './checks-assets.js';
 
 /**
  * Check registry. Each check is a pure read over the AuditDatabase (crawl + GSC +
@@ -38,6 +39,12 @@ export interface CheckDef {
   title: string;
   fix: string;
   run(ctx: CheckContext): RawFinding[];
+  /**
+   * Optional: whether the data this check reads was collected at all. null = collected (zero findings
+   * then means "passed"); a string = NOT collected, saying how to collect it, so an empty table is
+   * reported as unknown rather than passing silently. Surfaced as AuditResult.notCollected.
+   */
+  collected?(ctx: CheckContext): string | null;
 }
 
 const rows = (ctx: CheckContext, sql: string, ...args: unknown[]): any[] => ctx.db.prepare(sql).all(...args);
@@ -1528,6 +1535,8 @@ export const CHECKS: CheckDef[] = [
   ...ECOMMERCE_CHECKS,
   // #55 group C: cross-host canonicals + hreflang validation (item 6).
   ...HREFLANG_CHECKS,
+  // #55 group C: asset checks (item 7).
+  ...ASSET_CHECKS,
 ];
 
 // ── Google Discover helpers (article-eligibility + directive/schema parsing) ──

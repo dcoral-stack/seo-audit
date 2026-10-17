@@ -679,6 +679,10 @@ export class AuditDatabase {
     ensure('pages', 'a11y_positive_tabindex', 'a11y_positive_tabindex INTEGER');
     ensure('pages', 'a11y_duplicate_ids', 'a11y_duplicate_ids INTEGER');
     ensure('sitemap_urls', 'lastmod', 'lastmod TEXT');
+    // #55 group C: the Accept header the image-weight probe sent. NULL = probed without one (crawls before
+    // this column), so a CDN that negotiates WebP/AVIF for browsers (Shopify, Cloudflare Polish) was measured
+    // at its JPEG/PNG size; the image-weight checks read only rows probed with a browser Accept.
+    ensure('image_assets', 'accept', 'accept TEXT');
     ensure('pages', 'max_passage_score', 'max_passage_score REAL');
     ensure('pages', 'max_passage_query', 'max_passage_query TEXT');
     ensure('pages', 'max_passage_impr', 'max_passage_impr INTEGER');

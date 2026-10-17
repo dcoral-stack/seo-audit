@@ -1,6 +1,6 @@
 # The check registry
 
-All 131 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
+All 137 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
 
 ## Reading the labels
 
@@ -12,11 +12,14 @@ A check can carry more than one label - `noindex-with-traffic` is D+G because th
 
 Every finding is priced the same way: priority = (traffic at stake × expected yield × certainty) / effort hours. So the list you get back is ordered by expected clicks per developer-hour, not by how alarming the check sounds.
 
-## Crawlability (20)
+Zero findings from a check normally means it passed. The exception is a check whose source table is empty because the data was never collected (the asset checks read `page_resources`, `resource_assets` and `image_assets`): `run_audit` lists those under **Not collected** with the step that collects the data, so an empty table never reads as a clean bill of health.
+
+## Crawlability (21)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
 | `broken-internal-links` | D | Internal links pointing at 4xx/5xx URLs | Repoint them to a live, canonical URL (`fix_finding` writes the 301). |
+| `broken-subresource` | D | A CSS, JavaScript or font file pages load that answers 4xx/5xx (a 429/503 or a failed probe is unknown), one finding per file with the pages loading it. Needs a crawl with `headResources:true`; images are `broken-image`'s | Restore the file or fix the reference - the page renders without it, for Googlebot too. |
 | `content-only-in-rendered-dom` | D | Content or internal links that exist only after JavaScript runs (needs `render_pages`) | Server-side render or pre-render the critical content and in-site links so they're in the initial HTML - don't rely on client-side JS for primary navigation or copy. |
 | `redirect-chain` | D | Redirects of 2+ hops that stay on the site and resolve (keyed by the final page, whose row records the chain). Chains that leave the site, never resolve, loop, or run through a login/account/cart flow are not counted: a Shopify store's OAuth bounces used to read as ~1,300 chains | Collapse to a single hop to the final URL. |
 | `redirect-to-non-indexable` | D | An internal redirect whose final URL is a 4xx/5xx (not a 429/503 or a rate-limited fetch, which are unknown), a noindex page or a page canonicalised elsewhere. Excluded: a non-HTML target (a PDF), an http->https hop onto the same URL, and a backlinked source landing on a dead page (that's `backlinks-to-404`) | Point the redirect at the live, indexable, self-canonical replacement. |
@@ -67,7 +70,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `redirect-to-homepage` | D | A deep URL redirected to the bare homepage, which Google treats as a soft 404. `/index.html`-style aliases and locale roots (`/en`, `/en-au`) don't count; URLs with clicks or links are listed first | Redirect to the closest equivalent page, or let it 404/410. |
 | `product-gone-404` | D+G | A store product (Shopify `/products/`, WooCommerce `/product/`, or Product schema in the earlier snapshot) that answered 200 in an earlier crawl and now answers 404/410, with equity (GSC clicks >= 1 or impressions >= 10 over the history held, a backlink, or an internal link). Ranked by the clicks it earned. A product the latest crawl didn't reach, or a rate-limited fetch, is not reported | 301 to the replacement or parent category; keep an out-of-stock product live at 200 marked OutOfStock. |
 
-## On-page (22)
+## On-page (23)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -81,6 +84,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `multiple-h1` | D | More than one H1 | Use one per page. |
 | `title-h1-mismatch` | D | Title and H1 sharing no significant words | Align them - the mismatch blurs the page's topic signal. |
 | `image-alt` | D | Content images without alt text | Add descriptive alt text (empty alt only for decorative images). |
+| `broken-image` | D | An `<img>` src answering 4xx/5xx, or answering 200 with an HTML page (a redirect to the homepage, a soft 404). From `image_assets`, the 500 most-used images sampled after each crawl | Fix the src or restore the file. |
 | `external-broken` | D (0.9) | Outbound links whose target is dead (4xx/5xx, DNS, timeout, refused, TLS), per linking page. Bot walls (401/403/429, Cloudflare challenges) are "unverifiable" and never counted | Replace or remove each dead link: the current page on that site, a better source, or nothing. |
 | `external-redirected` | D (0.9) | Outbound links that permanently redirect, per linking page; a deep link now landing on the site's homepage is flagged as likely removed | Update each link to its final URL; find a replacement where the target page is gone. |
 | `images-missing-dimensions` | D | Images without width/height attributes | Add them (or CSS aspect-ratio) so the browser reserves space - but confirm with field CLS first; if your CSS already reserves space there's nothing to fix. |
@@ -132,7 +136,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `non-https` | D | Pages served over HTTP | Serve over HTTPS and 301 the HTTP version. |
 | `missing-hsts` | D | No Strict-Transport-Security header | Add it with a sensible max-age. |
 
-## Performance (10)
+## Performance (14)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -146,6 +150,10 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `crux-field-cls` | G | Real-user Cumulative Layout Shift at p75 over 0.1 (poor above 0.25) (needs `sync_crux`) | Give media and ad slots dimensions; reserve space for late content. |
 | `crux-regression` | G | A Core Web Vital whose p75 moved into a worse band (good, needs improvement, poor) between the 4th-newest and the newest CrUX window (needs `sync_crux` history) | Find what shipped when it started and roll it back or fix it. |
 | `discover-slow-response` | D+N (0.5) | Article-template pages whose fetch wall-time exceeds ~600ms (a proxy, not a measured TTFB) | Aim for server response under 600ms - ideal under 200ms - since Discover favours freshly-crawlable content; confirm with a real TTFB before prioritising. |
+| `render-blocking-head-resources` | D | Pages with 1+ parser-blocking `<script src>` in `<head>` (no async, defer or type=module, not a preload hint) or 3+ render-blocking stylesheets (media absent, `all` or `screen`). The stylesheet threshold is ours: 1-2 sheets are the normal floor. Rolled up per identical set of blocking files (one finding per template). Reads `page_resources` (every crawl since 0.15.0); inline scripts and styles aren't counted | `defer` head scripts; inline critical CSS and load the rest without blocking. |
+| `static-asset-uncached` | D | First-party CSS/JS/font files with no Cache-Control, no max-age, no-store/no-cache, or max-age under one day (86,400 s). Third-party files are left out; `Expires` isn't recorded. Needs a crawl with `headResources:true` | Serve hashed static files with a long max-age (a year, plus `immutable`). |
+| `image-oversized` | D | An `<img>` over 300,000 bytes (Content-Length, the dashboard's 300 KB line). The probe sends a browser's image `Accept`, so a CDN that negotiates WebP/AVIF is measured as browsers see it; images sampled by older crawls (no Accept recorded) are not judged until a re-crawl | Resize, compress, serve WebP/AVIF, use `srcset`. |
+| `image-legacy-format` | D | A JPEG/PNG/GIF/BMP `<img>` of 32 KiB to 300 KB. WebP is 25-34% smaller than JPEG (Google's WebP study), so each saves at least the 8 KiB Lighthouse counts; bigger images are `image-oversized`'s. Same Accept rule as above | Convert to WebP/AVIF at build time, or turn on format negotiation at the CDN. |
 
 ## Accessibility (7)
 

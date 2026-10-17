@@ -100,6 +100,8 @@ const MAX_TRANSIENT_RETRIES = 6; // plain-503 backoff attempts before recording 
 const MAX_NET_RETRIES = 4;       // network-error (timeout/reset) retries — separate budget so a slow URL can't stall a worker for minutes
 const BACKOFF_CAP_MS = 15000;     // cap for the exponential fallback when no Retry-After is given
 const FLUSH_EVERY = 50;
+/** Chrome's Accept for <img> requests: the image-weight probe measures what a browser is served. */
+export const IMAGE_ACCEPT = 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8';
 
 // Shared throttle gate: a 429/503 on ONE request backs off the WHOLE worker pool, not just that
 // request's own retries — otherwise the other N-1 workers keep hammering a rate-limited host and it
@@ -760,16 +762,18 @@ export class Crawler {
         })
         .sort((a, b) => b[1] - a[1]).slice(0, MAX_IMAGES);
       const imgInsert = db.db.prepare(
-        `INSERT INTO image_assets (url, bytes, status, content_type, used_on, fetched_at)
-         VALUES (?,?,?,?,?,datetime('now')) ON CONFLICT(url) DO NOTHING`,
+        `INSERT INTO image_assets (url, bytes, status, content_type, used_on, fetched_at, accept)
+         VALUES (?,?,?,?,?,datetime('now'),?) ON CONFLICT(url) DO NOTHING`,
       );
-      const rows: [string, number | null, number, string, number][] = [];
+      const rows: [string, number | null, number, string, number, string][] = [];
       await probePool(sample, async ([url, usedOn]) => {
-        const r = await headProbe(url, {}, 'follow');
+        // A browser's image Accept, so a CDN that negotiates WebP/AVIF answers with what visitors get
+        // (Shopify's CDN sends a 2.1 MB PNG without it and a 222 KB WebP with it).
+        const r = await headProbe(url, { accept: IMAGE_ACCEPT }, 'follow');
         if (r) {
           const len = Number(r.header('content-length'));
-          rows.push([url, Number.isFinite(len) && len > 0 ? len : null, r.status, (r.header('content-type') ?? '').split(';')[0].trim(), usedOn]);
-        } else rows.push([url, null, 0, '', usedOn]);
+          rows.push([url, Number.isFinite(len) && len > 0 ? len : null, r.status, (r.header('content-type') ?? '').split(';')[0].trim(), usedOn, IMAGE_ACCEPT]);
+        } else rows.push([url, null, 0, '', usedOn, IMAGE_ACCEPT]);
       });
       db.db.transaction(() => { for (const r of rows) imgInsert.run(...r); })();
     }
