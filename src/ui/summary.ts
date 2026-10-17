@@ -47,6 +47,17 @@ const dayLabel = (at: string | null | undefined): string => {
 };
 const SEV_BAR: Record<string, string> = { crit: 'var(--intent-danger)', high: 'var(--intent-warning)', med: 'var(--intent-info)', low: 'var(--text-faint)', info: 'var(--text-faint)' };
 
+/** Clicks, last 28 days vs the prior 28, each day counted once (clickWindows), else the older totals. */
+const clicks28 = (d: any): { current: number; prior: number } | null =>
+  d.clickWindows ? { current: d.clickWindows.current, prior: d.clickWindows.prior } : d.summary ? { current: d.summary.current.clicks, prior: d.summary.prior.clicks } : null;
+/** True when the 56 days behind the 28-day comparison include days stored in both GSC row shapes. */
+const windowsMixed = (d: any): boolean => {
+  const sh = d.gscShape, cw = d.clickWindows;
+  if (!sh) return false;
+  const start = cw?.priorWindow?.start ?? '', end = cw?.window?.end ?? d.dateRange?.maxDate ?? '';
+  return !(sh.to < start || sh.from > end);
+};
+
 // ── Panel 0: freshness strip ──────────────────────────────────────────────────────────────────
 function freshness(d: any): string {
   const src: any[] = d.freshness?.sources ?? [];
@@ -83,7 +94,9 @@ function freshness(d: any): string {
     if (s.error) problems.push(`<div class="sf-err"><b>${esc(LABEL[kind])}:</b> ${esc(String(s.error).slice(0, 160))}</div>`);
   }
   if (!cells.length) return empty('No data sources recorded yet - run <code>refresh_property</code>.');
-  return `<div class="sf-row">${cells.join('')}</div>${problems.join('')}`;
+  const sh = d.gscShape;
+  const shapeNote = sh ? `<div class="sf-warn">Search Console history holds two row shapes (all-country and per-country rows) on <span class="n">${fmt(sh.mixedDays)}</span> days, ${esc(dayLabel(sh.from))} to ${esc(dayLabel(sh.to))}. This page counts each of those days once; totals elsewhere in the dashboard that span them still count clicks twice.</div>` : '';
+  return `<div class="sf-row">${cells.join('')}</div>${problems.join('')}${shapeNote}`;
 }
 
 // ── Panel 1: verdict line ─────────────────────────────────────────────────────────────────────
@@ -93,8 +106,9 @@ function verdict(d: any): string {
   const lastDelta = (d.auditDeltas ?? []).filter((a: any) => a.runId === fc?.runId).pop();
   const dr = d.drift;
   const v = buildVerdict({
-    clicks: sum ? { current: sum.current.clicks, prior: sum.prior.clicks } : null,
-    nonBrand: sum && bs ? { current: bs.nonBranded.clicks, prior: bs.priorNonBrandedClicks, brand: bs.brand } : null,
+    clicks: sum ? clicks28(d) : null,
+    // The brand split comes from the older totals, so it isn't compared across mixed-shape days.
+    nonBrand: sum && bs && !windowsMixed(d) ? { current: bs.nonBranded.clicks, prior: bs.priorNonBrandedClicks, brand: bs.brand } : null,
     criticalOpen: fc ? (fc.byCheck ?? []).filter((b: any) => b.severity === 'crit').reduce((s: number, b: any) => s + b.count, 0) : null,
     resolvedSinceLastAudit: lastDelta && !lastDelta.skipped ? lastDelta.resolved : null,
     pagesChanged: dr?.counts && !dr.staleness ? dr.counts.pagesChanged : null,
@@ -118,7 +132,7 @@ function tiles(d: any): string {
   if (!sum) {
     out.push(`<div class="metric-card tile-connect"><div class="label">Search Console</div><div class="connect-msg">Connect Search Console to see traffic and trends.</div><div class="metric-sub">Run <code>sync_gsc</code> for this property.</div></div>`);
   } else {
-    const c = sum.current.clicks, p = sum.prior.clicks;
+    const { current: c, prior: p } = clicks28(d)!;
     const months = (d.monthly?.months ?? []).filter((m: any) => !m.partial && m.clicks != null).map((m: any) => m.clicks);
     const yoy = d.yoy;
     let yoyTxt = '';
@@ -135,12 +149,12 @@ function tiles(d: any): string {
     if (bs) {
       const tot = bs.branded.clicks + bs.nonBranded.clicks;
       const share = tot ? Math.round((bs.nonBranded.clicks / tot) * 100) : null;
-      const nb = bs.priorNonBrandedClicks ? ((bs.nonBranded.clicks - bs.priorNonBrandedClicks) / bs.priorNonBrandedClicks) * 100 : null;
+      const nb = bs.priorNonBrandedClicks && !windowsMixed(d) ? ((bs.nonBranded.clicks - bs.priorNonBrandedClicks) / bs.priorNonBrandedClicks) * 100 : null;
       out.push(tile({
         label: 'Non-brand share', value: share == null ? '–' : `<span class="n">${share}%</span>`,
         foot: nb != null ? `<span class="n">${delta(nb)}</span><span class="tile-note">non-brand clicks</span>` : undefined,
         sub: `of clicks · brand "${esc(bs.brand)}"`,
-        title: `Non-brand = queries without "${bs.brand}" as a whole word, detected from the domain (a heuristic).`,
+        title: `Non-brand = queries without "${bs.brand}" as a whole word, detected from the domain (a heuristic).${windowsMixed(d) ? ' Not compared with the prior 28 days: they include days stored in two row shapes.' : ''}`,
       }));
     } else {
       out.push(tile({ label: 'Non-brand share', value: '–', sub: 'brand not detected from the domain' }));
@@ -359,6 +373,13 @@ function areas(d: any, ctx: SummaryCtx): string {
     `<div class="sum-note">${notes.join(' ')}</div>`;
 }
 
+/** The finding's evidence labels as a chip: D deterministic, N judgement, G from Search Console data. */
+const evidenceLabel = (labels: string[]): string => { const l = labels.filter(x => ['D', 'N', 'G'].includes(x)); return l.length ? l.join('·') : 'D'; };
+const evidenceTitle = (labels: string[]): string => [
+  labels.includes('N') ? 'N: judgement, verify before acting' : 'deterministic: backed by the crawled bytes or stored rows',
+  labels.includes('G') ? 'G: built from Search Console data' : '',
+].filter(Boolean).join('; ');
+
 // ── Panel 5: do this first ────────────────────────────────────────────────────────────────────
 function actions(d: any, ctx: SummaryCtx): string {
   const fc = d.findings;
@@ -380,7 +401,7 @@ function actions(d: any, ctx: SummaryCtx): string {
       `<span class="df-n">${i + 1}</span><div class="df-main"><div class="df-title">${esc(rec.title || f.check_id)}</div>` +
       `<div class="df-sub">${pages ? `<span class="n">${fmt(pages)}</span> ${pages === 1 ? 'page' : 'pages'}` : 'site-wide'}${risk}</div></div>` +
       `<span class="df-chips"><span class="impact impact-${String(f.size ?? 's').toLowerCase()}" title="Impact size, relative to this audit's top finding">${esc(String(f.size ?? ''))}</span>` +
-      `<span class="tag-badge ${judgement ? 'tag-warning' : 'tag-neutral'}" title="${judgement ? 'Judgement (N): verify before acting' : 'Deterministic (D): backed by crawled bytes or Search Console rows'}">${judgement ? 'N' : 'D'}</span></span>` +
+      `<span class="tag-badge ${judgement ? 'tag-warning' : 'tag-neutral'}" title="${esc(evidenceTitle(labels))}">${esc(evidenceLabel(labels))}</span></span>` +
       `<span class="ti-bar df-bar" title="${esc(SEV_LABEL[f.severity] ?? f.severity)} severity · impact ${f.impact ?? ''} of 100"><span style="width:${w}%;background:${SEV_BAR[f.severity] ?? SEV_BAR.low}"></span></span></li>`;
   }).join('')}</ol><div class="sum-note">Ranked by impact for the effort (clicks at stake × yield × certainty ÷ hours). Clicks are what the affected pages earn now, not a forecast.</div>`;
 }
