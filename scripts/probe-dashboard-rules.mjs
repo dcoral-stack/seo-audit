@@ -6,11 +6,12 @@
 // Run:  npm run build:server && node scripts/probe-dashboard-rules.mjs
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { rmSync } from 'node:fs';
+import { rmSync, readFileSync } from 'node:fs';
+import { CAT_NAME } from '../dist/audit/report.js';
 import {
   countChange, shareText, sharePct, capHealth, rankChange, SMALL_BASE_MIN,
   assessField, fieldValue, fieldWindowLagDays, quickWinsEmptyReason, trappedEmptyReason,
-  sourceFreshness, freshnessDot, GSC_STALE_DAYS, SNAPSHOT_STALE_DAYS, runLabels,
+  sourceFreshness, freshnessDot, GSC_STALE_DAYS, SNAPSHOT_STALE_DAYS, runLabels, CATEGORY_LABEL, categoryLabel,
 } from '../dist/core/displayRules.js';
 import { cwvFieldPayload } from '../dist/core/CruxSync.js';
 import { loadBrandQueries, spacedIsUncertain } from '../dist/core/brand.js';
@@ -215,6 +216,18 @@ console.log('run labels');
   const mixed = runLabels(['2026-10-10 09:00:00', '2026-10-17 16:20:50', '2026-10-17T16:21:38Z']);
   ok(mixed[0] === '10 Oct' && mixed[1] === '17 Oct 16:20' && mixed[2] === '17 Oct 16:21', `only the colliding days get a time (${mixed.join(' | ')})`);
   ok(runLabels([null])[0] === '-', 'a missing date reads "-"');
+}
+
+// ── 0.16.2: every check category has a display label; none shows as a raw id ──
+{
+  const src = readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8');
+  const cats = [...(/const CHECK_CATEGORIES = \[([^\]]+)\]/.exec(src)?.[1] ?? '').matchAll(/'([^']+)'/g)].map(m => m[1]);
+  const missing = cats.filter(c => !CATEGORY_LABEL[c]);
+  ok(cats.length > 5 && missing.length === 0, `every CHECK_CATEGORIES entry has a label (${missing.join(', ') || 'none missing'})`);
+  ok(categoryLabel('accessibility') === 'Accessibility', `accessibility reads "Accessibility" (${categoryLabel('accessibility')})`);
+  ok(categoryLabel('some-new-area') === 'Some new area' && categoryLabel(null) === 'Other', 'an unlabelled category is still capitalised, never raw');
+  ok(categoryLabel('merged', { merged: 'Search demand' }) === 'Search demand', 'a surface can override a label (the Summary says "Search demand")');
+  ok(CAT_NAME.accessibility === 'Accessibility' && CAT_NAME.performance === 'Performance (CWV)', 'the run_audit report uses the shared labels');
 }
 
 rmSync(dataDir, { recursive: true, force: true });

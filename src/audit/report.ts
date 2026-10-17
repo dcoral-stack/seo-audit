@@ -1,15 +1,13 @@
 import type { AuditResult } from './engine.js';
+import { CATEGORY_LABEL, categoryLabel } from '../core/displayRules.js';
 
 /**
  * Concise executive markdown summary of an audit run. Shared by the `run_audit` tool (returned
  * as the model-facing text) and the local shakedown/CLI path so both emit identical reports.
  */
 export const SEV_ICON: Record<string, string> = { crit: '🔴', high: '🟠', med: '🟡', low: '⚪', info: '·' };
-export const CAT_NAME: Record<string, string> = {
-  integrity: 'Integrity', crawlability: 'Crawlability', indexation: 'Indexation', onpage: 'On-page',
-  content: 'Content', schema: 'Structured data', security: 'Security', 'war-stories': 'Edge cases',
-  performance: 'Performance (CWV)', merged: 'Search performance', agentic: 'AI readiness',
-};
+// The shared area labels (displayRules.ts), with the report's own wording for two of them.
+export const CAT_NAME: Record<string, string> = { ...CATEGORY_LABEL, performance: 'Performance (CWV)', agentic: 'AI readiness' };
 
 export function buildAuditMarkdown(r: AuditResult & { elapsedMs?: number }, siteUrl: string): string {
   const sev = r.bySeverity ?? {};
@@ -40,7 +38,7 @@ export function buildAuditMarkdown(r: AuditResult & { elapsedMs?: number }, site
   const byCat: Record<string, string[]> = {};
   for (const c of r.byCheck ?? []) (byCat[c.category] ??= []).push(`${c.checkId ?? (c as any).check_id} (${c.count})`);
   out.push('', '## All issues by category');
-  for (const [cat, checks] of Object.entries(byCat)) out.push(`- **${CAT_NAME[cat] ?? cat}** — ${checks.join(', ')}`);
+  for (const [cat, checks] of Object.entries(byCat)) out.push(`- **${categoryLabel(cat, CAT_NAME)}** — ${checks.join(', ')}`);
   const idx = r.indexability ?? {};
   const notIndexable = Object.entries(idx).filter(([k]) => k !== 'indexable');
   if (notIndexable.length) {

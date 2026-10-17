@@ -3,6 +3,26 @@
 // a rule is written once and every tab reads it the same way. Each rule is a stated product
 // convention, not a benchmark, and the UI says so where it applies.
 
+// ── Audit area (check category) labels ───────────────────────────────────────────────────────
+/**
+ * The one display label per check category, for every surface that names an area (the Summary's
+ * "What's broken", the Issues filters and accordions, the run_audit report). 0.16.1 showed
+ * "accessibility" in lowercase because the UI's own map had no entry for it; categoryLabel never
+ * shows a raw id, even for a category added later without a label.
+ */
+export const CATEGORY_LABEL: Record<string, string> = {
+  integrity: 'Integrity', crawlability: 'Crawlability', indexation: 'Indexation', onpage: 'On-page',
+  content: 'Content', schema: 'Structured data', security: 'Security', performance: 'Performance',
+  accessibility: 'Accessibility', 'war-stories': 'Edge cases', merged: 'Search performance', agentic: 'AI / agent readiness',
+};
+export function categoryLabel(category: string | null | undefined, overrides: Record<string, string> = {}): string {
+  const c = category ?? 'other';
+  if (overrides[c]) return overrides[c];
+  if (CATEGORY_LABEL[c]) return CATEGORY_LABEL[c];
+  const words = c.replace(/[-_]+/g, ' ').trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Other';
+}
+
 // ── Small-base changes ───────────────────────────────────────────────────────────────────────
 /**
  * Below this prior value a change is shown in absolute terms ("+1 click"), never as a percentage:

@@ -9,7 +9,7 @@
 //   - every number carries class "n" so redact mode (?redact=1) blurs it, and charts drop their
 //     numeric axes and tooltips when redacted.
 import { esc, fmtNum, fmtCompact, sparkline, countDelta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
-import { shareText, capHealth, runLabels } from '../core/displayRules.js';
+import { shareText, capHealth, runLabels, categoryLabel } from '../core/displayRules.js';
 import { buildVerdict, direction } from '../core/summaryVerdict.js';
 import { ago, SEV_LABEL, freshVerdict } from './panels.js';
 import { cwvTile, cwvCoverage } from './cwv.js';
@@ -372,7 +372,7 @@ function areas(d: any, ctx: SummaryCtx): string {
     // Checks regrouped between the two audits are left out of the change (and of the verdict's count).
     const regroupedTag = r.regrouped?.length && r.opened != null
       ? ` <span class="site-tag" title="${esc(`${r.regrouped.join(', ')}: ${excludedNote ?? 'findings regrouped; not counted'}`)}">regrouped</span>` : '';
-    return `<tr class="area-link" data-area="${esc(r.category)}" tabindex="0" role="button" title="Show these issues"><td>${esc(LBL[r.category] ?? r.category)}</td><td class="num">${pages}</td>` +
+    return `<tr class="area-link" data-area="${esc(r.category)}" tabindex="0" role="button" title="Show these issues"><td>${esc(categoryLabel(r.category, LBL))}</td><td class="num">${pages}</td>` +
       `<td class="num sevs">${cnt(r.crit, 'crit')}${cnt(r.high, 'high')}${cnt(r.med, 'med')}${cnt(r.low, 'low')}</td><td class="num">${since}${regroupedTag}</td></tr>`;
   }).join('');
   const judgement = rows.reduce((s, r) => s + (r.judgement || 0), 0);
