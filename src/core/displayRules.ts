@@ -23,6 +23,24 @@ export function categoryLabel(category: string | null | undefined, overrides: Re
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Other';
 }
 
+// ── Device / country breakdowns: why they are empty ───────────────────────────────────────────
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** 'YYYY-MM-DD' as "5 Sep". */
+export const shortDay = (d: string): string => `${Number(d.slice(8, 10))} ${MON[Number(d.slice(5, 7)) - 1] ?? '?'}`;
+/**
+ * The device and country breakdowns come from segment rows, which only a `segments:true` sync
+ * writes. When the window has none, the panel says why rather than disappearing (on
+ * simracingcockpit.gg the per-country syncs stopped on 5 Sep, so a 28-day window from 18 Sep was
+ * empty and the panel silently hid). Null when there is nothing to explain: rows in the window, or
+ * a payload from before segmentsLastDate existed (undefined). Returns HTML (one <code>).
+ */
+export function breakdownsEmptyReason(o: { devices: number; countries: number; segmentsLastDate: string | null | undefined; windowStart: string | null | undefined }): string | null {
+  if (o.devices > 0 || o.countries > 0 || o.segmentsLastDate === undefined) return null;
+  if (o.segmentsLastDate === null) return 'No country or device data: this property is synced without segments. Run <code>sync_gsc</code> with <code>segments:true</code> to add the breakdowns.';
+  if (o.windowStart && o.segmentsLastDate < o.windowStart) return `No country/device data in this window: the last segment sync covered up to ${shortDay(o.segmentsLastDate)}. Run <code>sync_gsc</code> with <code>segments:true</code> to refresh.`;
+  return null;
+}
+
 // ── Small-base changes ───────────────────────────────────────────────────────────────────────
 /**
  * Below this prior value a change is shown in absolute terms ("+1 click"), never as a percentage:

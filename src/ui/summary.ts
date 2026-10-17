@@ -9,7 +9,7 @@
 //   - every number carries class "n" so redact mode (?redact=1) blurs it, and charts drop their
 //     numeric axes and tooltips when redacted.
 import { esc, fmtNum, fmtCompact, sparkline, countDelta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
-import { shareText, capHealth, runLabels, categoryLabel } from '../core/displayRules.js';
+import { shareText, capHealth, runLabels, categoryLabel, shortDay } from '../core/displayRules.js';
 import { buildVerdict, direction } from '../core/summaryVerdict.js';
 import { ago, SEV_LABEL, freshVerdict } from './panels.js';
 import { cwvTile, cwvCoverage } from './cwv.js';
@@ -530,6 +530,14 @@ function coverageFooter(d: any): string {
     `<span class="cov-chip${on ? '' : ' cov-off'}"${title ? ` title="${esc(title)}"` : ''}><span class="dot ${on ? 'dot-ok' : 'dot-never'}"></span><span class="cov-k">${k}</span> ${v}</span>`;
   const chips = [
     chip(!!cv.gsc, 'Search Console', cv.gsc ? `<span class="n">${cv.gsc.months}</span> months` : 'none', cv.gsc ? `${cv.gsc.minDate} to ${cv.gsc.maxDate}` : 'Run sync_gsc'),
+    // Device / country rows: only a segments:true sync writes them, so they can stop while the totals go on.
+    ...(d.segmentsLastDate === undefined || !cv.gsc ? [] : [(() => {
+      const last: string | null = d.segmentsLastDate;
+      const inWindow = !!last && (!d.breakdownWindowStart || last >= d.breakdownWindowStart);
+      return chip(inWindow, 'Device & country', last ? `to ${esc(shortDay(last))}` : 'not synced',
+        !last ? 'Run sync_gsc with segments:true to add device and country breakdowns.'
+          : inWindow ? `Segment rows to ${last}.` : `No device or country rows in the last 28 days: the last segment sync covered up to ${last}. Run sync_gsc with segments:true to refresh.`);
+    })()]),
     chip(cv.crawlPages > 0, 'Crawl', cv.crawlPages ? `<span class="n">${fmt(cv.crawlPages)}</span> pages` : 'none'),
     chip(cv.inspected > 0, 'URL inspection', !cv.inspected ? 'none' : cv.inspectedIndexable == null ? `<span class="n">${fmt(cv.inspected)}</span> URLs (a sample)`
       : `<span class="n">${fmt(cv.inspectedIndexable)}</span> of <span class="n">${fmt(cv.indexablePages)}</span> indexable pages`,

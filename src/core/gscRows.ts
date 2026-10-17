@@ -315,6 +315,24 @@ export function ensureGscRows(db: Database.Database): void {
   if (stored !== fingerprint(db)) refreshGscDayShapes(db);
 }
 
+/**
+ * The last day with device / country (segment) rows, in any storage layout: the segment table, plus
+ * (before the migration) the segment rows still in search_analytics. Index-backed: each lookup walks
+ * the date index from the top. Null when the property was only ever synced lite. A missing table (a
+ * read-only handle on a database this version never opened) reads as empty.
+ */
+export function segmentsMaxDate(db: Database.Database): string | null {
+  const max = (sql: string): string | null => {
+    try { return (db.prepare(sql).get() as { d: string | null } | undefined)?.d ?? null; } catch { return null; }
+  };
+  let segments = max(`SELECT MAX(date) d FROM ${SEGMENTS}`);
+  if (gscStorageState(db) !== 'done') {
+    const legacy = max(`SELECT date d FROM search_analytics WHERE ${segmentSql()} ORDER BY date DESC LIMIT 1`);
+    if (legacy && (!segments || legacy > segments)) segments = legacy;
+  }
+  return segments;
+}
+
 /** True when the views are present (a read-only handle on a database never opened by this version has none). */
 export function hasGscRows(db: Database.Database): boolean {
   return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = ?`).get(GSC_ROWS);

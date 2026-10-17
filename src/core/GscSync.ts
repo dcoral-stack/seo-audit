@@ -1,7 +1,7 @@
 import { AuditDatabase } from './AuditDatabase.js';
 import { addQueries } from './fts.js';
 import Database from 'better-sqlite3';
-import { SEGMENTS, gscStorageState, refreshLegacyDayShapes, segmentSql, settleGscTotals, type SettleResult } from './gscRows.js';
+import { SEGMENTS, gscStorageState, refreshLegacyDayShapes, segmentSql, segmentsMaxDate, settleGscTotals, type SettleResult } from './gscRows.js';
 import { gb, migrateGscStorage, type GscMigrationResult } from './gscMigrate.js';
 import { GscClient } from './GscClient.js';
 import { dbPathFor } from './paths.js';
@@ -69,12 +69,7 @@ export function storedMaxDates(db: Database.Database): { totals: string | null; 
     try { return (db.prepare(sql).get() as { d: string | null } | undefined)?.d ?? null; } catch { return null; }
   };
   const totals = max(`SELECT MAX(date) d FROM search_analytics`);
-  let segments = max(`SELECT MAX(date) d FROM ${SEGMENTS}`);
-  if (gscStorageState(db) !== 'done') {
-    const legacy = max(`SELECT date d FROM search_analytics WHERE ${segmentSql()} ORDER BY date DESC LIMIT 1`);
-    if (legacy && (!segments || legacy > segments)) segments = legacy;
-  }
-  return { totals, segments };
+  return { totals, segments: segmentsMaxDate(db) };
 }
 
 /**
