@@ -785,9 +785,9 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       try {
         const adb = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
         try {
-          adb.db.prepare(`INSERT INTO agent_readiness (origin,score,level,checks,by_category,checked_at) VALUES (?,?,?,?,?,datetime('now'))
-            ON CONFLICT(origin) DO UPDATE SET score=excluded.score, level=excluded.level, checks=excluded.checks, by_category=excluded.by_category, checked_at=excluded.checked_at`)
-            .run(r.origin, r.score, r.level, JSON.stringify(r.checks), JSON.stringify(r.byCategory));
+          adb.db.prepare(`INSERT INTO agent_readiness (origin,score,level,checks,by_category,bots,checked_at) VALUES (?,?,?,?,?,?,datetime('now'))
+            ON CONFLICT(origin) DO UPDATE SET score=excluded.score, level=excluded.level, checks=excluded.checks, by_category=excluded.by_category, bots=excluded.bots, checked_at=excluded.checked_at`)
+            .run(r.origin, r.score, r.level, JSON.stringify(r.checks), JSON.stringify(r.byCategory), r.bots ? JSON.stringify(r.bots) : null);
         } finally { adb.close(); }
       } catch { /* persistence is best-effort */ }
       return {

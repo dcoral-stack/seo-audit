@@ -9,16 +9,24 @@
 
 export type AgentCategory = 'Discoverability' | 'Content' | 'Bot access control' | 'Capabilities';
 export interface AgentCheck { id: string; category: AgentCategory; label: string; present: boolean; detail: string; fix: string }
+/** Per-bot robots.txt verdict for the site root. `not-stated` = no group names the bot, so the
+ *  `*` group applies; `inherits` says what that means for '/'. No robots.txt = every bot not-stated. */
+export interface AiBotAccess { bot: string; operator: string; group: AiBotGroup; verdict: 'allowed' | 'blocked' | 'not-stated'; inherits: 'allowed' | 'blocked' }
 export interface AgentReadiness {
   siteUrl: string; origin: string; score: number; level: string;
   byCategory: { category: AgentCategory; passed: number; total: number }[];
   checks: AgentCheck[];
+  /** Per-bot access from robots.txt, grouped by the maintained list in aiBots.ts. Null = no robots.txt. */
+  bots: AiBotAccess[] | null;
   commerceNote: string;
 }
 
+import { AI_BOTS, AI_BOT_PATTERN, type AiBotGroup } from './aiBots.js';
+import { robotsVerdict } from './robots.js';
+
 const UA = 'Mozilla/5.0 (compatible; SEOAuditConsole/1.0; +https://houtini.com)';
-// The AI crawlers a site would name in robots.txt if it had AI-specific rules.
-const AI_BOTS = /(GPTBot|OAI-SearchBot|ChatGPT-User|ClaudeBot|Claude-Web|anthropic-ai|Google-Extended|PerplexityBot|CCBot|Bytespider|Amazonbot|Applebot-Extended|cohere-ai|Meta-ExternalAgent|DuckAssistBot)/i;
+// The AI crawlers a site would name in robots.txt if it had AI-specific rules: the one list.
+const AI_BOT_RULES = AI_BOT_PATTERN;
 
 interface Probe { ok: boolean; status: number; ct: string; text: string; link: string | null }
 async function probe(url: string, accept = '*/*'): Promise<Probe> {
@@ -61,7 +69,7 @@ export async function checkAgentReadiness(siteUrl: string): Promise<AgentReadine
 
   const robotsReal = textReal(robots);
   const robotsTxt = robotsReal ? robots.text : '';
-  const hasAiRules = robotsReal && AI_BOTS.test(robotsTxt);
+  const hasAiRules = robotsReal && AI_BOT_RULES.test(robotsTxt);
   const hasContentSignals = robotsReal && /content-signal\s*:/i.test(robotsTxt);
   const hasSitemapDirective = robotsReal && /^\s*sitemap\s*:/im.test(robotsTxt);
   const mdNegotiated = homeMd.ok && /text\/markdown/.test(homeMd.ct);
@@ -94,8 +102,14 @@ export async function checkAgentReadiness(siteUrl: string): Promise<AgentReadine
   const score = Math.round((passed / checks.length) * 100);
   const level = score >= 80 ? 'Agent-native' : score >= 50 ? 'Agent-friendly' : score >= 20 ? 'Some agent signals' : 'Basic web presence';
 
+  const star = robotsVerdict(robotsTxt, '*');
+  const bots: AgentReadiness['bots'] = robotsReal ? AI_BOTS.map(b => {
+    const v = robotsVerdict(robotsTxt, b.token);
+    return { bot: b.token, operator: b.operator, group: b.group, verdict: v.named ? (v.allowed ? 'allowed' : 'blocked') : 'not-stated', inherits: (v.named ? v.allowed : star.allowed) ? 'allowed' : 'blocked' };
+  }) : null;
+
   return {
-    siteUrl, origin, score, level, byCategory, checks,
+    siteUrl, origin, score, level, byCategory, checks, bots,
     commerceNote: 'Commerce protocols (x402, ACP, UCP, MPP) are emerging and not reliably detectable from a passive probe — review manually if you transact with agents.',
   };
 }
@@ -113,6 +127,12 @@ export function buildAgentReadinessMarkdown(r: AgentReadiness): string {
     if (c.category !== cat) { cat = c.category; out.push(`\n## ${cat}`); }
     out.push(`- ${icon(c.present)} **${c.label}** — ${c.detail}`);
     if (!c.present) out.push(`    - Fix: ${c.fix}`);
+  }
+  if (r.bots) {
+    const line = (g: AiBotGroup): string => r.bots!.filter(b => b.group === g)
+      .map(b => `${b.bot} ${b.verdict === 'not-stated' ? `not stated (* ${b.inherits})` : b.verdict}`).join(' · ');
+    out.push('', '## AI bot access (robots.txt, site root)', `- Search and citation: ${line('search')}`, `- Training: ${line('training')}`,
+      '- Blocking a training crawler does not remove you from live AI search citations; blocking a search one does.');
   }
   out.push('', `> ${r.commerceNote}`);
   return out.join('\n');

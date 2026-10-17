@@ -1,4 +1,6 @@
+import type Database from 'better-sqlite3';
 import { AuditDatabase } from './AuditDatabase.js';
+import type { AiBotAccess } from './agentReadiness.js';
 import { getDataFreshness, type DataFreshness } from './dataFreshness.js';
 import { liveJobTypes } from './JobManager.js';
 import { dbPathFor, jobScopeFor } from './paths.js';
@@ -74,7 +76,12 @@ export interface DashboardData {
     totalPages: number;
   };
   // Agent readiness (from check_agent_readiness) — how ready the site is for AI agents.
-  agentReadiness?: { score: number; level: string; checkedAt: string; byCategory: { category: string; passed: number; total: number }[]; checks: { id: string; category: string; label: string; present: boolean; detail: string; fix: string }[] };
+  agentReadiness?: {
+    score: number; level: string; checkedAt: string; byCategory: { category: string; passed: number; total: number }[]; checks: { id: string; category: string; label: string; present: boolean; detail: string; fix: string }[];
+    /** Per-AI-bot robots.txt verdicts, grouped search vs training by src/core/aiBots.ts. Null = the
+     *  stored result predates per-bot verdicts (re-run check_agent_readiness) or the site has no robots.txt. */
+    bots: AiBotAccess[] | null;
+  };
   serpFootprint?: SerpFootprint | null;
   marketSizing?: MarketSizing | null;
   // Internal link explorer: folder-to-folder iPR flow (bipartite Sankey - left sources, right targets).
@@ -839,9 +846,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     }
 
     // Agent readiness — latest result persisted by check_agent_readiness (one property per DB).
-    const arRow = db.db.prepare(`SELECT score, level, checks, by_category, checked_at FROM agent_readiness ORDER BY checked_at DESC LIMIT 1`).get() as { score: number; level: string; checks: string; by_category: string; checked_at: string } | undefined;
-    const parseJ = (s: string): any => { try { return JSON.parse(s || '[]'); } catch { return []; } };
-    const agentReadiness = arRow ? { score: arRow.score, level: arRow.level, checkedAt: arRow.checked_at, byCategory: parseJ(arRow.by_category), checks: parseJ(arRow.checks) } : undefined;
+    const agentReadiness = readAgentReadiness(db.db);
 
     // Cannibalisation braids — queries where multiple URLs compete, each URL's weekly avg position.
     // The "braid" of crossing lines over time is Google thrashing between URLs (severity = tangle).
@@ -1010,6 +1015,15 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
   } finally {
     db.close();
   }
+}
+
+/** Agent readiness: the latest result persisted by check_agent_readiness (one property per DB). */
+function readAgentReadiness(db: Database.Database): DashboardData['agentReadiness'] {
+  const row = db.prepare(`SELECT score, level, checks, by_category, bots, checked_at FROM agent_readiness ORDER BY checked_at DESC LIMIT 1`).get() as
+    { score: number; level: string; checks: string; by_category: string; bots: string | null; checked_at: string } | undefined;
+  if (!row) return undefined;
+  const parseJ = (s: string | null, dflt: unknown): any => { try { return s ? JSON.parse(s) : dflt; } catch { return dflt; } };
+  return { score: row.score, level: row.level, checkedAt: row.checked_at, byCategory: parseJ(row.by_category, []), checks: parseJ(row.checks, []), bots: parseJ(row.bots, null) };
 }
 
 /** Template proxy: first URL path segment (homepage / content-root collapse to named buckets). */

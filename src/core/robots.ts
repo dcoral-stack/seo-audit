@@ -12,6 +12,11 @@ interface Rule { path: string; allow: boolean }
 const ALLOW_ALL: RobotsRules = { isAllowed: () => true };
 
 function parseRules(txt: string, uaToken: string): Rule[] {
+  return matchGroup(txt, uaToken).rules;
+}
+
+/** The most-specific group for a UA token: its rules, and whether a group NAMES the token (vs `*`). */
+function matchGroup(txt: string, uaToken: string): { rules: Rule[]; named: boolean; matched: boolean } {
   const groups: { agents: string[]; rules: Rule[] }[] = [];
   let current: { agents: string[]; rules: Rule[] } | null = null;
   let lastWasAgent = false;
@@ -45,8 +50,18 @@ function parseRules(txt: string, uaToken: string): Rule[] {
   const agentScore = (a: string): number => (a === '*' ? 0 : ua.includes(a) ? a.length : -1);
   const groupScore = (g: { agents: string[] }): number => Math.max(-1, ...g.agents.map(agentScore));
   const best = Math.max(-1, ...groups.map(groupScore));
-  if (best < 0) return [];
-  return groups.filter(g => groupScore(g) === best).flatMap(g => g.rules);
+  if (best < 0) return { rules: [], named: false, matched: false };
+  return { rules: groups.filter(g => groupScore(g) === best).flatMap(g => g.rules), named: best > 0, matched: true };
+}
+
+/**
+ * What robots.txt says about one user-agent token, for the site root ('/'). `named`: a group names
+ * this token (so its rules replace `*`, RFC 9309); `allowed`: '/' is crawlable under the group that
+ * applies (no matching group at all = allowed).
+ */
+export function robotsVerdict(txt: string, uaToken: string): { named: boolean; allowed: boolean } {
+  const g = matchGroup(txt, uaToken);
+  return { named: g.named, allowed: makeRules(g.rules).isAllowed('/') };
 }
 
 function makeRules(rules: Rule[]): RobotsRules {

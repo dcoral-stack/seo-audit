@@ -596,9 +596,9 @@ const startMs = endMs - (DAYS - 1) * DAY;
 {
   const r = await checkAgentReadiness(SITE);
   const adb = new AuditDatabase(dbPath);
-  adb.db.prepare(`INSERT INTO agent_readiness (origin,score,level,checks,by_category,checked_at) VALUES (?,?,?,?,?,?)
-    ON CONFLICT(origin) DO UPDATE SET score=excluded.score, level=excluded.level, checks=excluded.checks, by_category=excluded.by_category, checked_at=excluded.checked_at`)
-    .run(r.origin, r.score, r.level, JSON.stringify(r.checks), JSON.stringify(r.byCategory), sqlTs(nowMs - 23 * 3600_000));
+  adb.db.prepare(`INSERT INTO agent_readiness (origin,score,level,checks,by_category,bots,checked_at) VALUES (?,?,?,?,?,?,?)
+    ON CONFLICT(origin) DO UPDATE SET score=excluded.score, level=excluded.level, checks=excluded.checks, by_category=excluded.by_category, bots=excluded.bots, checked_at=excluded.checked_at`)
+    .run(r.origin, r.score, r.level, JSON.stringify(r.checks), JSON.stringify(r.byCategory), r.bots ? JSON.stringify(r.bots) : null, sqlTs(nowMs - 23 * 3600_000));
   adb.close();
   log(`agent readiness: ${r.score}/100 (${r.level})`);
 }
