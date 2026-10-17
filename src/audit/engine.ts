@@ -42,6 +42,8 @@ export interface AuditResult {
   byCheck: { checkId: string; category: string; severity: string; count: number; priority: number; totalFound?: number; truncated?: boolean }[];
   /** Checks whose findings exceeded MAX_PER_CHECK, with their true totals — never cap silently. */
   truncatedChecks?: { checkId: string; stored: number; totalFound: number }[];
+  /** Checks whose source data was never collected (CheckDef.collected): unknown, not passed. */
+  notCollected?: { checkId: string; note: string }[];
   top: any[];
   elapsedMs?: number; // wall-clock for the audit run (performance instrumentation)
   indexability?: Record<string, number>; // reason → count (indexable, http-404, noindex-meta, robots-disallowed, …)
@@ -125,9 +127,12 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
     const byCategory: Record<string, number> = {};
 
     const truncated = new Map<string, number>(); // checkId → true finding count before the cap
+    const notCollected: { checkId: string; note: string }[] = [];
 
     const tx = db.db.transaction(() => {
       for (const chk of checks) {
+        const missing = chk.collected?.(ctx) ?? null;
+        if (missing) notCollected.push({ checkId: chk.id, note: missing });
         const all = chk.run(ctx);
         // Effort scales with the REAL number of affected pages, not the stored sample. Scaling on
         // the capped length understates E (log10(509) vs log10(5009)) and therefore INFLATES
@@ -228,6 +233,7 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
     return {
       runId, siteUrl, integrityOk: pageCount > 0, total, bySeverity, byCategory, byCheck, top,
       ...(truncatedChecks.length ? { truncatedChecks } : {}),
+      ...(notCollected.length ? { notCollected } : {}),
       elapsedMs: Date.now() - t0, indexability,
     };
   } catch (err) {
@@ -242,14 +248,16 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
 }
 
 /** Run one named check and return its findings (no persistence) — for query_audit. */
-export function runSingleCheck(dataDir: string, siteUrl: string, checkId: string, limit = 100, offset = 0): { check: string; findings: any[]; total: number } {
+export function runSingleCheck(dataDir: string, siteUrl: string, checkId: string, limit = 100, offset = 0): { check: string; findings: any[]; total: number; notCollected?: string } {
   const chk = CHECKS.find(c => c.id === checkId);
   if (!chk) throw new Error(`Unknown check: ${checkId}. See list_checks.`);
   const db = new AuditDatabase(dbPathFor(dataDir, siteUrl));
   try {
     const maxDate = gscFreshness(db.db).effectiveMax;
-    const all = chk.run({ db: db.db, gscMaxDate: maxDate, brand: brandToken(siteUrl), siteUrl });
-    return { check: checkId, findings: all.slice(offset, offset + limit), total: all.length };
+    const ctx = { db: db.db, gscMaxDate: maxDate, brand: brandToken(siteUrl), siteUrl };
+    const notCollected = chk.collected?.(ctx) ?? null;
+    const all = chk.run(ctx);
+    return { check: checkId, findings: all.slice(offset, offset + limit), total: all.length, ...(notCollected ? { notCollected } : {}) };
   } finally {
     db.close();
   }

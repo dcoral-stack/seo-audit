@@ -1,7 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { FindingLabel, Severity } from '../core/AuditDatabase.js';
 import { validateJsonLdColumn, type SchemaIssueKind } from './schema-validate.js';
-import { urlKey } from '../core/url-key.js';
 import { parseJsonLdNodes, nodeType } from './templates.js';
 import { expectedCtr } from '../core/ctrModel.js';
 import { latestTwoCrawls } from './drift.js';
@@ -10,6 +9,8 @@ import { loadBrandQueries, brandPredicate } from '../core/brand.js';
 import { SIGNAL_CHECKS } from './checks-signals.js';
 import { REDIRECT_CHECKS, redirectChainFindings } from './checks-redirects.js';
 import { ECOMMERCE_CHECKS } from './checks-ecommerce.js';
+import { HREFLANG_CHECKS, HREFLANG_EXISTING_CHECKS } from './checks-hreflang.js';
+import { ASSET_CHECKS } from './checks-assets.js';
 
 /**
  * Check registry. Each check is a pure read over the AuditDatabase (crawl + GSC +
@@ -40,6 +41,12 @@ export interface CheckDef {
   title: string;
   fix: string;
   run(ctx: CheckContext): RawFinding[];
+  /**
+   * Optional: whether the data this check reads was collected at all. null = collected (zero findings
+   * then means "passed"); a string = NOT collected, saying how to collect it, so an empty table is
+   * reported as unknown rather than passing silently. Surfaced as AuditResult.notCollected.
+   */
+  collected?(ctx: CheckContext): string | null;
 }
 
 const rows = (ctx: CheckContext, sql: string, ...args: unknown[]): any[] => ctx.db.prepare(sql).all(...args);
@@ -1030,16 +1037,8 @@ export const CHECKS: CheckDef[] = [
       return out;
     },
   },
-  {
-    id: 'broken-hreflang-target', category: 'indexation', severity: 'high', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'per-page',
-    title: 'hreflang points to a broken/non-indexable URL', fix: 'Point each hreflang alternate at a live, indexable URL — Google drops the whole cluster if an alternate is 4xx/5xx/redirect/noindex.',
-    run: (c) => hreflangFindings(c).broken,
-  },
-  {
-    id: 'hreflang-no-return-tag', category: 'indexation', severity: 'high', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'per-page',
-    title: 'hreflang missing return tag (not reciprocated)', fix: 'Add the reciprocal hreflang on the target page — Google ignores one-way hreflang annotations that don’t link back.',
-    run: (c) => hreflangFindings(c).noReturn,
-  },
+  // hreflang target health + reciprocation: existing ids, now in checks-hreflang.ts (extended, #55 group C).
+  ...HREFLANG_EXISTING_CHECKS,
 
   // ── 6a finishers — consume persisted DataForSEO enrichments (gated; need the data pulled) ──
   {
@@ -1539,6 +1538,10 @@ export const CHECKS: CheckDef[] = [
   ...REDIRECT_CHECKS,
   // #55 group B: ecommerce (item 10).
   ...ECOMMERCE_CHECKS,
+  // #55 group C: cross-host canonicals + hreflang validation (item 6).
+  ...HREFLANG_CHECKS,
+  // #55 group C: asset checks (item 7).
+  ...ASSET_CHECKS,
 ];
 
 // ── Google Discover helpers (article-eligibility + directive/schema parsing) ──
@@ -1629,61 +1632,3 @@ function hasSchemaImage(node: unknown): boolean {
 
 const sitemapHasRows = (c: CheckContext): boolean =>
   ((c.db.prepare('SELECT COUNT(*) n FROM sitemap_urls').get() as { n: number }).n) > 0;
-
-// hreflang checks share parsing/normalisation: stored hrefs may be absolute or raw (existing crawl
-// databases), so resolve each against the page URL (a no-op for absolute hrefs), then urlKey()
-// with the property's host_form so they match pages.url_key. Computed once.
-type HreflangOut = { broken: RawFinding[]; noReturn: RawFinding[] };
-let _hreflangCache: { db: Database.Database; out: HreflangOut } | null = null;
-function hreflangFindings(ctx: CheckContext): HreflangOut {
-  if (_hreflangCache && _hreflangCache.db === ctx.db) return _hreflangCache.out;
-  const hostForm = (ctx.db.prepare(`SELECT host_form h FROM property_meta LIMIT 1`).get() as { h: string } | undefined)?.h as
-    | 'apex' | 'www' | 'asis' | undefined;
-  const opts = { hostForm: hostForm ?? 'asis' };
-  const pageRows = ctx.db.prepare(`SELECT url_key, url, status_code, noindex, hreflang FROM pages WHERE hreflang IS NOT NULL AND hreflang != ''`).all() as
-    { url_key: string; url: string; status_code: number | null; noindex: number | null; hreflang: string }[];
-  const status = new Map<string, { status: number | null; noindex: number | null }>();
-  // A target the host rate limited (#54) was never fetched: its status is unknown, so it is neither
-  // a broken alternate nor one we can check for a return tag. Leave it out of the map entirely.
-  for (const p of ctx.db.prepare(`SELECT url_key, status_code, noindex FROM pages WHERE fetch_state IS NOT 'rate_limited'`).all() as { url_key: string; status_code: number | null; noindex: number | null }[])
-    status.set(p.url_key, { status: p.status_code, noindex: p.noindex });
-
-  // declared[sourceKey] = set of internal alternate targetKeys (excluding self)
-  const declared = new Map<string, Set<string>>();
-  const parsed: { srcKey: string; targets: { key: string; lang: string }[] }[] = [];
-  for (const p of pageRows) {
-    let arr: { lang: string; href: string }[];
-    try { arr = JSON.parse(p.hreflang); } catch { continue; }
-    const targets: { key: string; lang: string }[] = [];
-    for (const { lang, href } of arr) {
-      if (!href) continue;
-      let key: string;
-      try { key = urlKey(new URL(href, p.url).toString(), opts); } catch { continue; }
-      if (key === p.url_key) continue; // self-reference
-      targets.push({ key, lang: (lang || '').toLowerCase() });
-    }
-    parsed.push({ srcKey: p.url_key, targets });
-    // A return link via x-default is a VALID return tag (common when x-default is the
-    // homepage) — include all targets here; x-default is only excluded as a reciprocation
-    // *requirement* in the loop below, never as a way of satisfying one.
-    declared.set(p.url_key, new Set(targets.map(t => t.key)));
-  }
-
-  const broken: RawFinding[] = [];
-  const noReturn: RawFinding[] = [];
-  for (const { srcKey, targets } of parsed) {
-    const brokenTargets: string[] = [];
-    const missingReturn: string[] = [];
-    for (const t of targets) {
-      const st = status.get(t.key);
-      if (st && (st.status !== 200 || st.noindex === 1)) brokenTargets.push(t.key);
-      // reciprocation only for internal, live (200) targets we crawled, excluding x-default
-      // (a broken target is already reported by broken-hreflang-target — don't double-flag)
-      if (t.lang !== 'x-default' && st && st.status === 200 && st.noindex !== 1 && !(declared.get(t.key)?.has(srcKey))) missingReturn.push(t.key);
-    }
-    if (brokenTargets.length) broken.push({ urlKey: srcKey, evidence: { brokenAlternates: brokenTargets.slice(0, 10), count: brokenTargets.length } });
-    if (missingReturn.length) noReturn.push({ urlKey: srcKey, evidence: { missingReturnFrom: missingReturn.slice(0, 10), count: missingReturn.length } });
-  }
-  _hreflangCache = { db: ctx.db, out: { broken, noReturn } };
-  return { broken, noReturn };
-}
