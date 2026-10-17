@@ -1,0 +1,95 @@
+{
+ "record": {
+  "key": {
+   "formFactor": "PHONE",
+   "url": "https://www.example.test/guides/widgets/"
+  },
+  "metrics": {
+   "largest_contentful_paint": {
+    "histogram": [
+     {
+      "start": 0,
+      "end": 2500,
+      "density": 0.38
+     },
+     {
+      "start": 2500,
+      "end": 4000,
+      "density": 0.3
+     },
+     {
+      "start": 4000,
+      "density": 0.32
+     }
+    ],
+    "percentiles": {
+     "p75": 4400
+    }
+   },
+   "interaction_to_next_paint": {
+    "histogram": [
+     {
+      "start": 0,
+      "end": 200,
+      "density": 0.7
+     },
+     {
+      "start": 200,
+      "end": 500,
+      "density": 0.22
+     },
+     {
+      "start": 500,
+      "density": 0.08
+     }
+    ],
+    "percentiles": {
+     "p75": 270
+    }
+   },
+   "cumulative_layout_shift": {
+    "histogram": [
+     {
+      "start": "0.00",
+      "end": "0.10",
+      "density": 0.96
+     },
+     {
+      "start": "0.10",
+      "end": "0.25",
+      "density": 0.02
+     },
+     {
+      "start": "0.25",
+      "density": 0.02
+     }
+    ],
+    "percentiles": {
+     "p75": "0.02"
+    }
+   },
+   "largest_contentful_paint_resource_type": {
+    "fractions": {
+     "image": 0.9,
+     "text": 0.1
+    }
+   }
+  },
+  "collectionPeriod": {
+   "firstDate": {
+    "year": 2026,
+    "month": 9,
+    "day": 18
+   },
+   "lastDate": {
+    "year": 2026,
+    "month": 10,
+    "day": 15
+   }
+  }
+ },
+ "urlNormalizationDetails": {
+  "originalUrl": "https://www.example.test/guides/widgets/?utm_source=x",
+  "normalizedUrl": "https://www.example.test/guides/widgets/"
+ }
+}

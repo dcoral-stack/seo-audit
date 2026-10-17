@@ -14,12 +14,18 @@
 //   - The CRAWL is genuine: the real Crawler fetches that site (its undici connections are routed
 //     to the in-process server), so pages / links / redirects / sitemap / images / the link graph
 //     are the crawler's own output.
-//   - The GSC history is synthetic: ~120 days of segmented (device x country) rows with seasonality,
-//     a growth trend, decay, cannibalisation and striking-distance stories.
+//   - The GSC history is synthetic: ~16 months of segmented (device x country) rows with annual
+//     seasonality and a growth trend, and in the last 120 days the decay, cannibalisation and
+//     striking-distance stories. Sixteen months give the Summary tab its monthly trend and
+//     year-on-year comparison.
+//   - The CRAWL HISTORY is genuine: three real crawls of the site (backdated 29 days, 15 days and one
+//     day), with the site edited between them, each followed by a real audit. That's what feeds the
+//     Summary's health trend, the opened / resolved issue deltas and "changed since the last crawl".
 //   - Agent readiness is genuine (the real probe, run against the in-process server). Passage
 //     scores are genuine when the local cross-encoder is cached (skip with --no-ml).
 //   - DataForSEO / Google-only enrichments (URL inspection, backlinks, link prospects, rank
-//     history, CWV, keyword intent) are synthetic but derived from the crawl so they agree with it.
+//     history, lab CWV, CrUX field CWV, keyword intent, content-recon AI Overview reads) are
+//     synthetic but derived from the crawl so they agree with it.
 //   - The AUDIT is genuine: runAudit runs every check over the result.
 //
 // Run:  npm run build && npm run demo:property -- [--out <dir>] [--end YYYY-MM-DD] [--no-ml]
@@ -41,7 +47,8 @@ const DAY = 86_400_000;
 const isoDate = (ms) => new Date(ms).toISOString().slice(0, 10);
 const END = arg('--end') ?? isoDate(Date.now() - 2 * DAY);
 const NO_ML = argv.includes('--no-ml');
-const DAYS = 120;
+const DAYS = 500;       // ~16 months of GSC: the Summary's monthly trend + year-on-year
+const STORY_DAYS = 120; // the decay / fade / drift stories play out over the last 120 days
 const VOL_SCALE = 0.55; // overall demand: ~40k clicks per 28 days
 
 const SITE = 'sc-domain:larchmere.example';
@@ -490,6 +497,7 @@ undici.setGlobalDispatcher(new undici.Agent());
 // Import the built modules only after the patch, so their `undici` binding is the demo agent.
 const { AuditDatabase } = await import('../dist/core/AuditDatabase.js');
 const { dbPathFor } = await import('../dist/core/paths.js');
+const { settleGscTotals } = await import('../dist/core/gscRows.js');
 const { urlKey } = await import('../dist/core/url-key.js');
 const { Crawler } = await import('../dist/core/Crawler.js');
 const { runAudit } = await import('../dist/audit/engine.js');
@@ -546,7 +554,9 @@ const startMs = endMs - (DAYS - 1) * DAY;
 {
   const adb = new AuditDatabase(dbPath);
   adb.upsertProperty(SITE, 'apex');
-  const ins = adb.db.prepare(`INSERT INTO search_analytics (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  // Device × country rows, as a segments sync writes them (#65): the segment table, then the totals
+  // aggregated into search_analytics by the same settle step the sync runs.
+  const ins = adb.db.prepare(`INSERT INTO search_analytics_segments (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,?,?,?,?,?,?,?,?,?)`);
   let rows = 0, totC = 0, totI = 0;
   adb.db.transaction(() => {
     for (const pr of pairs) {
@@ -554,15 +564,19 @@ const startMs = endMs - (DAYS - 1) * DAY;
       const key = k(url);
       const phase = rand(0, 7);
       for (let d = 0; d < DAYS; d++) {
-        const t = d / (DAYS - 1);
+        const t = d / (DAYS - 1);                                              // the whole history: growth
+        const ts = Math.max(0, (d - (DAYS - STORY_DAYS)) / (STORY_DAYS - 1));  // the last 120 days: stories
         const ms = startMs + d * DAY;
         const dow = new Date(ms).getUTCDay();
-        const season = pr.season === 'summer' ? 1.3 - 0.75 * t : pr.season === 'winter' ? 0.7 + 0.75 * t : 1 - 0.05 * Math.sin(t * 3);
+        const doy = (ms - Date.UTC(new Date(ms).getUTCFullYear(), 0, 1)) / DAY;
+        // Annual seasonality: summer kit peaks mid-July, winter kit mid-January.
+        const season = pr.season === 'summer' ? 1 + 0.4 * Math.cos((2 * Math.PI * (doy - 196)) / 365)
+          : pr.season === 'winter' ? 1 + 0.4 * Math.cos((2 * Math.PI * (doy - 15)) / 365) : 1 - 0.05 * Math.sin(t * 9);
         const week = dow === 0 || dow === 6 ? 1.12 : dow === 5 ? 0.9 : 1;
-        let vol = VOL_SCALE * pr.vol * season * week * (1 + 0.1 * t) * Math.exp(gauss() * 0.16) * (1 + 0.06 * Math.sin(d / 3.5 + phase));
-        let pos = pr.pos + pr.drift * t + gauss() * 0.5;
+        let vol = VOL_SCALE * pr.vol * season * week * (0.8 + 0.3 * t) * Math.exp(gauss() * 0.16) * (1 + 0.06 * Math.sin(d / 3.5 + phase));
+        let pos = pr.pos + pr.drift * ts + gauss() * 0.5;
         if (pr.story === 'decay' && d > DAYS - 40) { vol *= 0.62; pos += 3.2; }
-        if (pr.story === 'fade') vol *= Math.max(0, 1 - t * 1.25);
+        if (pr.story === 'fade') vol *= Math.max(0, 1 - ts * 1.25);
         if (pr.story === 'fresh' && d < DAYS - 45) continue;
         if (pr.story === 'braid') pos += (Math.floor(d / 7) % 2 === 0 ? -2.4 : 2.6);
         const impr = poisson(vol);
@@ -581,38 +595,158 @@ const startMs = endMs - (DAYS - 1) * DAY;
       }
     }
   })();
+  settleGscTotals(adb.db, isoDate(startMs), END, true);
   adb.db.prepare('UPDATE property_meta SET last_synced_at=? WHERE site_url=?').run(sqlTs(nowMs - 26 * 3600_000), SITE);
   adb.close();
   log(`GSC: ${pairs.length} query/page pairs, ${rows.toLocaleString()} rows, ${totC.toLocaleString()} clicks / ${totI.toLocaleString()} impressions over ${DAYS} days to ${END}`);
 }
 
-// ── 2. The crawl (the real crawler, against the demo server) ─────────────────
-{
+// ── 2. The first crawl (the real crawler, against the demo server) ───────────
+async function crawlOnce(label) {
   const res = await new Crawler(OUT).run(SITE, { maxConcurrency: 8, delayMs: 0, checkExternal: false, chromeFallback: false }, () => {}, new AbortController().signal);
-  log(`crawl: ${res.crawled} crawled, ${res.failed} failed, ${res.skipped} skipped; sitemaps ${JSON.stringify(res.sitemaps ?? {})}`);
+  log(`crawl ${label}: ${res.crawled} crawled, ${res.failed} failed, ${res.skipped} skipped; sitemaps ${JSON.stringify(res.sitemaps ?? {})}`);
+  return res.crawlId;
 }
+const crawlA = await crawlOnce('A');
 
 // ── 3. Agent readiness (the real probe, against the demo server) ─────────────
 {
   const r = await checkAgentReadiness(SITE);
   const adb = new AuditDatabase(dbPath);
-  adb.db.prepare(`INSERT INTO agent_readiness (origin,score,level,checks,by_category,checked_at) VALUES (?,?,?,?,?,?)
-    ON CONFLICT(origin) DO UPDATE SET score=excluded.score, level=excluded.level, checks=excluded.checks, by_category=excluded.by_category, checked_at=excluded.checked_at`)
-    .run(r.origin, r.score, r.level, JSON.stringify(r.checks), JSON.stringify(r.byCategory), sqlTs(nowMs - 23 * 3600_000));
+  adb.db.prepare(`INSERT INTO agent_readiness (origin,score,level,checks,by_category,bots,checked_at) VALUES (?,?,?,?,?,?,?)
+    ON CONFLICT(origin) DO UPDATE SET score=excluded.score, level=excluded.level, checks=excluded.checks, by_category=excluded.by_category, bots=excluded.bots, checked_at=excluded.checked_at`)
+    .run(r.origin, r.score, r.level, JSON.stringify(r.checks), JSON.stringify(r.byCategory), r.bots ? JSON.stringify(r.bots) : null, sqlTs(nowMs - 23 * 3600_000));
   adb.close();
   log(`agent readiness: ${r.score}/100 (${r.level})`);
 }
-server.close();
+
+// ── CrUX field data (synthetic; what sync_crux would store) ──────────────────
+// Twelve weekly 28-day windows for the origin and two busy pages, PHONE and DESKTOP, in the real
+// crux_metrics / crux_fractions / crux_targets shapes. The story: phone INP drifts from good into
+// needs-improvement over the last three windows (crux-field-inp + crux-regression fire), and the
+// tents collection's phone LCP sits in needs-improvement (crux-field-lcp, consistent with the lab
+// figures). Four more top pages have too little Chrome traffic, as most small-site URLs do.
+// Its own seeded generator, so adding it leaves every other synthetic figure unchanged.
+function writeDemoCrux(db) {
+  const r = mulberry32(20261017);
+  const jit = (v, pct) => v * (1 + (r() * 2 - 1) * pct);
+  const WINDOWS = 12;
+  // Windows end on a Saturday, a few days before the last check, a week apart.
+  const lastEnd = new Date(Date.parse(END) - 1 * DAY);
+  while (lastEnd.getUTCDay() !== 6) lastEnd.setUTCDate(lastEnd.getUTCDate() - 1);
+  const ends = Array.from({ length: WINDOWS }, (_, i) => lastEnd.getTime() - (WINDOWS - 1 - i) * 7 * DAY);
+  const EDGES = { // bin edges as the API returns them (good max, needs-improvement max)
+    largest_contentful_paint: [2500, 4000], interaction_to_next_paint: [200, 500], cumulative_layout_shift: [0.1, 0.25],
+    first_contentful_paint: [1800, 3000], experimental_time_to_first_byte: [800, 1800],
+  };
+  // Good / NI / poor shares consistent with a p75: the share under the good edge falls as p75 nears it.
+  const shares = (metric, p75) => {
+    const [g, n] = EDGES[metric];
+    const good = Math.max(0.42, Math.min(0.93, 0.75 + (g - p75) / g * 0.55));
+    const poor = Math.max(0.01, Math.min(0.2, 0.03 + (p75 - g) / (n - g) * 0.12));
+    return [good, Math.max(0, 1 - good - poor), poor].map(x => Math.round(x * 10000) / 10000);
+  };
+  // Base p75 per target x form factor; `inpRegress` marks the phone INP regression at the origin.
+  const home = k(ORIGIN + '/'), tents = k(ORIGIN + '/collections/tents');
+  const targets = [
+    { scope: 'origin', target: ORIGIN, url: ORIGIN, ff: 'PHONE', lcp: 2380, inp: 168, cls: 0.07, fcp: 1580, ttfb: 690, rtt: 145, inpRegress: true },
+    { scope: 'origin', target: ORIGIN, url: ORIGIN, ff: 'DESKTOP', lcp: 1640, inp: 86, cls: 0.04, fcp: 1050, ttfb: 430, rtt: 55 },
+    { scope: 'url', target: home, url: ORIGIN + '/', ff: 'PHONE', lcp: 2210, inp: 152, cls: 0.05, fcp: 1490, ttfb: 640, rtt: 140 },
+    { scope: 'url', target: home, url: ORIGIN + '/', ff: 'DESKTOP', lcp: 1480, inp: 78, cls: 0.03, fcp: 980, ttfb: 410, rtt: 52 },
+    { scope: 'url', target: tents, url: ORIGIN + '/collections/tents', ff: 'PHONE', lcp: 3120, inp: 181, cls: 0.09, fcp: 1720, ttfb: 720, rtt: 150 },
+    { scope: 'url', target: tents, url: ORIGIN + '/collections/tents', ff: 'DESKTOP', lcp: 2050, inp: 94, cls: 0.06, fcp: 1180, ttfb: 450, rtt: 58 },
+  ];
+  const checkedAt = sqlTs(nowMs - 22 * 3600_000);
+  const insM = db.prepare(`INSERT OR REPLACE INTO crux_metrics (scope,target,form_factor,metric,period_first,period_last,p75,good,ni,poor,good_max,ni_max,source,fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const insF = db.prepare(`INSERT OR REPLACE INTO crux_fractions (scope,target,form_factor,metric,period_last,bucket,fraction) VALUES (?,?,?,?,?,?,?)`);
+  const insT = db.prepare(`INSERT OR REPLACE INTO crux_targets (scope,target,form_factor,status,last_checked,error,query_url) VALUES (?,?,?,?,?,?,?)`);
+  const r4 = (x) => Math.round(x * 10000) / 10000;
+  let metrics = 0, fractions = 0;
+  for (const t of targets) {
+    ends.forEach((endT, i) => {
+      const last = isoDate(endT), first = isoDate(endT - 27 * DAY);
+      const source = i === WINDOWS - 1 ? 'record' : 'history'; // the newest window is also the current record
+      // Phone INP at the origin: good for nine windows, then 196 -> 214 -> 236 ms (good -> needs improvement).
+      const inp = t.inpRegress && i >= WINDOWS - 3 ? [196, 214, 236][i - (WINDOWS - 3)] : Math.round(jit(t.inp, 0.06));
+      const lcp = Math.round(jit(t.lcp, 0.04)), cls = Math.round(jit(t.cls, 0.12) * 100) / 100;
+      const fcp = Math.round(jit(t.fcp, 0.04)), ttfb = Math.round(jit(t.ttfb, 0.05));
+      for (const [metric, p75] of [['largest_contentful_paint', lcp], ['interaction_to_next_paint', inp], ['cumulative_layout_shift', cls], ['first_contentful_paint', fcp], ['experimental_time_to_first_byte', ttfb]]) {
+        const [good, ni, poor] = shares(metric, p75);
+        insM.run(t.scope, t.target, t.ff, metric, first, last, p75, good, ni, poor, EDGES[metric][0], EDGES[metric][1], source, checkedAt); metrics++;
+      }
+      insM.run(t.scope, t.target, t.ff, 'round_trip_time', first, last, Math.round(jit(t.rtt, 0.05)), null, null, null, null, null, source, checkedAt); metrics++;
+      // LCP sub-parts (a p75 each; they don't sum to the LCP p75 exactly, as in the real API).
+      const parts = { largest_contentful_paint_image_time_to_first_byte: ttfb * 0.95, largest_contentful_paint_image_resource_load_delay: lcp * 0.2,
+        largest_contentful_paint_image_resource_load_duration: lcp * 0.31, largest_contentful_paint_image_element_render_delay: lcp * 0.16 };
+      for (const [metric, v] of Object.entries(parts)) { insM.run(t.scope, t.target, t.ff, metric, first, last, Math.round(jit(v, 0.05)), null, null, null, null, null, source, checkedAt); metrics++; }
+      const image = r4(jit(t.target === tents ? 0.9 : 0.78, 0.03));
+      for (const [bucket, f] of [['image', image], ['text', r4(1 - image)]]) { insF.run(t.scope, t.target, t.ff, 'largest_contentful_paint_resource_type', last, bucket, f); fractions++; }
+      const nav = { navigate_cache: 0.04, reload: 0.04, restore: 0.01, back_forward: 0.06, back_forward_cache: r4(jit(t.ff === 'PHONE' ? 0.11 : 0.07, 0.08)), prerender: 0.03 };
+      nav.navigate = r4(1 - Object.values(nav).reduce((s, v) => s + v, 0));
+      for (const [bucket, f] of Object.entries(nav)) { insF.run(t.scope, t.target, t.ff, 'navigation_types', last, bucket, f); fractions++; }
+    });
+    insT.run(t.scope, t.target, t.ff, 'ok', checkedAt, null, t.url);
+  }
+  // Top pages by clicks with too little Chrome traffic for CrUX (the API's 404 NOT_FOUND).
+  for (const p of ['/collections/waterproof-jackets', '/guides/wild-camping-uk-guide', '/collections/sleeping-bags', '/guides/what-is-a-bothy']) {
+    for (const ff of ['PHONE', 'DESKTOP']) insT.run('url', k(ORIGIN + p), ff, 'insufficient_data', checkedAt, null, ORIGIN + p);
+  }
+  return `${metrics} metric rows, ${fractions} fraction rows, ${WINDOWS} windows to ${isoDate(lastEnd.getTime())}`;
+}
+
+// ── Backlink profile (synthetic; what pull_backlinks stores for the Links tab) ─
+// Referring domains (live and lost), the anchor mix and a year of daily new/lost history, all on
+// invented .example domains, totals matching property_meta (386 referring domains). Its own seeded
+// generator, like the CrUX block.
+function writeDemoBacklinkProfile(db, snapshotSql) {
+  const r = mulberry32(20261018);
+  const ri = (lo, hi) => Math.floor(lo + r() * (hi - lo + 1));
+  const snap = new Date(snapshotSql.replace(' ', 'T') + 'Z').toISOString();
+  const STEMS = ['trail', 'fell', 'ridge', 'bothy', 'summit', 'moor', 'glen', 'tarn', 'crag', 'dale', 'peak', 'coast', 'camp', 'hike', 'gear', 'wild', 'kit', 'route'];
+  const TAILS = ['notes', 'journal', 'blog', 'weekly', 'forum', 'club', 'guide', 'diaries', 'reviews', 'mag', 'life', 'hub'];
+  // Every stem x tail pair, with and without "-uk" (432), shuffled with the seed; the first 400 are used.
+  const domains = STEMS.flatMap(st => TAILS.flatMap(t => [`${st}-${t}.example`, `${st}-${t}-uk.example`]))
+    .map(d => [r(), d]).sort((x, y) => x[0] - y[0]).map(x => x[1]).slice(0, 400);
+  const insD = db.prepare(`INSERT OR REPLACE INTO referring_domains (snapshot_at,domain,rank,backlinks,referring_pages,nofollow_pages,spam_score,broken_backlinks,first_seen,lost_date) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  let live = 0, lost = 0;
+  domains.forEach((d, i) => {
+    const isLost = i >= 386;
+    const rank = Math.max(1, Math.round(420 * Math.pow(r(), 2.2)));
+    const bl = Math.max(1, Math.round(Math.exp(r() * 3.2)));
+    const rp = Math.max(1, Math.min(bl, Math.round(bl * (0.4 + r() * 0.6))));
+    insD.run(snap, d, rank, bl, rp, Math.round(rp * r() * 0.5), ri(0, /forum|club/.test(d) ? 30 : 12), r() < 0.08 ? ri(1, 3) : 0,
+      isoDate(nowMs - ri(40, 1400) * DAY), isLost ? isoDate(nowMs - ri(5, 120) * DAY) : null);
+    if (isLost) lost++; else live++;
+  });
+  const insA = db.prepare(`INSERT OR REPLACE INTO backlink_anchors (snapshot_at,anchor,kind,backlinks,referring_domains,nofollow_pages,first_seen,lost_date) VALUES (?,?,?,?,?,?,?,?)`);
+  const ANCHORS = [
+    ['Larchmere Outfitters', 'branded', 980, 141], ['larchmere', 'branded', 610, 88], ['Larchmere', 'branded', 240, 41],
+    ['larchmere.example', 'url', 420, 64], ['https://larchmere.example/', 'url', 310, 52], ['https://larchmere.example/guides/wild-camping-uk-guide', 'url', 95, 21],
+    ['wild camping in the UK', 'keyword', 160, 27], ['what is a bothy', 'keyword', 118, 22], ['three peaks kit list', 'keyword', 84, 17],
+    ['waterproof ratings explained', 'keyword', 66, 14], ['how to reproof a waterproof jacket', 'keyword', 41, 9], ['sleeping bag temperature ratings', 'keyword', 38, 8],
+    ['here', 'generic', 140, 33], ['this guide', 'generic', 96, 24], ['read more', 'generic', 72, 19], ['website', 'generic', 44, 12], ['source', 'generic', 31, 9],
+    ['', 'empty', 205, 38],
+  ];
+  for (const [anchor, kind, bl, rd] of ANCHORS) insA.run(snap, anchor, kind, bl, rd, Math.round(bl * 0.3 * r()), isoDate(nowMs - ri(60, 1300) * DAY), null);
+  insA.run(snap, 'outdoor gear shop', 'keyword', 12, 3, 0, isoDate(nowMs - 900 * DAY), isoDate(nowMs - 40 * DAY));
+  const insH = db.prepare(`INSERT OR REPLACE INTO backlink_history (date,rank,backlinks,new_backlinks,lost_backlinks,referring_domains,new_referring_domains,lost_referring_domains,fetched_at) VALUES (?,?,?,?,?,?,?,?,?)`);
+  let rd = 318, bl = 3520;
+  const DAYS_H = 365;
+  for (let d = DAYS_H; d >= 1; d--) {
+    const seasonal = 1 + 0.5 * Math.sin((DAYS_H - d) / 58); // link-building comes in bursts
+    const newRd = r() < 0.32 * seasonal ? ri(1, 2) : 0, lostRd = r() < 0.12 ? 1 : 0;
+    const newBl = ri(0, Math.round(9 * seasonal)), lostBl = ri(0, 6);
+    rd += newRd - lostRd; bl += newBl - lostBl;
+    insH.run(isoDate(nowMs - d * DAY), Math.round(190 + (DAYS_H - d) * 0.06), bl, newBl, lostBl, rd, newRd, lostRd, snapshotSql);
+  }
+  return `${live} live + ${lost} lost referring domains, ${ANCHORS.length + 1} anchors, ${DAYS_H} days of history`;
+}
 
 // ── 4. Enrichments that normally need Google / DataForSEO / Majestic ─────────
 {
   const adb = new AuditDatabase(dbPath);
   const db = adb.db;
-  const crawl = db.prepare(`SELECT crawl_id FROM crawl_metadata ORDER BY started_at DESC LIMIT 1`).get();
-  // Backdate the crawl to "yesterday", after the sync, so the freshness panel reads naturally.
-  const crawlStart = nowMs - 25 * 3600_000;
-  db.prepare(`UPDATE crawl_metadata SET started_at=?, finished_at=? WHERE crawl_id=?`).run(new Date(crawlStart).toISOString(), new Date(crawlStart + 4 * 60_000).toISOString(), crawl.crawl_id);
-  db.prepare(`UPDATE sitemap_urls SET fetched_at=?`).run(sqlTs(crawlStart));
+  db.prepare(`UPDATE sitemap_urls SET fetched_at=?`).run(sqlTs(nowMs - 25 * 3600_000));
 
   const pagesRows = db.prepare(`SELECT url, url_key, status_code, indexable, indexable_reason, noindex, canonical_key, click_depth FROM pages WHERE is_internal=1`).all();
   const impr = new Map(db.prepare(`SELECT page_key, SUM(impressions) i FROM search_analytics WHERE date > date(?, '-90 days') GROUP BY page_key`).all(END).map(r => [r.page_key, r.i]));
@@ -708,23 +842,72 @@ server.close();
       : /^best|review|lightweight|packable/.test(query) ? 'commercial' : 'transactional';
     insK.run(query, intent, Math.round(rand(0.62, 0.98) * 100) / 100, sqlTs(nowMs - 6 * DAY));
   }
+  // Content recon (synthetic): the AI Overview read for the top guides' main queries. One citation
+  // never resolved (NULL = unknown), which the Summary must show as unknown, not as "not cited".
+  const insRecon = db.prepare(`INSERT OR REPLACE INTO recon_page (url_key,query,verdict,verdict_note,organic_rank,gsc_position,gsc_impressions,aio_present,aio_cites_us,video_present,has_product_schema,schema_types,competitors,researched_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  GUIDES.slice(0, 12).forEach((g, i) => {
+    const [q, vol, pos] = g[3][0];
+    const present = i % 4 !== 3 ? 1 : 0;
+    const cites = !present ? 0 : i === 5 ? null : i % 3 === 0 ? 1 : 0;
+    insRecon.run(k(`${ORIGIN}/guides/${g[0]}`), q, cites === 1 ? 'defend-and-deepen' : present ? 'accuracy-or-freshness' : 'competitive-gap', '', Math.max(1, Math.round(pos - 1)), pos, Math.round(vol * 18), present, cites, i % 5 === 0 ? 1 : 0, 0, '["Article"]', '{}', sqlTs(nowMs - (4 + i) * 3600_000));
+  });
+  const crux = writeDemoCrux(db);
+  const profile = writeDemoBacklinkProfile(db, blAt);
+  log(`backlink profile: ${profile}`);
   adb.close();
-  log(`enrichments: ${inspected} URLs inspected, ${blTargets.length + blProducts.length} backlinked pages, ${PROSPECTS.length} link prospects, 13 months of rank history, ${cwvPages.length} CWV pages`);
+  log(`enrichments: ${inspected} URLs inspected, ${blTargets.length + blProducts.length} backlinked pages, ${PROSPECTS.length} link prospects, 13 months of rank history, ${cwvPages.length} CWV pages, CrUX ${crux}`);
 }
 
-// ── 5. Passage scores (the local cross-encoder, when cached) ─────────────────
-if (!NO_ML) {
+// ── 5. Passage scores + the audit history (three crawls, three real audits) ──
+// The site is edited between crawls, so the Summary has a health trend, opened / resolved deltas
+// between comparable audits, and a real "changed since the last crawl" diff. Every crawl and audit
+// is genuine; only their timestamps are moved back afterwards.
+async function scorePassages() {
+  if (NO_ML) return;
   try {
     const { scoreSitePassages } = await import('../dist/core/passageScore.js');
     const r = await scoreSitePassages(OUT, SITE, { limit: 40, minImpressions: 50 });
     log(`passage scores: ${r.scored} pages scored, ${r.flagged} weak`);
   } catch (e) { log(`passage scoring skipped: ${e.message}`); }
 }
-
-// ── 6. The audit (every check, genuine output) ───────────────────────────────
-{
+function audit(label) {
   const res = runAudit(OUT, SITE, { scope: 'full', includeJudgement: true });
-  log(`audit: ${res.total} findings across ${res.byCheck.length} checks`);
+  log(`audit ${label}: ${res.total} findings across ${res.byCheck.length} checks`);
+  return res.runId;
 }
+/** Move a crawl (and its snapshot, and its audit) back to `at`, keeping their order and spacing. */
+function backdate(crawlId, runId, at) {
+  const adb = new AuditDatabase(dbPath);
+  adb.db.prepare(`UPDATE crawl_metadata SET started_at=?, finished_at=? WHERE crawl_id=?`).run(new Date(at).toISOString(), new Date(at + 4 * 60_000).toISOString(), crawlId);
+  adb.db.prepare(`UPDATE page_snapshots SET captured_at=? WHERE crawl_id=?`).run(sqlTs(at + 4 * 60_000), crawlId);
+  if (runId) adb.db.prepare(`UPDATE audit_runs SET started_at=?, finished_at=? WHERE run_id=?`).run(sqlTs(at + 30 * 60_000), sqlTs(at + 31 * 60_000), runId);
+  adb.close();
+}
+
+await scorePassages();
+backdate(crawlA, audit('A'), nowMs - 29 * DAY);
+
+// Between A and B, fixes: the gift-card balance page stops erroring and two thin brand pages get
+// their own titles.
+pages.get('/gift-cards/balance').status = 200;
+for (const b of BRANDS.slice(5, 7)) { const bp = pages.get(`/brands/${b.slug}`); if (bp) bp.title = `${b.name} outdoor gear | ${STORE}`; }
+const crawlB = await crawlOnce('B');
+await scorePassages();
+backdate(crawlB, audit('B'), nowMs - 15 * DAY);
+
+// Between B and C, the regressions the Summary's "changed since the last crawl" shows: two products
+// dropped without a redirect (now 404), a guide noindexed by mistake, a collection's canonical
+// pointed at another collection, and three product titles rewritten.
+for (const p of [productsByCat.get('tents')[5], productsByCat.get('sleeping-bags')[3]]) gone.add(p.path);
+pages.get('/guides/how-to-pack-a-rucksack').noindex = true;
+pages.get('/collections/base-layers').canonical = '/collections/waterproof-jackets';
+for (const p of productsByCat.get('backpacks').slice(0, 3)) { const pg = pages.get(p.path); if (pg) pg.title = `${p.name} - free UK delivery | ${STORE}`; }
+const crawlC = await crawlOnce('C');
+server.close();
+// Crawl C ran "yesterday", after the sync, so the freshness strip reads naturally; its audit is now.
+backdate(crawlC, null, nowMs - 25 * 3600_000);
+await scorePassages();
+audit('C');
 console.log(OUT);
 process.exit(0);

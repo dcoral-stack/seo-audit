@@ -1,10 +1,14 @@
 import { App, applyDocumentTheme, applyHostStyleVariables } from '@modelcontextprotocol/ext-apps';
 import {
-  esc, fmtNum, icons, sevBadge, statusBadge, badge, kpiGrid, filterGroup,
-  attachSort, formatTrend, accordionItem, accordionSection, accordionControls,
-  EChartWrapper, chartPalette, axisDefaults, tooltipDefaults, emptyState,
+  esc, fmtNum, fmtCompact, fmtDate, fmtMonth, fmtWeek, icons, sevBadge, statusBadge, badge, kpiGrid, filterGroup,
+  attachSort, accordionItem, accordionSection, accordionControls,
+  EChartWrapper, chartPalette, axisDefaults, tooltipDefaults, emptyState, countDelta, rankDelta,
 } from './lib/index.js';
-import { renderOverview, renderHealthTop, renderSideFreshness, drawNetwork, pctChg, SEV_ORDER, SEV_LABEL, type OverviewCtx } from './overview.js';
+import { shareText, sharePct, quickWinsEmptyReason, trappedEmptyReason } from '../core/displayRules.js';
+import { TITLE_MAX_CHARS, META_DESC_MAX_CHARS } from '../core/onPageLimits.js';
+import { renderSearchTop, renderHealthTop, renderSideFreshness, drawNetwork, isolatedText, pctChg, SEV_ORDER, SEV_LABEL, type OverviewCtx } from './panels.js';
+import { renderSummary, type SummaryCtx } from './summary.js';
+import { renderFieldCwv } from './cwv.js';
 
 // Local view types (avoid importing core, which pulls node-only deps into the bundle).
 interface Totals { clicks: number; impressions: number; ctr: number; position: number }
@@ -15,6 +19,15 @@ export interface DashboardData {
   linkProspects?: { domain: string; intersections: number; linkedTargets: string[]; domainTrust: number | null; spamScore: number | null; dofollow: boolean; trustFlow: number | null; citationFlow: number | null; topTopic: string | null; competitors: string[]; fetchedAt: string | null }[];
   apiKeys?: { dataforseo: boolean; majestic: boolean };
   trappedAuthority?: { url: string; referringDomains: number; backlinks: number; clickDepth: number | null; ipr: number; trustFlow: number | null; topTopic: string | null }[];
+  backlinkProfile?: {
+    summary: { backlinks: number; referringDomains: number; domainRank: number | null; brokenBacklinks: number; brokenPages: number; nofollowPct: number | null; fetchedAt: string | null } | null;
+    topPages: { url: string; backlinks: number; referringDomains: number; dofollow: number; status: number | null; trustFlow: number | null }[];
+    brokenPages: { url: string; backlinks: number; referringDomains: number; status: number }[];
+    pagesTotal: number; pagesUnchecked: number;
+    referringDomains: { snapshotAt: string; live: number; lost: number; top: { domain: string; rank: number | null; backlinks: number; referringPages: number; nofollowPages: number; spamScore: number | null; firstSeen: string | null }[] } | null;
+    anchors: { snapshotAt: string; mix: { kind: string; anchors: number; backlinks: number; referringDomains: number }[]; top: { anchor: string; kind: string; backlinks: number; referringDomains: number }[] } | null;
+    history: { fetchedAt: string | null; months: { month: string; newDomains: number; lostDomains: number; referringDomains: number | null; backlinks: number | null; days: number }[] } | null;
+  } | null;
   dateRange?: { current: string; prior?: string; maxDate: string; rawMaxDate?: string; trimmedDays?: number };
   summary?: { current: Totals; prior: Totals };
   rankTrend?: { date: string; clicks: number; impressions: number; position: number }[];
@@ -23,13 +36,13 @@ export interface DashboardData {
   quickWins?: { query: string; position: number; impressions: number; clicks: number; ctr: number; expectedCtr: number; type: 'striking' | 'snippet' | 'serp' | 'ok'; potential: number }[];
   contentDecay?: { urlKey: string; prevClicks: number; clicks: number; lost: number; dropPct: number; impressions: number; position: number }[];
   cannibalisationTable?: { query: string; urlCount: number; totalImpressions: number; totalClicks: number; verdict: 'split' | 'dominant'; crossType: boolean; urls: { url: string; impressions: number; clicks: number; position: number; template: string }[] }[];
-  brandedSplit?: { brand: string; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
+  brandedSplit?: { brand: string; variants?: string[]; uncertain?: { spellings: string[]; queries: number; impressions: number; clicks: number; joinedImpressions: number; joinedClicks: number } | null; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
   topKeywords?: { query: string; clicks: number; prevClicks: number; clicksChange: number; position: number; prevPosition: number }[];
   rankHistory?: { period: string; pos_1_3: number; pos_4_10: number; pos_11_20: number; pos_21_100: number; etv: number; keyword_count: number }[];
   dateAlignment?: { note: string };
   deviceBreakdown?: { device: string; clicks: number; prevClicks: number; impressions: number; ctr: number; position: number }[];
   countryBreakdown?: { country: string; clicks: number; prevClicks: number; impressions: number }[];
-  pagePerformance?: { urlKey: string; clicks: number; prevClicks: number; clicksChangePct: number; impressions: number; position: number; category: string }[];
+  pagePerformance?: { urlKey: string; clicks: number; prevClicks: number; clicksChangePct: number | null; impressions: number; position: number; category: string }[];
   keywordMovement?: { query: string; firstPos: number; lastPos: number; delta: number; firstDate: string; lastDate: string; category: string }[];
   findings?: { runId: string; total: number; finishedAt: string | null; byCheck: any[]; top: any[]; recommendations?: any[] } | null;
   topLinkedPages?: { url: string; inlinks: number; status: number | null; indexable: boolean; reason: string | null }[];
@@ -63,6 +76,16 @@ const shortPath = (u: string, max = 56): string => {
   const keep = Math.floor((max - 1) / 2);
   return `${p.slice(0, keep)}…${p.slice(-keep)}`;
 };
+
+/** Category-axis label width (px): ~40% of the content width, capped, so long labels truncate
+ *  with an ellipsis instead of being clipped at the card edge on a phone. */
+const labelW = (max: number): number => {
+  const cw = (document.getElementById('content')?.clientWidth || 900) - 48;
+  return Math.max(70, Math.min(max, Math.round(cw * 0.4)));
+};
+const catAxis = (axis: any, max: number): any => ({ ...axis, axisLabel: { ...axis.axisLabel, width: labelW(max), overflow: 'truncate' } });
+/** Ordered position buckets: categorical hues, not status colours (top-3 isn't "healthy"). */
+const bucketColors = (col: any): string[] => [col.categorical[2], col.categorical[0], col.categorical[1], getComputedStyle(document.documentElement).getPropertyValue('--chart-context').trim() || col.grey];
 
 // Chart palette - the semantic tokens plus the names the render code reads.
 function palette() {
@@ -155,7 +178,7 @@ async function downloadCsv(filename: string, rows: unknown[][]): Promise<void> {
 
 let currentData: DashboardData | null = null;
 // The full Network force layout is expensive; when its tab is hidden at render time the draw is
-// deferred until the tab is first shown (the Overview preview still draws its 90-node subset).
+// deferred until the tab is first shown.
 let pendingNetworkDraw: (() => void) | null = null;
 const ARIA = { aria: { enabled: true } }; // ECharts-generated screen-reader description
 
@@ -296,90 +319,22 @@ function findingDetailHtml(f: any): string {
     `</div>`;
 }
 
-// Executive summary - synthesises the dashboard data into a plain-language read: a traffic verdict,
-// where the biggest opportunities are, what's urgent, and a prioritised "start here" action list.
-function renderExecSummary(data: DashboardData): void {
-  const el = $('execSummary'); if (!el) return;
-  const c = data.summary?.current, p = data.summary?.prior;
-  if (!c) { el.innerHTML = '<p class="muted">Run a sync to populate the summary.</p>'; return; }
-
-  const pct = (a: number, b: number): number => b ? Math.round((a - b) / b * 100) : (a > 0 ? 100 : 0);
-  const clkPct = pct(c.clicks, p?.clicks ?? 0);
-  const arrow = (n: number): string => n > 0 ? `${icons.triangleUp} ${n}%` : n < 0 ? `${icons.triangleDown} ${Math.abs(n)}%` : 'flat';
-  const dir = clkPct > 3 ? 'growing' : clkPct < -3 ? 'declining' : 'holding steady';
-  const posShift = p ? Math.round((p.position - c.position) * 10) / 10 : 0; // positive = improved (lower rank number)
-  const lead = `Organic search is <strong>${dir}</strong>: <strong>${fmt(c.clicks)}</strong> clicks and <strong>${fmt(c.impressions)}</strong> impressions in the last 28 days (clicks ${arrow(clkPct)} vs the prior 28), at an average position of <strong>${c.position.toFixed(1)}</strong>${posShift ? ` (${posShift > 0 ? 'improved' : 'slipped'} ${Math.abs(posShift)} spot${Math.abs(posShift) === 1 ? '' : 's'})` : ''}.`;
-
-  const fc = data.findings;
-  const critCount = fc?.byCheck?.filter((b: any) => b.severity === 'crit').reduce((s: number, b: any) => s + b.count, 0) ?? 0;
-  const recoverable = (data.quickWins ?? []).reduce((s, q) => s + (q.type === 'snippet' || q.type === 'striking' ? q.potential : 0), 0);
-  const clkCls = clkPct > 0 ? 'up' : clkPct < 0 ? 'down' : 'flat';
-
-  // LEFT (60%): the narrative + the prioritised action list.
-  const main: string[] = [`<p class="exec-lead">${lead}</p>`];
-  if (fc && fc.byCheck?.length) {
-    const bySev: Record<string, number> = {};
-    for (const b of fc.byCheck) bySev[b.severity] = (bySev[b.severity] ?? 0) + b.count;
-    const cnt = (id: string): number => fc.byCheck.filter((b: any) => b.check_id === id).reduce((s: number, b: any) => s + b.count, 0);
-
-    const ctr = cnt('ctr-below-expected');
-    const strike = data.strikingDistance?.length ?? cnt('striking-distance');
-    const cann = data.cannibalisation?.length ?? cnt('keyword-cannibalisation');
-    const opp: string[] = [];
-    if (ctr) opp.push(`<strong>${ctr}</strong> page${ctr > 1 ? 's' : ''} rank well but are under-clicked - a title/meta rewrite is the fastest lever`);
-    if (strike) opp.push(`<strong>${strike}</strong> quer${strike > 1 ? 'ies' : 'y'} sit in striking distance (page 2) and could reach page 1 with a small push`);
-    if (cann) opp.push(`<strong>${cann}</strong> quer${cann > 1 ? 'ies are' : 'y is'} cannibalised across multiple URLs`);
-    if (opp.length) main.push(`<p><span class="exec-tag">Opportunities</span> ${opp.join('; ')}.</p>`);
-
-    const crit = bySev['crit'] ?? 0, high = bySev['high'] ?? 0;
-    if (crit || high) {
-      const worst = fc.top?.find((f: any) => f.severity === 'crit') ?? fc.top?.[0];
-      const worstTitle = worst ? safeJson(worst.recommendation).title : '';
-      main.push(`<p><span class="exec-tag urgent">Fix first</span> ${crit ? `<strong>${crit}</strong> critical` : ''}${crit && high ? ' and ' : ''}${high ? `<strong>${high}</strong> high-severity` : ''} issue${(crit + high) > 1 ? 's' : ''} need attention${worstTitle ? ` - starting with “${esc(worstTitle)}”` : ''}.</p>`);
-    }
-
-    const seen = new Set<string>(); const actions: any[] = [];
-    for (const f of fc.top ?? []) { if (actions.length >= 4) break; if (seen.has(f.check_id)) continue; seen.add(f.check_id); actions.push(f); }
-    if (actions.length) {
-      const lis = actions.map(f => {
-        const rec = safeJson(f.recommendation), ev = safeJson(f.evidence);
-        const where = f.url_key ? esc(shortPath(f.url_key)) : (ev.query ? `“${esc(String(ev.query))}”` : 'site-wide');
-        const sz = (f.size ?? '').toString();
-        return `<li><span class="impact impact-${sz.toLowerCase() || 's'}">${esc(sz || '–')}</span> ${esc(rec.title || f.check_id)} <span class="exec-where">- ${where}</span></li>`;
-      }).join('');
-      main.push(`<div class="exec-actions"><div class="exec-actions-title">Start here - your highest-impact fixes</div><ol>${lis}</ol></div>`);
-    }
-  } else {
-    main.push('<p class="muted">Run <code>run_audit</code> to populate findings and the prioritised action list.</p>');
-  }
-
-  // RIGHT (40%): the scorecard - the three numbers an SEO weighs first, in one shaded box.
-  const stat = (num: string, label: string, color = ''): string =>
-    `<div class="es-stat"><div class="es-num"${color ? ` style="color:${color}"` : ''}>${num}</div><div class="es-lbl">${label}</div></div>`;
-  const score =
-    stat(`${fmt(c.clicks)} <span class="chg ${clkCls}">${arrow(clkPct)}</span>`, 'clicks · last 28d') +
-    stat(String(critCount), `critical issue${critCount === 1 ? '' : 's'}`, critCount ? 'var(--red)' : 'var(--green)') +
-    stat(fmt(recoverable), 'clicks recoverable');
-
-  el.innerHTML = `<div class="exec-grid"><div class="exec-main">${main.join('')}</div><aside class="exec-score">${score}</aside></div>`;
-}
-
 // Branded vs non-branded split - transparent brand match, surfaced so the user can verify it.
 function renderBrandedSplit(data: DashboardData): void {
   const el = $('brandedSplit'); if (!el) return;
   const b = data.brandedSplit;
   if (!b) { el.innerHTML = '<p class="muted">Brand could not be auto-detected from this property.</p>'; return; }
   const hint = $('brandedHint');
-  if (hint) hint.innerHTML = `Branded = queries containing <strong>“${esc(b.brand)}”</strong> (auto-detected from the domain). How much of your demand is people looking for you vs discovering you - last 28 days.`;
+  const un = b.uncertain;
+  if (hint) hint.innerHTML = `Branded = queries that spell <strong>“${esc(b.brand)}”</strong> in whole words (auto-detected from the domain${b.variants?.length ? `; counted: ${b.variants.map(v => `“${esc(v)}”`).join(', ')}` : ''}). How much of your demand is people looking for you vs discovering you - last 28 days.` +
+    (un ? ` <span class="brand-uncertain" title="${esc(`On an exact-match domain the spaced spelling is also the generic search, so it counts as brand only when people also search the brand as one word: spaced spellings are set aside when they draw more impressions than the one-word brand and the one-word brand has earned no click. Here: ${fmt(un.impressions)} impressions on the spaced spelling, ${fmt(un.joinedImpressions)} and ${fmt(un.joinedClicks)} clicks on the one-word brand, over the held history.`)}"><strong>Uncertain (exact-match domain):</strong> ${un.spellings.map(v => `“${esc(v)}”`).join(', ')} (${fmt(un.queries)} quer${un.queries === 1 ? 'y' : 'ies'}) counted as non-brand - it is also the generic search, and nobody has clicked the brand typed as one word.</span>` : '');
   const bc = b.branded.clicks, nc = b.nonBranded.clicks, tc = bc + nc;
-  const bpct = tc ? Math.round(bc / tc * 100) : 0, npct = 100 - bpct;
-  const dpc = (cur: number, prev: number): number => prev ? Math.round((cur - prev) / prev * 100) : (cur > 0 ? 100 : 0);
-  const arrow = (n: number): string => n > 0 ? `<span class="chg up">${icons.triangleUp} ${n}%</span>` : n < 0 ? `<span class="chg down">${icons.triangleDown} ${Math.abs(n)}%</span>` : '<span class="chg flat">flat</span>';
+  const bpct = tc ? (bc / tc) * 100 : 0, npct = tc ? 100 - bpct : 0;
   el.innerHTML =
     `<div class="split-bar"><span class="split-branded" style="width:${bpct}%"></span><span class="split-nonbranded" style="width:${npct}%"></span></div>` +
     `<div class="split-legend">` +
-    `<div class="split-item"><span class="split-dot dot-branded"></span><div><div class="split-k">Branded · ${bpct}%</div><div class="split-v">${fmt(bc)} clicks ${arrow(dpc(bc, b.priorBrandedClicks))} · ${fmt(b.branded.impressions)} impr</div></div></div>` +
-    `<div class="split-item"><span class="split-dot dot-nonbranded"></span><div><div class="split-k">Non-branded · ${npct}%</div><div class="split-v">${fmt(nc)} clicks ${arrow(dpc(nc, b.priorNonBrandedClicks))} · ${fmt(b.nonBranded.impressions)} impr</div></div></div>` +
+    `<div class="split-item"><span class="split-dot dot-branded"></span><div><div class="split-k">Branded · ${shareText(bc, tc)}%</div><div class="split-v">${fmt(bc)} clicks ${countDelta(bc, b.priorBrandedClicks)} · ${fmt(b.branded.impressions)} impr</div></div></div>` +
+    `<div class="split-item"><span class="split-dot dot-nonbranded"></span><div><div class="split-k">Non-branded · ${shareText(nc, tc)}%</div><div class="split-v">${fmt(nc)} clicks ${countDelta(nc, b.priorNonBrandedClicks)} · ${fmt(b.nonBranded.impressions)} impr</div></div></div>` +
     `</div>`;
 }
 
@@ -408,7 +363,18 @@ function renderTopicClusters(d: DashboardData): void {
       + (links ? `<div class="ca-foot">${links}</div>` : '')
       + `</div>`;
   }).join('');
-  $('topicClustersList').innerHTML = html;
+  const list = $('topicClustersList');
+  list.innerHTML = html;
+  const SHOW = 10;
+  const items = [...list.children] as HTMLElement[];
+  if (items.length > SHOW) {
+    items.slice(SHOW).forEach(el => { el.hidden = true; });
+    const more = document.createElement('button');
+    more.type = 'button'; more.className = 'btn ca-more';
+    more.textContent = `Show all ${items.length} clusters`;
+    more.onclick = (): void => { items.forEach(el => { el.hidden = false; }); more.remove(); };
+    list.appendChild(more);
+  }
   const capped = tc.clusters.length < tc.totalClusters;
   const countTxt = capped ? `Showing the top ${tc.clusters.length} of ${fmt(tc.totalClusters)} topic clusters, by demand.` : `${tc.clusters.length} topic clusters.`;
   $('topicClustersCount').textContent = countTxt;
@@ -418,7 +384,7 @@ function renderTopicClusters(d: DashboardData): void {
 // Audit-deliverable view: issues grouped by category, each sub-headed with a real example + fix.
 function renderRecommendations(fc: DashboardData['findings']): void {
   const el = $('recs');
-  if (!fc || !fc.recommendations?.length) { el.innerHTML = '<p class="muted">No audit yet - run run_audit.</p>'; return; }
+  if (!fc || !fc.recommendations?.length) { el.innerHTML = `<p class="muted">${fc ? 'The latest audit found nothing to fix.' : 'No audit yet - run run_audit.'}</p>`; return; }
   const exampleRow = (ex: { urlKey: string | null; evidence: Record<string, unknown>; clicks: number; impressions: number }): string => {
     const fullPath = ex?.urlKey ? (ex.urlKey.replace(/^https?:\/\/[^/]+/, '') || '/') : '';
     const path = esc(ex?.urlKey ? shortPath(ex.urlKey) : '');
@@ -450,12 +416,14 @@ function renderRecommendations(fc: DashboardData['findings']): void {
 
 // Findings: severity count-chips (click to filter) + a prioritised table with a
 // priority mini-bar and single-line fix text. Replaces the old non-actionable treemap.
+/** Set by renderFindings: scope the Issues list to an area and/or one check (used by the Summary). */
+let issuesFilter: ((f: { area?: string; check?: string }) => void) | null = null;
 function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof palette>): void {
   const chipsEl = $('sevChips'), tableEl = $('findingsTable');
   if (!fc || !fc.byCheck.length) {
-    chipsEl.innerHTML = '<span class="muted">No audit yet - run run_audit.</span>';
+    chipsEl.innerHTML = `<span class="muted">${fc ? 'The latest audit found nothing to fix.' : 'No audit yet - run run_audit.'}</span>`;
     tableEl.innerHTML = '';
-    $('findingsSummary').textContent = 'No audit findings yet.';
+    $('findingsSummary').textContent = fc ? 'The latest audit found nothing to fix.' : 'No audit findings yet.';
     return;
   }
   const sevCounts: Record<string, number> = {};
@@ -463,6 +431,7 @@ function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof p
   const maxPrio = Math.max(...fc.top.map(f => f.priority), 0.0001);
   let active = 'all';
   let area = 'all';
+  let check: string | null = null; // set from the Summary's "Do this first"; cleared from the chip
 
   // Severity health bar - proportion of all findings by severity, at a glance
   const HB_CLASS: Record<string, string> = { crit: 'hb-crit', high: 'hb-high', med: 'hb-med', low: 'hb-low', info: 'hb-low' };
@@ -475,7 +444,14 @@ function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof p
   const drawTable = (): void => {
     // Full list, no pagination - the .grid-virtual class (content-visibility:auto)
     // keeps long lists cheap to render.
-    const list = fc.top.filter(f => (active === 'all' || f.severity === active) && (area === 'all' || f.category === area));
+    const list = fc.top.filter(f => (active === 'all' || f.severity === active) && (area === 'all' || f.category === area) && (!check || f.check_id === check));
+    const focus = document.getElementById('issuesFocus');
+    if (focus) {
+      const title = check ? (safeJson(fc.top.find(f => f.check_id === check)?.recommendation ?? '').title || check) : '';
+      focus.innerHTML = check ? `<span class="focus-chip">Showing one check: ${esc(title)} <button type="button" aria-label="Show all checks">×</button></span>` : '';
+      const btn = focus.querySelector('button');
+      if (btn) btn.onclick = (): void => { check = null; drawTable(); };
+    }
     const rows = list.map((f, i) => {
       const rec = safeJson(f.recommendation), traf = safeJson(f.traffic_at_risk), ev = safeJson(f.evidence);
       const path = f.url_key ? shortPath(f.url_key) : '-';
@@ -485,16 +461,16 @@ function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof p
       const qLabel = ev.query ? ` <span style="color:var(--text-muted);font-size:12px">“${esc(String(ev.query))}”</span>` : '';
       return `<tr class="fi-row" data-fi="${i}" tabindex="0" role="button" aria-expanded="false">` +
         `<td>${sevBadge(f.severity)}</td>` +
-        `<td><span class="fi-chev" aria-hidden="true">${icons.chevron}</span>${esc(rec.title || f.check_id)}${qLabel}</td>` +
-        `<td class="url" title="${esc(f.url_key || '')}">${esc(path)}</td><td class="num">${traf.clicks || 0}</td>` +
-        `<td class="num">${traf.impressions || 0}</td>` +
-        `<td class="prio"><span class="impact ${szClass}">${esc(sz || '–')} ${f.impact ?? pct}</span></td>` +
-        `<td class="fix" title="${esc(rec.text || '')}">${esc(rec.text || '')}</td></tr>` +
-        `<tr class="fi-detail-row" hidden><td colspan="7">${findingDetailHtml(f)}</td></tr>`;
+        `<td class="fi-issue"><span class="fi-chev" aria-hidden="true">${icons.chevron}</span>${esc(rec.title || f.check_id)}${qLabel}` +
+        (rec.text ? `<div class="fi-fixline" title="${esc(rec.text)}">${esc(rec.text)}</div>` : '') + `</td>` +
+        `<td class="url" title="${esc(f.url_key || '')}">${f.url_key ? esc(path) : '<span class="cell-null">site-wide</span>'}</td><td class="num">${fmt(traf.clicks || 0)}</td>` +
+        `<td class="num">${fmt(traf.impressions || 0)}</td>` +
+        `<td class="prio"><span class="impact ${szClass}">${esc(sz || '–')} ${f.impact ?? pct}</span></td></tr>` +
+        `<tr class="fi-detail-row" hidden><td colspan="6">${findingDetailHtml(f)}</td></tr>`;
     });
     tableEl.innerHTML = rows.length
-      ? healthBar + `<table class="grid-virtual"><thead><tr><th>Sev</th><th>Issue</th><th>URL</th><th class="num">Clicks</th><th class="num">Impr</th><th>Impact</th><th>Fix</th></tr></thead><tbody>${rows.join('')}</tbody></table>`
-      : healthBar + '<p class="muted">No findings at this severity in the top results.</p>';
+      ? healthBar + `<table class="grid-virtual"><thead><tr><th>Sev</th><th>Issue</th><th>URL</th><th class="num">Clicks</th><th class="num">Impr</th><th>Impact</th></tr></thead><tbody>${rows.join('')}</tbody></table>`
+      : healthBar + `<p class="muted">${check ? 'None of this check’s findings are among the 50 highest-priority findings listed here - switch to <strong>By category</strong> for every check.' : 'No findings at this severity in the top results.'}</p>`;
     tableEl.querySelectorAll<HTMLElement>('.fi-row').forEach(row => {
       const toggle = (): void => {
         const det = row.nextElementSibling as HTMLElement | null;
@@ -524,6 +500,7 @@ function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof p
       });
     };
     drawArea();
+    issuesFilter = (f): void => { area = f.area ?? 'all'; check = f.check ?? null; active = 'all'; drawArea(); drawTable(); };
   }
   filterGroup(
     chipsEl,
@@ -543,15 +520,25 @@ function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof p
 function render(data: DashboardData): void {
   $('loading').style.display = 'none';
   renderSideFreshness(data); // the sidebar lives outside #content: show job status even with no GSC data
-  if (data.empty || !data.summary) { $('empty').style.display = 'flex'; return; }
+  if (data.empty || !data.summary) {
+    // No Search Console yet. With a crawl or an audit the Summary still has plenty to say (health,
+    // issues, changes, AI readiness, coverage) and Issues & fixes works; the GSC-driven tabs are
+    // disabled with the reason, instead of rendering zeros.
+    const crawlSide = !!(data as any).coverage?.crawlPages || !!data.findings;
+    if (!crawlSide) { $('empty').style.display = 'flex'; return; }
+    renderCrawlOnly(data);
+    return;
+  }
+  document.querySelectorAll<HTMLButtonElement>('.tab-btn').forEach(b => { b.disabled = false; b.removeAttribute('title'); });
   $('content').style.display = 'block';
   $('site').textContent = data.siteUrl;
+  $('site').title = data.siteUrl;
   const dr = data.dateRange;
-  $('range').textContent = dr?.current ?? '';
+  $('range').textContent = dr?.maxDate ? `last 28 days to ${fmtDate(dr.maxDate)}` : '';
   // Trailing unfinalised GSC days are excluded upstream (gscFreshness); the range already
   // states the end date - no visible caveat (hover-only explanation for the curious).
   if (dr && dr.trimmedDays && dr.trimmedDays > 0 && dr.rawMaxDate) {
-    $('range').title = `Data to ${dr.maxDate}; the last ${dr.trimmedDays} day${dr.trimmedDays > 1 ? 's' : ''} of Search Console data aren’t final yet and are excluded.`;
+    $('range').title = `Data to ${fmtDate(dr.maxDate)}; the last ${dr.trimmedDays} day${dr.trimmedDays > 1 ? 's' : ''} of Search Console data aren’t final yet and are excluded.`;
   }
 
   const c = data.summary.current, p = data.summary.prior;
@@ -562,10 +549,11 @@ function render(data: DashboardData): void {
   const sCtr = spark.map(d => d.impressions ? d.clicks / d.impressions : 0);
   const sPos = spark.map(d => d.position).filter(v => v > 0);
   $('metrics').outerHTML = kpiGrid([
-    { label: 'Clicks', value: fmt(c.clicks), change: pctChg(c.clicks, p.clicks), spark: sClicks },
-    { label: 'Impressions', value: fmt(c.impressions), change: pctChg(c.impressions, p.impressions), spark: sImpr },
+    { label: 'Clicks', value: fmtCompact(c.clicks), changeHtml: countDelta(c.clicks, p.clicks), spark: sClicks },
+    { label: 'Impressions', value: fmtCompact(c.impressions), changeHtml: countDelta(c.impressions, p.impressions, 'impression'), spark: sImpr },
     { label: 'CTR', value: `${(c.ctr * 100).toFixed(1)}%`, change: pctChg(c.ctr, p.ctr), spark: sCtr },
-    { label: 'Avg position', value: c.position.toFixed(1), change: pctChg(c.position, p.position), lowerIsBetter: true, spark: sPos },
+    // A rank's change is shown in positions, never as a % of the rank (#68 real-data fix).
+    { label: 'Avg position', value: c.position.toFixed(1), changeHtml: rankDelta(c.position, p.position), lowerIsBetter: true, spark: sPos },
   ]).replace('<div class="metrics">', '<div class="metrics" id="metrics">');
 
   const col = palette();
@@ -573,14 +561,14 @@ function render(data: DashboardData): void {
   const axis = axisDefaults(col);
   const axisNum = axisDefaults(col, { numeric: true });
 
-  // Stitch-direction views: Overview (KPIs, small multiples, findings, crawl health, network
-  // preview, top keywords/pages, jobs), the crawl-health header, and the sidebar freshness block.
+  // The Summary (landing view), the crawl-health header + status mix, and the Search performance
+  // trend + top tables (the last two moved from the retired Overview).
   const octx: OverviewCtx = { wrap, col, shortPath, safeJson, redacted: document.documentElement.classList.contains('redacted') };
-  renderOverview(data, octx);
+  renderSummary(data, summaryCtx(col));
+  renderSearchTop(data, octx);
   renderHealthTop(data, octx);
+  renderFieldCwv(data, { wrap, col, redacted: octx.redacted });
 
-  // Executive summary - plain-language read of performance + the prioritised "start here" list
-  renderExecSummary(data);
   renderBrandedSplit(data);
   // Audit findings - severity filter chips + prioritised table, then the categorised report
   renderFindings(data.findings, col);
@@ -589,19 +577,20 @@ function render(data: DashboardData): void {
   buildExportBar(data);
 
   // 0) Equity vs reality - template mismatch (bars) + per-URL scatter (the architecture flagship)
+  const crawled = (data.crawlHealth?.totalPages ?? 0) > 0;
   const mm = data.templateMismatch ?? [];
   if (mm.length) {
     const labels = mm.map(m => m.template).reverse();
     wrap('mismatchChart').setOption({
       ...ARIA,
-      grid: { left: 96, right: 24, top: 28, bottom: 30 },
-      legend: { top: 0, textStyle: { color: col.text, fontSize: 12 } },
+      grid: { left: labelW(120) + 14, right: 24, top: 32, bottom: 30 },
+      legend: { top: 0, type: 'scroll', textStyle: { color: col.text, fontSize: 12 } },
       tooltip: { ...tooltipDefaults(col), axisPointer: { type: 'shadow' }, valueFormatter: (v: number) => v + '%' },
       xAxis: { type: 'value', name: '% share', max: 100, ...axis },
-      yAxis: { type: 'category', data: labels, ...axis },
+      yAxis: { type: 'category', data: labels, ...catAxis(axis, 120) },
       series: [
         { name: 'Internal equity', type: 'bar', data: mm.map(m => m.iprPct).reverse(), itemStyle: { color: col.blue } },
-        { name: 'Organic traffic', type: 'bar', data: mm.map(m => m.trafficPct).reverse(), itemStyle: { color: col.green } },
+        { name: 'Organic traffic', type: 'bar', data: mm.map(m => m.trafficPct).reverse(), itemStyle: { color: col.categorical[2] } },
       ],
     });
     const sink = mm.find(m => m.iprPct >= 10 && m.trafficPct < m.iprPct * 0.3);
@@ -609,7 +598,7 @@ function render(data: DashboardData): void {
       ? `/${sink.template}/ absorbs ${sink.iprPct}% of internal equity but drives ${sink.trafficPct}% of traffic - equity flowing into a dead end.`
       : 'Internal equity share vs organic traffic share, by template.';
   } else {
-    wrap('mismatchChart').setEmpty('Run a crawl to map equity flow', col);
+    wrap('mismatchChart').setEmpty(crawled ? 'No indexable 200 page in the crawl to group by template' : 'Run a crawl to map equity flow', col);
     $('mismatchSummary').textContent = 'Run a crawl (refresh_property) to see equity flow by template.';
   }
 
@@ -622,7 +611,7 @@ function render(data: DashboardData): void {
   if (lf?.flows?.length) {
     const nodes = [
       ...lf.sources.map(s => ({ name: `${s} →`, itemStyle: { color: col.blue } })),
-      ...lf.targets.map(t => ({ name: `→ ${t}`, itemStyle: { color: col.green } })),
+      ...lf.targets.map(t => ({ name: `→ ${t}`, itemStyle: { color: col.categorical[2] } })),
     ];
     wrap('linkFlowsChart').setOption({
       ...ARIA,
@@ -643,14 +632,14 @@ function render(data: DashboardData): void {
   }
 
   const sc = data.equityScatter ?? [];
-  const bucketColor: Record<string, string> = { content: col.blue, category: col.red, homepage: col.amber, other: col.muted };
+  const bucketColor: Record<string, string> = { content: col.blue, category: col.categorical[4], homepage: col.categorical[1], other: col.muted };
   const scGroups: Record<string, { value: number[]; id: string }[]> = {};
   for (const pt of sc) (scGroups[pt.t] ??= []).push({ value: [pt.x, Math.max(1, pt.y)], id: pt.u }); // max(1) keeps the log axis valid
   if (sc.length) {
     wrap('scatterChart').setOption({
       ...ARIA,
-      grid: { left: 60, right: 24, top: 24, bottom: 48 },
-      legend: { top: 0, textStyle: { color: col.text, fontSize: 12 } },
+      grid: { left: 60, right: 24, top: 52, bottom: 48 },
+      legend: { top: 0, right: 0, textStyle: { color: col.text, fontSize: 12 } },
       tooltip: { ...tooltipDefaults(col, 'item'), formatter: (p: any) => `${esc(shortPath(p.data.id, 44))}<br/>iPR ${p.value[0]} · ${fmt(p.value[1])} impressions` },
       xAxis: { type: 'value', name: 'internal PageRank', min: 0, max: 100, ...axis },
       yAxis: { type: 'log', name: 'impressions', ...axisNum },
@@ -661,7 +650,7 @@ function render(data: DashboardData): void {
     wrap('scatterChart').on('click', (p: any) => { if (p?.data?.id) window.open(p.data.id, '_blank', 'noopener'); });
     $('scatterSummary').textContent = `${sc.length} URLs by internal PageRank and impressions; bottom-right = high-authority pages earning no traffic. Scroll to zoom, click a point to open the page.`;
   } else {
-    wrap('scatterChart').setEmpty('Run a crawl to map equity vs traffic', col);
+    wrap('scatterChart').setEmpty(crawled ? 'No page has iPR 15+ or 5+ impressions in the last 28 days to plot' : 'Run a crawl to map equity vs traffic', col);
     $('scatterSummary').textContent = 'Run a crawl (refresh_property) to see the equity map.';
   }
 
@@ -678,11 +667,17 @@ function render(data: DashboardData): void {
   };
   if (sg?.nodes?.length) {
     const broken = sg.nodes.filter((n: any) => n.status == null || n.status >= 300).length;
+    const iso: any[] = (sg as any).isolated ?? [];
+    $('structureNote').innerHTML = iso.length
+      ? `<b>${iso.length} mapped page${iso.length === 1 ? ' has' : 's have'} no in-content link to or from the other pages here</b> (dashed outline, set apart at the bottom left): ` +
+        iso.slice(0, 6).map(n => `<code>${esc(shortPath(n.id, 40))}</code> ${esc(isolatedText(n).replace(/, so it has no in-content link in this map\.$/, '.'))}`).join(' ') + (iso.length > 6 ? ` And ${iso.length - 6} more.` : '')
+      : '';
     $('structureSummary').textContent = `Internal link skeleton of the top ${sg.nodes.length} pages by internal PageRank (of ${fmt(sg.totalPages)} crawled); node size = iPR, ${broken} broken or redirected. Scroll to zoom, drag to pan, click a node to open the page.`;
     const networkVisible = !!document.querySelector('.tab-panel.active[data-panel="architecture"]');
     if (networkVisible) { pendingNetworkDraw = null; drawFullNetwork(); } else pendingNetworkDraw = drawFullNetwork;
   } else {
     pendingNetworkDraw = null;
+    $('structureNote').innerHTML = '';
     $('structureSummary').textContent = 'Run a crawl (refresh_property) to map your internal link structure.';
   }
 
@@ -697,11 +692,11 @@ function render(data: DashboardData): void {
     const barColor = (p: number) => p >= 95 ? col.success : p >= 50 ? col.warning : col.danger;
     wrap('securityChart').setOption({
       ...ARIA,
-      grid: { left: 220, right: 48, top: 8, bottom: 30 },
+      grid: { left: labelW(220) + 12, right: 48, top: 8, bottom: 30 },
       tooltip: { ...tooltipDefaults(col), axisPointer: { type: 'shadow' }, valueFormatter: (v: number) => `${v}% of pages` },
       xAxis: { type: 'value', max: 100, name: '% of pages', ...axis },
-      yAxis: { type: 'category', data: hs.map(h => h.label), ...axis },
-      series: [{ type: 'bar', barWidth: 15, data: pct.map(p => ({ value: p, itemStyle: { color: barColor(p) } })), label: { show: true, position: 'right', formatter: '{c}%', color: col.muted, fontSize: 11 } }],
+      yAxis: { type: 'category', data: hs.map(h => h.label), ...catAxis(axis, 220) },
+      series: [{ type: 'bar', barWidth: 15, data: pct.map(p => ({ value: p, itemStyle: { color: barColor(p) } })), label: { show: true, position: 'right', formatter: (p: any) => sharePct(hs[p.dataIndex].present, sec.total), color: col.muted, fontSize: 11 } }],
     });
     const missing = sec.headers.filter(h => h.present / sec.total < 0.95).map(h => h.label.replace(/ \(.*\)/, ''));
     $('securitySummary').textContent = (missing.length ? `Missing or partial: ${missing.join(', ')}.` : 'All key security headers present across crawled pages.') + (sec.mixedContent ? ` ${sec.mixedContent} pages load mixed content.` : '');
@@ -715,10 +710,10 @@ function render(data: DashboardData): void {
     const t = sch.types.slice().reverse();
     wrap('schemaChart').setOption({
       ...ARIA,
-      grid: { left: 160, right: 56, top: 8, bottom: 30 },
+      grid: { left: labelW(160) + 12, right: 56, top: 8, bottom: 30 },
       tooltip: { ...tooltipDefaults(col), axisPointer: { type: 'shadow' }, valueFormatter: (v: number) => `${fmt(v)} pages` },
       xAxis: { type: 'value', name: 'pages', ...axisNum },
-      yAxis: { type: 'category', data: t.map(x => x.type), ...axis },
+      yAxis: { type: 'category', data: t.map(x => x.type), ...catAxis(axis, 160) },
       series: [{ type: 'bar', barWidth: 14, itemStyle: { color: col.accent }, data: t.map(x => x.pages), label: { show: true, position: 'right', formatter: (p: any) => fmt(p.value), color: col.muted, fontSize: 11 } }],
     });
     $('schemaSummary').textContent = `${fmt(sch.pagesWithSchema)} of ${fmt(sch.totalPages)} crawled pages carry structured data, across ${sch.types.length}${sch.types.length >= 12 ? '+' : ''} rich-result types.`;
@@ -730,14 +725,15 @@ function render(data: DashboardData): void {
   if (icCard) icCard.style.display = ic && ic.states.length ? '' : 'none';
   if (ic && ic.states.length) {
     const s = ic.states.slice().reverse();
+    $('indexCoverageChart').style.height = `${Math.max(120, s.length * 34 + 56)}px`;
     const stateColor = (st: string) => (/indexed/i.test(st) && !/not indexed/i.test(st)) ? col.success
       : /redirect|error|not found|excluded|noindex|not indexed|blocked|soft 404/i.test(st) ? col.danger : col.warning;
     wrap('indexCoverageChart').setOption({
       ...ARIA,
-      grid: { left: 230, right: 56, top: 8, bottom: 30 },
+      grid: { left: labelW(290) + 12, right: 56, top: 8, bottom: 30 },
       tooltip: { ...tooltipDefaults(col), axisPointer: { type: 'shadow' }, valueFormatter: (v: number) => `${fmt(v)} URLs` },
       xAxis: { type: 'value', name: 'URLs', ...axisNum },
-      yAxis: { type: 'category', data: s.map(x => x.state), ...axis },
+      yAxis: { type: 'category', data: s.map(x => x.state), ...catAxis(axis, 290) },
       series: [{ type: 'bar', barWidth: 15, data: s.map(x => ({ value: x.count, itemStyle: { color: stateColor(x.state) } })), label: { show: true, position: 'right', formatter: (p: any) => fmt(p.value), color: col.muted, fontSize: 11 } }],
     });
     $('indexCoverageSummary').textContent = `${fmt(ic.indexed)} of ${fmt(ic.total)} inspected URLs indexed${ic.canonicalMismatch ? `; ${ic.canonicalMismatch} with a Google-vs-declared canonical mismatch` : ''}.`;
@@ -748,7 +744,9 @@ function render(data: DashboardData): void {
   const rcCard = document.getElementById('redirectsCard');
   if (rcCard) rcCard.style.display = rc && rc.chains.length ? '' : 'none';
   if (rc && rc.chains.length) {
-    const rows = rc.chains.map(c => `<tr><td class="url">${esc(shortPath(c.from, 46))}</td><td class="url">${esc(shortPath(c.to, 46))}</td><td class="num">${c.status}</td><td class="num">${c.hops}</td></tr>`);
+    const hostOf = (u: string): string => { try { return new URL(u).host; } catch { return ''; } };
+    const dest = (from: string, to: string): string => (hostOf(to) && hostOf(to) !== hostOf(from) ? to.replace(/^https?:\/\//, '') : shortPath(to, 46));
+    const rows = rc.chains.map(c => `<tr><td class="url" title="${esc(c.from)}">${esc(shortPath(c.from, 46))}</td><td class="url" title="${esc(c.to)}">${esc(dest(c.from, c.to))}</td><td class="num">${c.status}</td><td class="num">${c.hops}</td></tr>`);
     $('redirectsTable').innerHTML = tableHtml(['From', 'To', 'Status', 'Hops'], rows);
     $('redirectsSummary').textContent = `${fmt(rc.total)} redirecting URL${rc.total === 1 ? '' : 's'} captured during the crawl.`;
   }
@@ -758,10 +756,9 @@ function render(data: DashboardData): void {
   const cwvCard = document.getElementById('cwvCard');
   if (cwvCard) cwvCard.style.display = cwv && cwv.worst.length ? '' : 'none';
   if (cwv && cwv.worst.length) {
-    const rows = cwv.worst.map(w => `<tr><td class="url">${esc(shortPath(w.url, 42))}</td><td class="num">${w.perf}</td><td class="num">${(w.lcpMs / 1000).toFixed(1)}s</td><td class="num">${w.cls}</td><td class="num">${w.tbtMs}ms</td></tr>`);
+    const rows = cwv.worst.map(w => `<tr><td class="url">${esc(shortPath(w.url, 42))}</td><td class="num">${w.perf}</td><td class="num">${(w.lcpMs / 1000).toFixed(1)} s</td><td class="num">${w.cls.toFixed(3)}</td><td class="num">${fmt(w.tbtMs)} ms</td></tr>`);
     $('cwvTable').innerHTML = tableHtml(['Page', 'Perf', 'LCP', 'CLS', 'TBT'], rows);
-    const pct = (n: number) => Math.round((n / cwv.pages) * 100);
-    $('cwvSummary').textContent = `${fmt(cwv.pages)} pages measured. Passing: LCP ${pct(cwv.passLcp)}%, CLS ${pct(cwv.passCls)}%, TBT ${pct(cwv.passTbt)}%.`;
+    $('cwvSummary').textContent = `${fmt(cwv.pages)} pages measured. Passing: LCP ${sharePct(cwv.passLcp, cwv.pages)}, CLS ${sharePct(cwv.passCls, cwv.pages)}, TBT ${sharePct(cwv.passTbt, cwv.pages)}.`;
   }
 
   // 0i) Hreflang / international (V2) - declared languages by page count.
@@ -772,10 +769,10 @@ function render(data: DashboardData): void {
     const l = hl.langs.slice().reverse();
     wrap('hreflangChart').setOption({
       ...ARIA,
-      grid: { left: 90, right: 56, top: 8, bottom: 30 },
+      grid: { left: labelW(90) + 12, right: 56, top: 8, bottom: 30 },
       tooltip: { ...tooltipDefaults(col), axisPointer: { type: 'shadow' }, valueFormatter: (v: number) => `${fmt(v)} pages` },
       xAxis: { type: 'value', name: 'pages', ...axisNum },
-      yAxis: { type: 'category', data: l.map(x => x.lang), ...axis },
+      yAxis: { type: 'category', data: l.map(x => x.lang), ...catAxis(axis, 90) },
       series: [{ type: 'bar', barWidth: 14, itemStyle: { color: col.categorical[7] }, data: l.map(x => x.pages), label: { show: true, position: 'right', formatter: (p: any) => fmt(p.value), color: col.muted, fontSize: 11 } }],
     });
     $('hreflangSummary').textContent = `${fmt(hl.pagesWithHreflang)} of ${fmt(hl.totalPages)} pages declare hreflang, across ${hl.langs.length} languages.`;
@@ -872,11 +869,11 @@ function render(data: DashboardData): void {
       }));
       wrap('cannChart').setOption({
         ...ARIA,
-        grid: { left: 48, right: 16, top: 28, bottom: 40 },
+        grid: { left: 48, right: 16, top: 60, bottom: 30 },
         legend: { top: 0, type: 'scroll', textStyle: { color: col.text, fontSize: 11 } },
         tooltip: tooltipDefaults(col),
-        xAxis: { type: 'category', data: weeks, boundaryGap: false, ...axis },
-        yAxis: { type: 'value', name: 'rank (1 = top)', inverse: true, min: 1, ...axis },
+        xAxis: { type: 'category', data: weeks, boundaryGap: false, ...axis, axisLabel: { ...axis.axisLabel, formatter: (v: string) => fmtWeek(v), hideOverlap: true } },
+        yAxis: { type: 'value', name: 'rank (1 = top)', nameLocation: 'start', inverse: true, min: (v: any) => Math.max(1, Math.floor(v.min) - 1), max: (v: any) => Math.ceil(v.max) + 1, ...axis },
         series: [
           ...lines,
           { name: 'Google switched winner', type: 'scatter', data: crossovers, symbolSize: 11,
@@ -898,9 +895,10 @@ function render(data: DashboardData): void {
   const tlp = data.topLinkedPages ?? [];
   $('topLinkedTable').innerHTML = tlp.length
     ? tableHtml(['URL', 'Internal links in', 'Status', 'Indexable'], tlp.map(p =>
-      `<tr><td class="url" title="${esc(p.url)}">${esc(shortPath(p.url))}</td><td class="num">${p.inlinks}</td><td>${statusBadge(p.status)}</td><td>${p.indexable ? icons.check : `${icons.x} ${esc(p.reason || '')}`}</td></tr>`))
-    : emptyState('Run a crawl to see the internal-link hierarchy.', 'refresh_property');
-  const tlpBroken = tlp.filter(p => p.status !== 200).length;
+      `<tr><td class="url" title="${esc(p.url)}">${esc(shortPath(p.url))}</td><td class="num">${fmt(p.inlinks)}</td><td>${statusBadge(p.status)}</td><td>${p.indexable ? icons.check : `${icons.x} ${esc(p.reason || '')}`}</td></tr>`))
+    : (crawled ? '<p class="muted">No internal page in the crawl has an internal link in.</p>' : emptyState('Run a crawl to see the internal-link hierarchy.', 'refresh_property'));
+  // status null = not fetched (rate limited, #54) or robots-blocked: unknown, not a broken page.
+  const tlpBroken = tlp.filter(p => p.status != null && p.status !== 200).length;
   $('topLinkedSummary').textContent = `Top ${tlp.length} internally-linked pages by inlink count; ${tlpBroken} return a non-200 status.`;
 
   // 0e) Site health - stat bars as EChartWrapper configs (brief: no DOM/SVG chart
@@ -910,29 +908,31 @@ function render(data: DashboardData): void {
     // Tone (bar colour) rides on each data row - assigned in dashboardData where the bucket's
     // meaning is known, never inferred from label text here.
     const toneColor: Record<string, string> = { ok: col.green, warn: col.amber, bad: col.red, muted: col.grey };
-    const sfBars = (id: string, rows: { label: string; count: number; tone?: string }[] | undefined, base: number): void => {
+    const sfBars = (id: string, rows: { label: string; count: number; tone?: string }[] | undefined, base: number, none = 'None in this crawl.'): void => {
       const el = $(id);
       if (!rows?.length || base <= 0) {
         chartsReg.get(id)?.dispose(); chartsReg.delete(id);
-        el.innerHTML = '<div class="sf-empty">Nothing to show - run a crawl first.</div>';
+        el.style.height = '';
+        el.innerHTML = `<div class="sf-empty">${base > 0 ? none : 'Nothing to show - run a crawl first.'}</div>`;
         return;
       }
       if (el.querySelector('.sf-empty')) el.innerHTML = '';
       const rev = rows.slice().reverse(); // horizontal bars read top-down
       el.classList.add('sf-chart');
-      el.style.height = `${rev.length * 26 + 12}px`;
-      const pctOf = (n: number): string => { const p = (n / base) * 100; return p < 1 && n > 0 ? '<1' : String(Math.round(p)); };
-      // Truncate long axis labels in JS (predictable) - the full label stays in the tooltip.
-      const shortLabel = (s: string): string => (s.length > 24 ? `${s.slice(0, 23)}…` : s);
+      // Long labels wrap onto two lines (the row grows to fit) instead of being cut off.
+      const lw = labelW(190);
+      const wraps = (l: string): boolean => l.length * 6.6 > lw;
+      el.style.height = `${rev.reduce((h, r) => h + (wraps(r.label) ? 38 : 26), 0) + 12}px`;
+      const pctOf = (n: number): string => shareText(n, base);
       wrap(id).setOption({
         ...ARIA,
         grid: { left: 8, right: 96, top: 6, bottom: 6, containLabel: true },
         tooltip: { ...tooltipDefaults(col, 'item'), formatter: (p: any) => `${esc(String(rev[p.dataIndex].label))}: ${fmt(p.value)} (${pctOf(p.value)}%)` },
         xAxis: { type: 'value', max: base, show: false },
         yAxis: {
-          type: 'category', data: rev.map(r => shortLabel(r.label)),
+          type: 'category', data: rev.map(r => r.label),
           axisLine: { show: false }, axisTick: { show: false },
-          axisLabel: { color: col.text, fontSize: 12 },
+          axisLabel: { color: col.text, fontSize: 12, width: lw, overflow: 'break', lineHeight: 14 },
         },
         series: [{
           type: 'bar', barWidth: 8,
@@ -952,9 +952,12 @@ function render(data: DashboardData): void {
     sfBars('sfSpeed', ch?.speed, total);
     sfBars('sfSize', ch?.htmlSize, total);
     sfBars('sfDepth', ch?.depth, total);
-    sfBars('sfOnPage', ch?.onPage, total);
-    sfBars('sfTitles', ch?.titles, total);
-    sfBars('sfMetas', ch?.metas, total);
+    sfBars('sfOnPage', ch?.onPage, total, 'No on-page issue on any indexable page.');
+    sfBars('sfTitles', ch?.titles, total, 'No indexable page has a missing, duplicate, long or short title.');
+    sfBars('sfMetas', ch?.metas, total, 'No indexable page has a missing, duplicate, long or short meta description.');
+    // The same limits the audit checks use (core/onPageLimits.ts), named so the counts can be matched.
+    $('sfTitlesRule').textContent = total ? `Indexable pages. "Over ${TITLE_MAX_CHARS}" is the audit's title-too-long check.` : '';
+    $('sfMetasRule').textContent = total ? `Indexable pages. "Over ${META_DESC_MAX_CHARS}" is the audit's meta-description-length check.` : '';
     const card = (id: string, show: boolean): HTMLElement => { const c = $(id); c.style.display = show ? '' : 'none'; return c; };
     card('sfServerErrorsCard', !!ch?.serverErrors?.length);
     if (ch?.serverErrors?.length) $('sfServerErrors').innerHTML = tableHtml(['URL', 'Status'],
@@ -974,21 +977,22 @@ function render(data: DashboardData): void {
 
   // 1) Ranking distribution over time (stacked area) - flagship #1
   const dist = data.rankingDistribution ?? [];
+  const bc = bucketColors(col);
   const buckets = [
-    { key: 'b1' as const, name: 'Pos 1–3', color: col.green },
-    { key: 'b2' as const, name: 'Pos 4–10', color: col.blue },
-    { key: 'b3' as const, name: 'Pos 11–20', color: col.amber },
-    { key: 'b4' as const, name: 'Pos 21+', color: col.grey },
+    { key: 'b1' as const, name: 'Pos 1–3', color: bc[0] },
+    { key: 'b2' as const, name: 'Pos 4–10', color: bc[1] },
+    { key: 'b3' as const, name: 'Pos 11–20', color: bc[2] },
+    { key: 'b4' as const, name: 'Pos 21+', color: bc[3] },
   ];
   // 'ts' group: echarts.connect() unifies crosshair/tooltip across the daily
   // time-series stack (ranking distribution + rank & clicks share the x domain).
   wrap('distChart', 'ts').setOption({
     ...ARIA,
-    grid: { left: 52, right: 16, top: 32, bottom: 30 },
-    legend: { top: 0, textStyle: { color: col.text, fontSize: 12 } },
+    grid: { left: 52, right: 16, top: 36, bottom: 30 },
+    legend: { top: 0, type: 'scroll', textStyle: { color: col.text, fontSize: 12 } },
     tooltip: tooltipDefaults(col),
-    xAxis: { type: 'category', data: dist.map(d => d.date), ...axis },
-    yAxis: { type: 'value', name: 'impressions', ...axisNum },
+    xAxis: { type: 'category', data: dist.map(d => d.date), ...axis, axisLabel: { ...axis.axisLabel, formatter: (v: string) => fmtDate(v, true), hideOverlap: true } },
+    yAxis: { type: 'value', ...axisNum },
     series: buckets.map(b => ({
       name: b.name, type: 'line', stack: 'imp', showSymbol: false, lineStyle: { width: 0 },
       areaStyle: { opacity: 0.55 }, itemStyle: { color: b.color }, data: dist.map(d => d[b.key]),
@@ -996,26 +1000,27 @@ function render(data: DashboardData): void {
   });
   const last = dist[dist.length - 1];
   const lastTot = last ? last.b1 + last.b2 + last.b3 + last.b4 : 0;
-  $('distSummary').textContent = `Impressions by SERP position bucket across ${dist.length} days; latest day ${lastTot} impressions, ${lastTot ? Math.round((last.b1 / lastTot) * 100) : 0}% in positions 1–3.`;
+  $('distSummary').textContent = `Impressions by SERP position bucket across ${dist.length} days; latest day ${lastTot} impressions, ${sharePct(last?.b1 ?? 0, lastTot)} in positions 1–3.`;
 
   // 1b) DataForSEO search visibility over time (rank_history) - reconciled window
   const rh = data.rankHistory ?? [];
   if (rh.length) {
+    const rbc = bucketColors(col);
     const rhBuckets = [
-      { key: 'pos_1_3' as const, name: 'Pos 1–3', color: col.green },
-      { key: 'pos_4_10' as const, name: 'Pos 4–10', color: col.blue },
-      { key: 'pos_11_20' as const, name: 'Pos 11–20', color: col.amber },
-      { key: 'pos_21_100' as const, name: 'Pos 21–100', color: col.grey },
+      { key: 'pos_1_3' as const, name: 'Pos 1–3', color: rbc[0] },
+      { key: 'pos_4_10' as const, name: 'Pos 4–10', color: rbc[1] },
+      { key: 'pos_11_20' as const, name: 'Pos 11–20', color: rbc[2] },
+      { key: 'pos_21_100' as const, name: 'Pos 21–100', color: rbc[3] },
     ];
     wrap('rankHistChart').setOption({
       ...ARIA,
       axisPointer: { link: [{ xAxisIndex: 'all' }] },
-      grid: [{ left: 52, right: 16, top: 34, height: '50%' }, { left: 52, right: 16, top: '74%', bottom: 26 }],
-      legend: { top: 0, textStyle: { color: col.text, fontSize: 12 } },
+      grid: [{ left: 52, right: 16, top: 54, height: '46%' }, { left: 52, right: 16, top: '76%', bottom: 26 }],
+      legend: { top: 0, type: 'scroll', textStyle: { color: col.text, fontSize: 12 } },
       tooltip: tooltipDefaults(col),
       xAxis: [
         { type: 'category', gridIndex: 0, data: rh.map(p => p.period), ...axis, axisLabel: { show: false } },
-        { type: 'category', gridIndex: 1, data: rh.map(p => p.period), ...axis },
+        { type: 'category', gridIndex: 1, data: rh.map(p => p.period), ...axis, axisLabel: { ...axis.axisLabel, formatter: (v: string) => fmtMonth(v), hideOverlap: true } },
       ],
       yAxis: [
         { type: 'value', gridIndex: 0, name: 'ranking keywords', ...axisNum },
@@ -1026,7 +1031,7 @@ function render(data: DashboardData): void {
           name: b.name, type: 'line', stack: 'kw', showSymbol: false, lineStyle: { width: 0 },
           areaStyle: { opacity: 0.55 }, itemStyle: { color: b.color }, data: rh.map(p => p[b.key]),
         })),
-        { name: 'ETV', type: 'line', xAxisIndex: 1, yAxisIndex: 1, smooth: true, showSymbol: false, data: rh.map(p => Math.round(p.etv)), lineStyle: { color: col.accent, width: 2 }, itemStyle: { color: col.accent } },
+        { name: 'ETV', type: 'line', xAxisIndex: 1, yAxisIndex: 1, smooth: true, showSymbol: false, data: rh.map(p => Math.round(p.etv)), lineStyle: { color: col.text, width: 1.75 }, itemStyle: { color: col.text } },
       ],
     });
     $('rankHistSummary').textContent = `DataForSEO ranking keywords by position bucket across ${rh.length} months, with estimated traffic value.`;
@@ -1034,7 +1039,12 @@ function render(data: DashboardData): void {
     wrap('rankHistChart').setEmpty('No rank history yet - run track_ranks', col);
     $('rankHistSummary').textContent = 'No DataForSEO rank history yet.';
   }
-  $('alignNote').textContent = data.dateAlignment?.note ?? '';
+  const al: any = data.dateAlignment;
+  $('alignNote').textContent = al?.gsc && al?.dataforseo
+    ? (al.overlap
+      ? `Search Console holds ${fmtDate(al.gsc.start)} to ${fmtDate(al.gsc.end)} (daily) and DataForSEO ${fmtMonth(al.dataforseo.start)} to ${fmtMonth(al.dataforseo.end)} (monthly); they overlap from ${fmtMonth(al.overlap.start)} to ${fmtMonth(al.overlap.end)}.`
+      : `No overlap: Search Console ends ${fmtDate(al.gsc.end)}, DataForSEO covers ${fmtMonth(al.dataforseo.start)} to ${fmtMonth(al.dataforseo.end)}.`)
+    : (al?.note ?? '');
 
   // 2) Rank + clicks over time - two small multiples on one shared x (dataviz: never dual-axis).
   const trend = data.rankTrend ?? [];
@@ -1042,14 +1052,14 @@ function render(data: DashboardData): void {
     ...ARIA,
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
     tooltip: tooltipDefaults(col),
-    grid: [{ left: 52, right: 16, top: 26, height: '36%' }, { left: 52, right: 16, top: '58%', bottom: 30 }],
+    grid: [{ left: 52, right: 16, top: 26, height: '34%' }, { left: 52, right: 16, top: '62%', bottom: 30 }],
     xAxis: [
       { type: 'category', gridIndex: 0, data: trend.map(t => t.date), ...axis, axisLabel: { show: false } },
-      { type: 'category', gridIndex: 1, data: trend.map(t => t.date), ...axis },
+      { type: 'category', gridIndex: 1, data: trend.map(t => t.date), ...axis, axisLabel: { ...axis.axisLabel, formatter: (v: string) => fmtDate(v, true), hideOverlap: true } },
     ],
     yAxis: [
       { type: 'value', gridIndex: 0, name: 'daily clicks', ...axisNum, splitNumber: 3 },
-      { type: 'value', gridIndex: 1, name: 'avg position (1 = top)', inverse: true, scale: true, ...axis, splitNumber: 3 },
+      { type: 'value', gridIndex: 1, name: 'avg position (1 = top)', nameLocation: 'start', inverse: true, scale: true, ...axis, splitNumber: 3 },
     ],
     series: [
       { name: 'clicks', type: 'bar', xAxisIndex: 0, yAxisIndex: 0, data: trend.map(t => t.clicks), itemStyle: { color: col.accent, borderRadius: [2, 2, 0, 0] }, barCategoryGap: '30%' },
@@ -1068,7 +1078,7 @@ function render(data: DashboardData): void {
     const curveMap = new Map<number, number>();
     for (const q of qw) { const rp = Math.round(q.position); if (rp >= 1 && rp <= 10 && !curveMap.has(rp)) curveMap.set(rp, q.expectedCtr); }
     const curve = [...curveMap.entries()].sort((a, b) => a[0] - b[0]);
-    const bub = (v: any) => Math.max(6, Math.min(46, 6 + Math.sqrt(v[2]) * 2.2));
+    const bub = (v: any) => Math.max(5, Math.min(26, 5 + Math.sqrt(v[2]) * 1.2));
     const SER_NAME: Record<string, string> = { striking: 'Striking distance', snippet: 'Under-clicked', serp: 'Verify (SERP/cannibalisation)', ok: 'On track' };
     const ser = (type: string, color: string, opacity: number) => ({
       name: SER_NAME[type], type: 'scatter', symbolSize: bub, itemStyle: { color, opacity },
@@ -1076,11 +1086,12 @@ function render(data: DashboardData): void {
     });
     wrap('quickWinsChart').setOption({
       ...ARIA,
-      grid: { left: 56, right: 24, top: 34, bottom: 42 },
-      legend: { top: 0, textStyle: { color: col.text, fontSize: 12 }, data: [SER_NAME.striking, SER_NAME.snippet, SER_NAME.serp, SER_NAME.ok, 'Expected CTR'] },
+      grid: { left: 56, right: 24, top: 40, bottom: 52 },
+      legend: { top: 0, type: 'scroll', textStyle: { color: col.text, fontSize: 12 }, data: [SER_NAME.striking, SER_NAME.snippet, SER_NAME.serp, SER_NAME.ok, 'Expected CTR'] },
       tooltip: { ...tooltipDefaults(col, 'item'), formatter: (p: any) => Array.isArray(p.value) ? `${esc(String(p.value[5]))}<br/>pos ${p.value[0]} · CTR ${p.value[1]}% (expected ${p.value[3]}%)<br/>${fmt(p.value[2])} impressions${p.value[6] === 'serp' ? '<br/><em>near-zero CTR - likely a SERP feature or cannibalisation; verify before rewriting</em>' : ` · ~${fmt(p.value[4])} clicks recoverable`}` : '' },
-      xAxis: { type: 'value', name: 'avg position', min: 1, max: 20, ...axis },
-      yAxis: { type: 'value', name: 'CTR %', min: 0, ...axis },
+      xAxis: { type: 'value', name: 'average position', nameLocation: 'middle', nameGap: 28, min: 0, max: 21, ...axis },
+      // A little headroom below 0 so bubbles sitting at 0% CTR don't cover the x-axis labels.
+      yAxis: { type: 'value', name: 'CTR %', min: (v: any) => -Math.ceil(v.max * 0.08), ...axis, axisLabel: { ...axis.axisLabel, formatter: (v: number) => (v < 0 ? '' : String(v)) } },
       series: [
         ser('ok', col.grey, 0.28),
         ser('serp', col.red, 0.5),
@@ -1090,7 +1101,7 @@ function render(data: DashboardData): void {
       ],
     });
   } else {
-    wrap('quickWinsChart').setEmpty('No query data yet - sync Search Console.', col);
+    wrap('quickWinsChart').setEmpty(quickWinsEmptyReason({ hasGsc: !!data.summary, plotted: 0, wins: 0 })!, col);
   }
 
   // Biggest quick wins table - ranked by recoverable clicks
@@ -1099,12 +1110,14 @@ function render(data: DashboardData): void {
   const qwRows = qwTop.map(q =>
     `<tr><td>${esc(q.query)}</td>` +
     `<td><span class="impact ${q.type === 'striking' ? 'impact-l' : 'impact-m'}">${qwTypeLabel[q.type] || q.type}</span></td>` +
-    `<td class="num">${q.position}</td><td class="num">${fmt(q.impressions)}</td>` +
-    `<td class="num">${q.ctr}% <span class="muted">/ ${q.expectedCtr}%</span></td>` +
+    `<td class="num">${q.position.toFixed(1)}</td><td class="num">${fmt(q.impressions)}</td>` +
+    `<td class="num">${q.ctr.toFixed(1)}% <span class="muted">/ ${q.expectedCtr.toFixed(1)}%</span></td>` +
     `<td class="num">${fmt(q.potential)}</td></tr>`).join('');
+  // With nothing plotted the matrix's empty state already gives the reason: don't repeat it here.
+  $('quickWinsTableCard').style.display = qw.length ? '' : 'none';
   $('quickWinsTable').innerHTML = qwTop.length
     ? `<table><thead><tr><th>Query</th><th>Opportunity</th><th class="num">Pos</th><th class="num">Impr</th><th class="num">CTR / exp.</th><th class="num">Clicks recoverable</th></tr></thead><tbody>${qwRows}</tbody></table>`
-    : '<p class="muted">No quick wins surfaced - run a sync + audit, or this property is already clicking to potential.</p>';
+    : `<p class="muted">${esc(quickWinsEmptyReason({ hasGsc: !!data.summary, plotted: qw.length, wins: 0 }) ?? '')}</p>`;
 
   // Content decay - pages to refresh, ranked by clicks lost
   const decay = data.contentDecay ?? [];
@@ -1113,7 +1126,7 @@ function render(data: DashboardData): void {
     return `<tr><td class="url" title="${esc(d.urlKey || '')}">${path}</td>` +
       `<td class="num">${fmt(d.prevClicks)}</td><td class="num">${fmt(d.clicks)}</td>` +
       `<td class="num"><span class="impact ${d.dropPct >= 60 ? 'impact-xl' : d.dropPct >= 35 ? 'impact-l' : 'impact-m'}">−${d.dropPct}%</span></td>` +
-      `<td class="num">${fmt(d.lost)}</td><td class="num">${fmt(d.impressions)}</td><td class="num">${d.position || '-'}</td></tr>`;
+      `<td class="num">${fmt(d.lost)}</td><td class="num">${fmt(d.impressions)}</td><td class="num">${d.position ? d.position.toFixed(1) : '–'}</td></tr>`;
   }).join('');
   $('contentDecayTable').innerHTML = decay.length
     ? `<table><thead><tr><th>Page</th><th class="num">Was</th><th class="num">Now</th><th class="num">Drop</th><th class="num">Clicks lost</th><th class="num">Impressions</th><th class="num">Position</th></tr></thead><tbody>${decayRows}</tbody></table>`
@@ -1129,11 +1142,11 @@ function render(data: DashboardData): void {
     const palette = [col.green, col.blue, col.amber, col.red, col.muted];
     wrap('marketSizingChart').setOption({
       ...ARIA,
-      grid: { left: 150, right: 30, top: 30, bottom: 34 },
-      legend: { top: 0, textStyle: { color: col.text, fontSize: 12 } },
+      grid: { left: labelW(190) + 12, right: 30, top: 30, bottom: 34 },
+      legend: { top: 0, type: 'scroll', textStyle: { color: col.text, fontSize: 12 } },
       tooltip: { ...tooltipDefaults(col), valueFormatter: (v: number) => `${v}% share of voice` },
       xAxis: { type: 'value', max: 100, name: '% share of voice (ETV)', nameLocation: 'middle', nameGap: 24, ...axisNum },
-      yAxis: { type: 'category', data: clusters.map(c => `${c.head} (${fmt(c.volume)}/mo)`), ...axis },
+      yAxis: { type: 'category', data: clusters.map(c => `${c.head} (${fmt(c.volume)}/mo)`), ...catAxis(axis, 190) },
       series: ms.domains.map((d, i) => ({
         name: d === own ? `${d} (you)` : d,
         type: 'bar', stack: 'sov',
@@ -1160,11 +1173,11 @@ function render(data: DashboardData): void {
     const exposed = feats.map(f => r1(f.volumeSharePct * (100 - f.page1SharePct) / 100));
     wrap('serpFeaturesChart').setOption({
       ...ARIA,
-      grid: { left: 132, right: 40, top: 30, bottom: 34 },
-      legend: { top: 0, textStyle: { color: col.text, fontSize: 12 } },
+      grid: { left: labelW(150) + 12, right: 40, top: 30, bottom: 34 },
+      legend: { top: 0, type: 'scroll', textStyle: { color: col.text, fontSize: 12 } },
       tooltip: { ...tooltipDefaults(col), valueFormatter: (v: number) => `${v}% of sampled volume` },
       xAxis: { type: 'value', name: '% of sampled search volume', nameLocation: 'middle', nameGap: 24, ...axisNum },
-      yAxis: { type: 'category', data: feats.map(f => f.label), ...axis },
+      yAxis: { type: 'category', data: feats.map(f => f.label), ...catAxis(axis, 150) },
       series: [
         { name: 'You rank page 1', type: 'bar', stack: 'fp', itemStyle: { color: col.green }, data: owned },
         { name: 'Not page 1', type: 'bar', stack: 'fp', itemStyle: { color: col.amber, opacity: 0.55 }, data: exposed },
@@ -1201,10 +1214,10 @@ function render(data: DashboardData): void {
   const kwWrap = wrap('kwChart');
   kwWrap.setOption({
     ...ARIA,
-    grid: { left: 8, right: 44, top: 10, bottom: 24, containLabel: true },
+    grid: { left: 16, right: 44, top: 10, bottom: 24, containLabel: true },
     tooltip: { ...tooltipDefaults(col, 'item'), formatter: (pa: any) => `${esc(String(pa.name))}<br/>Δ clicks: ${pa.value >= 0 ? '+' : ''}${pa.value} (now ${kw[pa.dataIndex].clicks})` },
-    xAxis: { type: 'value', ...axisNum },
-    yAxis: { type: 'category', data: kw.map(k => k.query), axisLabel: { color: col.text, width: 180, overflow: 'truncate' }, axisLine: { lineStyle: { color: col.border } } },
+    xAxis: { type: 'value', ...axisNum, splitNumber: 4, axisLabel: { ...axisNum.axisLabel, hideOverlap: true } },
+    yAxis: { type: 'category', data: kw.map(k => k.query), axisLabel: { color: col.text, width: labelW(200), overflow: 'truncate' }, axisLine: { lineStyle: { color: col.border } } },
     series: [{
       type: 'bar',
       label: { show: true, position: 'right', color: col.muted, fontSize: 11, formatter: (p: any) => (p.value > 0 ? '+' : '') + p.value },
@@ -1218,24 +1231,24 @@ function render(data: DashboardData): void {
   // Report tables (agency-style)
   const pp = data.pagePerformance ?? [];
   $('pagePerfTable').innerHTML = pp.length
-    ? tableHtml(['Trend', 'Page', 'Clicks', 'Clicks change', 'Impressions', 'Position'], pp.map(p => `<tr><td><span class="cat ${catClass(p.category)}">${p.category}</span></td><td class="url" title="${esc(p.urlKey)}">${esc(shortPath(p.urlKey))}</td><td class="num">${p.clicks}</td><td class="num" data-sort="${p.clicksChangePct}">${formatTrend(p.clicksChangePct, { suffix: '%' })}</td><td class="num">${p.impressions}</td><td class="num">${p.position}</td></tr>`))
-    : '<div class="hint">No GSC data.</div>';
+    ? tableHtml(['Trend', 'Page', 'Clicks', 'Clicks change', 'Impressions', 'Position'], pp.map(p => `<tr><td><span class="cat ${catClass(p.category)}">${p.category}</span></td><td class="url" title="${esc(p.urlKey)}">${esc(shortPath(p.urlKey))}</td><td class="num" data-sort="${p.clicks}">${fmt(p.clicks)}</td><td class="num" data-sort="${p.clicks - p.prevClicks}">${countDelta(p.clicks, p.prevClicks)}</td><td class="num" data-sort="${p.impressions}">${fmt(p.impressions)}</td><td class="num">${Number(p.position).toFixed(1)}</td></tr>`))
+    : '<div class="hint">No page appears in Search Console in the last 28 days.</div>';
   $('pagePerfSummary').textContent = `${pp.length} pages categorised by 28-day trend.`;
 
   const mv = data.keywordMovement ?? [];
   $('movementTable').innerHTML = mv.length
-    ? tableHtml(['Movement', 'Query', 'First pos', 'Latest pos', 'Pos change'], mv.map(m => `<tr><td><span class="cat ${catClass(m.category)}">${m.category}</span></td><td>${esc(m.query)}</td><td class="num">${m.firstPos}</td><td class="num">${m.lastPos}</td><td class="num">${m.delta > 0 ? '+' : ''}${m.delta}</td></tr>`))
-    : '<div class="hint">No movement data.</div>';
+    ? tableHtml(['Movement', 'Query', 'First pos', 'Latest pos', 'Pos change'], mv.map(m => `<tr><td><span class="cat ${catClass(m.category)}">${m.category}</span></td><td>${esc(m.query)}</td><td class="num">${Number(m.firstPos).toFixed(1)}</td><td class="num">${Number(m.lastPos).toFixed(1)}</td><td class="num" data-sort="${m.delta}">${rankDelta(m.lastPos, m.firstPos, { short: true })}</td></tr>`))
+    : '<div class="hint">No query moved: none with 50+ impressions in the last 90 days moved 3+ positions, or into or out of the top 3, between its first and latest day.</div>';
   $('movementSummary').textContent = `${mv.length} queries with rank movement.`;
 
   const dv = data.deviceBreakdown ?? [];
   $('deviceTable').innerHTML = dv.length
-    ? tableHtml(['Device', 'Clicks', 'Prev clicks', 'CTR', 'Position'], dv.map(d => `<tr><td>${d.device}</td><td class="num">${d.clicks}</td><td class="num">${d.prevClicks}</td><td class="num">${(d.ctr * 100).toFixed(1)}%</td><td class="num">${d.position}</td></tr>`))
+    ? tableHtml(['Device', 'Clicks', 'Prev clicks', 'CTR', 'Position'], dv.map(d => `<tr><td>${esc(d.device.charAt(0) + d.device.slice(1).toLowerCase())}</td><td class="num" data-sort="${d.clicks}">${fmt(d.clicks)}</td><td class="num" data-sort="${d.prevClicks}">${fmt(d.prevClicks)}</td><td class="num">${(d.ctr * 100).toFixed(1)}%</td><td class="num">${Number(d.position).toFixed(1)}</td></tr>`))
     : '<div class="hint">-</div>';
 
   const ct = data.countryBreakdown ?? [];
   $('countryTable').innerHTML = ct.length
-    ? tableHtml(['Country', 'Clicks', 'Prev clicks', 'Impressions'], ct.map(c => `<tr><td>${esc(c.country.toUpperCase())}</td><td class="num">${c.clicks}</td><td class="num">${c.prevClicks}</td><td class="num">${c.impressions}</td></tr>`))
+    ? tableHtml(['Country', 'Clicks', 'Prev clicks', 'Impressions'], ct.map(c => `<tr><td>${esc(c.country.toUpperCase())}</td><td class="num" data-sort="${c.clicks}">${fmt(c.clicks)}</td><td class="num" data-sort="${c.prevClicks}">${fmt(c.prevClicks)}</td><td class="num" data-sort="${c.impressions}">${fmt(c.impressions)}</td></tr>`))
     : '<div class="hint">-</div>';
   // Hide breakdowns that carry only one value (e.g. a single-country property) - a one-row table is
   // noise, not insight. Show a block only with genuine variety (2+ rows); hide the card if neither has.
@@ -1251,9 +1264,62 @@ function render(data: DashboardData): void {
   renderResearch(data);
   renderTrapped(data);
   setupTabs();
-  // Deep-link a tab (?tab=links) so a headless capture / shared link opens that panel on load.
-  const wantTab = new URLSearchParams(location.search).get('tab');
-  if (wantTab) (document.querySelector(`.tab-btn[data-panel="${wantTab}"]`) as HTMLButtonElement | null)?.click();
+  alignTableHeads();
+  openDeepLinkedTab();
+}
+
+/** Right-align each header whose column holds numbers (td.num), so headers sit over their figures. */
+function alignTableHeads(): void {
+  document.querySelectorAll<HTMLTableElement>('#content table').forEach(t => {
+    const row = t.tBodies[0]?.rows[0];
+    const heads = t.tHead?.rows[0]?.cells;
+    if (!row || !heads) return;
+    [...row.cells].forEach((td, i) => { if (td.classList.contains('num') && heads[i]) heads[i].classList.add('num'); });
+  });
+}
+
+// Deep-link a tab (?tab=links) so a headless capture / shared link opens that panel on load.
+// ?tab=overview (the retired landing tab) opens the Summary.
+function openDeepLinkedTab(): void {
+  const raw = new URLSearchParams(location.search).get('tab');
+  const wantTab = raw === 'overview' ? 'summary' : raw;
+  if (wantTab) (document.querySelector(`.tab-btn[data-panel="${wantTab}"]:not([disabled])`) as HTMLButtonElement | null)?.click();
+}
+
+function summaryCtx(col: ReturnType<typeof palette>): SummaryCtx {
+  return {
+    wrap, col, shortPath, safeJson, catLabel: CAT_LABEL,
+    redacted: document.documentElement.classList.contains('redacted'),
+    gotoIssues: (f): void => {
+      (document.querySelector('.tab-btn[data-panel="issues"]') as HTMLButtonElement | null)?.click();
+      const list = document.getElementById('issuesListView'), grouped = document.getElementById('issuesGroupedView');
+      if (list && grouped) { list.style.display = 'block'; grouped.style.display = 'none'; }
+      document.querySelectorAll('#issuesToggle .seg-btn').forEach(b => b.classList.toggle('active', (b as HTMLElement).dataset.view === 'list'));
+      issuesFilter?.(f);
+      document.getElementById('findingsCard')?.scrollIntoView({ block: 'start' });
+    },
+  };
+}
+
+/** No Search Console data, but a crawl / audit exists: the Summary and Issues, other tabs disabled. */
+function renderCrawlOnly(data: DashboardData): void {
+  $('empty').style.display = 'none';
+  $('content').style.display = 'block';
+  $('site').textContent = data.siteUrl;
+  $('range').textContent = 'no Search Console data';
+  const col = palette();
+  renderSummary(data, summaryCtx(col));
+  renderFindings(data.findings, col);
+  renderRecommendations(data.findings);
+  buildExportBar(data);
+  const usable = new Set(['summary', 'issues']);
+  document.querySelectorAll<HTMLButtonElement>('.tab-btn').forEach(b => {
+    const on = usable.has(b.dataset.panel ?? '');
+    b.disabled = !on;
+    if (on) b.removeAttribute('title'); else b.title = 'Needs Search Console data - run sync_gsc';
+  });
+  setupTabs();
+  openDeepLinkedTab();
 }
 
 // Table sorting lives in the display library (lib/data-grid.ts: attachSort).
@@ -1268,7 +1334,7 @@ function setupTabs(): void {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
       document.querySelectorAll<HTMLElement>('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === panel));
       const title = document.getElementById('pageTitle');
-      if (title) title.textContent = btn.textContent?.trim() || 'Overview';
+      if (title) title.textContent = btn.textContent?.trim() || 'Summary';
       // Scroll to the top only for a real click: programmatic .click() (deep-link restore on every
       // re-render, [data-goto] cross-links) must not lose the reader's place.
       if (ev.isTrusted) window.scrollTo({ top: 0 });
@@ -1354,11 +1420,97 @@ function upsellCard(o: { title: string; lead: string; provider: keyof typeof AFF
   </div>`;
 }
 
+// Links tab, top half (#47): OUR backlink profile from pull_backlinks. Every number is a stored
+// row; a section whose table was never filled says "not collected" rather than showing zero.
+function renderBacklinkProfile(data: DashboardData): void {
+  const top = document.getElementById('backlinkProfilePanel');
+  const trendCard = document.getElementById('backlinkTrendCard');
+  const detail = document.getElementById('backlinkDetailPanel');
+  if (!top || !trendCard || !detail) return;
+  const bp = data.backlinkProfile;
+  const noKey = data.apiKeys && !data.apiKeys.dataforseo;
+  const runHint = `Ask Claude to run <code>pull_backlinks for ${esc(data.siteUrl)}</code> (DataForSEO Backlinks subscription; cached 20 days).`;
+  if (!bp) {
+    top.innerHTML = `<div class="chart-card"><h3>Backlink profile</h3><div class="hint">${noKey ? 'Not collected — DataForSEO isn’t connected, so your own backlink profile hasn’t been pulled.' : `Not collected yet. ${runHint} It stores the summary, the backlinked pages with their live status, the referring domains, the anchor mix and twelve months of new/lost history.`}</div></div>`;
+    trendCard.hidden = true; detail.innerHTML = '';
+    return;
+  }
+  const s = bp.summary;
+  const when = (iso: string | null | undefined): string => iso ? esc(String(iso).slice(0, 10)) : 'unknown date';
+  const nc = (what: string): string => `<div class="empty-state">${what} not collected: this profile was pulled before the dashboard stored it. Re-run <code>pull_backlinks</code> to add it.</div>`;
+  const kpis = s ? kpiGrid([
+    { label: 'Backlinks', value: fmtNum(s.backlinks) },
+    { label: 'Referring domains', value: fmtNum(s.referringDomains) },
+    { label: 'Domain Rank', value: s.domainRank == null ? '–' : String(s.domainRank) },
+    { label: 'Broken backlinks', value: fmtNum(s.brokenBacklinks) },
+    { label: 'Nofollow share', value: s.nofollowPct == null ? '–' : `${Math.round(s.nofollowPct * 100)}%` },
+  ]).replace('<div class="metrics">', '<div class="metrics metrics-5">') : nc('Summary');
+  top.innerHTML = `<div class="chart-card"><h3>Backlink profile — your own links</h3>
+    <div class="hint">From <code>pull_backlinks</code>${s ? `, summary pulled ${when(s.fetchedAt)}` : ''}: ${fmtNum(bp.pagesTotal)} backlinked pages stored${bp.pagesUnchecked ? `, ${fmtNum(bp.pagesUnchecked)} without a live status check` : ''}. Domain Rank is DataForSEO’s 0–1000 authority score.</div>
+    ${kpis}</div>`;
+
+  // Trend: new vs lost referring domains per month (DataForSEO daily history, summed per month).
+  const months = bp.history?.months ?? [];
+  if (months.length) {
+    trendCard.hidden = false;
+    const col = palette(), axis = axisDefaults(col);
+    (document.getElementById('backlinkTrendHint') as HTMLElement).textContent = `${months.length} months of daily history (pulled ${bp.history?.fetchedAt ? String(bp.history.fetchedAt).slice(0, 10) : 'unknown date'}); a partial first or last month covers only the days DataForSEO reported.`;
+    wrap('backlinkTrendChart').setOption({
+      ...ARIA,
+      grid: { left: 48, right: 16, top: 28, bottom: 28 },
+      legend: { top: 0, textStyle: { color: col.text, fontSize: 12 } },
+      tooltip: { ...tooltipDefaults(col), axisPointer: { type: 'shadow' } },
+      xAxis: { type: 'category', data: months.map(m => m.month), ...axis },
+      yAxis: { type: 'value', ...axis },
+      series: [
+        { name: 'New referring domains', type: 'bar', data: months.map(m => m.newDomains), itemStyle: { color: col.green } },
+        { name: 'Lost referring domains', type: 'bar', data: months.map(m => -m.lostDomains), itemStyle: { color: col.red } },
+      ],
+    });
+  } else {
+    trendCard.hidden = true;
+  }
+
+  const tbl = (head: string, body: string): string => `<div class="findings-table"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+  const rd = bp.referringDomains;
+  const rdHtml = rd
+    ? `<div class="hint">${fmtNum(rd.live)} live referring domains in the latest pull (${when(rd.snapshotAt)}), ${fmtNum(rd.lost)} lost. Top by DataForSEO domain rank.</div>` +
+      tbl('<tr><th>Domain</th><th class="num">Rank</th><th class="num">Backlinks</th><th class="num">Pages</th><th>Link</th><th class="num">Spam</th><th>First seen</th></tr>',
+        rd.top.map(d => `<tr><td>${esc(d.domain)}</td><td class="num">${d.rank ?? '–'}</td><td class="num">${fmtNum(d.backlinks)}</td><td class="num">${fmtNum(d.referringPages)}</td><td>${d.referringPages > 0 && d.nofollowPages >= d.referringPages ? 'nofollow' : 'follow'}</td><td class="num">${d.spamScore ?? '–'}</td><td>${d.firstSeen ? esc(d.firstSeen) : '–'}</td></tr>`).join(''))
+    : nc('Referring domains');
+  const an = bp.anchors;
+  const anTotal = an ? an.mix.reduce((a, m) => a + m.backlinks, 0) : 0;
+  const KIND_LABEL: Record<string, string> = { branded: 'Branded', keyword: 'Keyword / exact', url: 'URL', generic: 'Generic', empty: 'Empty / image' };
+  const anHtml = an
+    ? `<div class="hint">Live anchors in the latest pull (${when(an.snapshotAt)}), classified by text: branded (contains your name), URL, generic (“click here”), empty (image or no text), everything else keyword. Share is by backlinks.</div>` +
+      tbl('<tr><th>Anchor type</th><th class="num">Anchors</th><th class="num">Backlinks</th><th class="num">Share</th><th class="num">Ref. domains</th></tr>',
+        an.mix.map(m => `<tr><td>${esc(KIND_LABEL[m.kind] ?? m.kind)}</td><td class="num">${fmtNum(m.anchors)}</td><td class="num">${fmtNum(m.backlinks)}</td><td class="num">${sharePct(m.backlinks, anTotal)}</td><td class="num">${fmtNum(m.referringDomains)}</td></tr>`).join('')) +
+      `<details><summary class="hint">Top ${an.top.length} anchors</summary>` +
+      tbl('<tr><th>Anchor</th><th>Type</th><th class="num">Backlinks</th><th class="num">Ref. domains</th></tr>',
+        an.top.map(t => `<tr><td>${t.anchor ? esc(t.anchor) : '<i>(empty)</i>'}</td><td>${esc(KIND_LABEL[t.kind] ?? t.kind)}</td><td class="num">${fmtNum(t.backlinks)}</td><td class="num">${fmtNum(t.referringDomains)}</td></tr>`).join('')) + '</details>'
+    : nc('Anchor mix');
+  const pagesHtml = bp.topPages.length
+    ? tbl('<tr><th>Page</th><th class="num">Ref. domains</th><th class="num">Backlinks</th><th class="num">Follow</th><th class="num">Live status</th>' + (bp.topPages.some(p => p.trustFlow != null) ? '<th class="num">Trust Flow</th>' : '') + '</tr>',
+        bp.topPages.map(p => `<tr><td class="url">${esc(p.url)}</td><td class="num">${fmtNum(p.referringDomains)}</td><td class="num">${fmtNum(p.backlinks)}</td><td class="num">${fmtNum(p.dofollow)}</td><td class="num">${p.status == null ? 'unchecked' : statusBadge(p.status)}</td>${bp.topPages.some(q => q.trustFlow != null) ? `<td class="num">${p.trustFlow ?? '–'}</td>` : ''}</tr>`).join(''))
+    : nc('Backlinked pages');
+  const brokenHtml = bp.brokenPages.length
+    ? `<div class="hint">${bp.brokenPages.length} backlinked page${bp.brokenPages.length === 1 ? '' : 's'} answer${bp.brokenPages.length === 1 ? 's' : ''} 4xx/5xx — equity arriving at a dead end. <code>triage_404s</code> proposes the 301 map; the audit reports <code>backlinks-to-404</code>.</div>` +
+      tbl('<tr><th>Page</th><th class="num">Status</th><th class="num">Ref. domains</th><th class="num">Backlinks</th></tr>',
+        bp.brokenPages.map(p => `<tr><td class="url">${esc(p.url)}</td><td class="num">${statusBadge(p.status)}</td><td class="num">${fmtNum(p.referringDomains)}</td><td class="num">${fmtNum(p.backlinks)}</td></tr>`).join(''))
+    : `<div class="hint">${bp.pagesTotal ? `No backlinked page answers 4xx/5xx${bp.pagesUnchecked ? ` (${fmtNum(bp.pagesUnchecked)} unchecked)` : ''}.` : 'Not collected.'}</div>`;
+  detail.innerHTML = `<div class="chart-card"><h3>Top referring domains</h3>${rdHtml}</div>
+    <div class="chart-card"><h3>Anchor mix</h3>${anHtml}</div>
+    <div class="chart-card"><h3>Most-linked pages</h3><div class="hint">Your pages by referring domains, with the live HTTP status pull_backlinks resolved.</div>${pagesHtml}</div>
+    <div class="chart-card"><h3>Broken backlinked pages</h3>${brokenHtml}</div>`;
+}
+
 // Links tab: render the stored link_prospects, or the DataForSEO upsell / a run-it prompt.
 function renderLinks(data: DashboardData): void {
+  renderBacklinkProfile(data);
   const el = document.getElementById('linksPanel');
   if (!el) return;
-  if (data.apiKeys && !data.apiKeys.dataforseo) {
+  // Stored prospects show whatever the key state: the key gates new pulls, not data already held.
+  if (data.apiKeys && !data.apiKeys.dataforseo && !(data.linkProspects ?? []).length) {
     el.innerHTML = upsellCard({ title: 'Link intersect — the links your competitors have that you don’t', lead: 'Find the domains linking to your competitors but not to you, ranked by authority — a ready-made outreach list. Needs a DataForSEO account (with the Backlinks subscription). An optional Majestic key re-sorts by Trust Flow.', provider: 'dataforseo', cta: 'Get DataForSEO' });
     return;
   }
@@ -1372,7 +1524,7 @@ function renderLinks(data: DashboardData): void {
   const trs = rows.map(r => `<tr><td>${esc(r.domain)}</td><td class="num">${r.intersections}</td><td class="num">${enriched ? (r.trustFlow ?? '–') : (r.domainTrust ?? '–')}</td><td>${r.dofollow ? 'follow' : 'nofollow'}</td><td class="num">${r.spamScore ?? '–'}</td>${enriched ? `<td>${esc(r.topTopic ?? '–')}</td>` : ''}</tr>`).join('');
   const comps = rows[0]?.competitors ?? [];
   el.innerHTML = `<div class="chart-card"><h3>Link intersect — competitors’ links you don’t have</h3>
-    <div class="hint">Domains linking to ${comps.length ? esc(comps.join(', ')) : 'your competitor set'} but not to you. ${enriched ? 'Sorted by Majestic Trust Flow (kills directory noise).' : 'Sorted by DataForSEO domain trust — set a Majestic key to re-sort by Trust Flow.'} ${rows.length} prospects${rows[0]?.fetchedAt ? `, captured ${esc(String(rows[0].fetchedAt).slice(0, 10))}` : ''}.</div>
+    <div class="hint">Domains linking to ${comps.length ? esc(comps.join(', ')) : 'your competitor set'} but not to you. ${enriched ? 'Sorted by Majestic Trust Flow (kills directory noise).' : 'Sorted by DataForSEO domain trust — set a Majestic key to re-sort by Trust Flow.'} ${rows.length} prospects${rows[0]?.fetchedAt ? `, captured ${esc(fmtDate(String(rows[0].fetchedAt)))}` : ''}.</div>
     <div class="findings-table"><table><thead><tr><th>Prospect domain</th><th class="num">Links to</th><th class="num">${trustHead}</th><th>Link</th><th class="num">Spam</th>${enriched ? '<th>Top topic</th>' : ''}</tr></thead><tbody>${trs}</tbody></table></div></div>`;
 }
 
@@ -1415,8 +1567,8 @@ async function runResearch(kind: string, keyword: string, out: HTMLElement): Pro
       const arts: any[] = ((await callServer('news_discovery', { keyword })) as any)?.structuredContent?.articles ?? [];
       out.innerHTML = arts.length ? tbl('<tr><th>Article</th><th>Source</th><th>When</th></tr>', arts.slice(0, 20).map(a => `<tr><td><a class="rec-url" href="${esc(a.url ?? '#')}" target="_blank" rel="noopener">${esc(a.title ?? '(untitled)')}</a></td><td>${esc(a.source ?? '–')}</td><td>${esc(a.timestamp ?? '–')}</td></tr>`).join('')) : `<div class="empty-state">No news for “${esc(keyword)}”.</div>`;
     }
-  } catch {
-    out.innerHTML = `<div class="empty-state">Lookup failed — a DataForSEO key is required for live research.</div>`;
+  } catch (e) {
+    out.innerHTML = `<div class="empty-state">Lookup failed: ${esc(e instanceof Error ? e.message : String(e))}</div>`;
   }
 }
 
@@ -1427,13 +1579,15 @@ function renderTrapped(data: DashboardData): void {
   if (!el) return;
   const rows = data.trappedAuthority ?? [];
   if (!rows.length) {
-    el.innerHTML = `<div class="empty-state">No trapped-authority pages found${data.apiKeys && !data.apiKeys.dataforseo ? ' — DataForSEO backlink data isn’t connected.' : ' — run pull_backlinks to bring in referring-domain counts (with a Majestic key set, pages are also scored by on-topic Trust Flow), then re-open the dashboard.'}</div>`;
+    // From the STORED backlink rows (the Links tab and the Summary coverage read the same), not the key.
+    const stored = Math.max(data.backlinkProfile?.pagesTotal ?? 0, (data as any).coverage?.backlinkPages ?? 0);
+    el.innerHTML = `<div class="empty-state">${esc(trappedEmptyReason({ backlinkPages: stored, hasKey: data.apiKeys ? data.apiKeys.dataforseo : null }))}</div>`;
     return;
   }
   // Majestic-enriched view shows Trust Flow + the page's top topic; otherwise the DataForSEO view.
   const enriched = rows.some(r => r.trustFlow != null);
   const head = `<tr><th>Page</th><th class="num">Ref domains</th>${enriched ? '<th class="num">Trust Flow</th><th>Top topic</th>' : '<th class="num">Backlinks</th>'}<th class="num">Click depth</th><th class="num">iPR</th></tr>`;
-  const body = rows.map(r => `<tr><td class="url">${esc(r.url)}</td><td class="num">${r.referringDomains}</td>${enriched ? `<td class="num">${r.trustFlow ?? '–'}</td><td>${esc(r.topTopic ?? '–')}</td>` : `<td class="num">${r.backlinks.toLocaleString()}</td>`}<td class="num">${r.clickDepth == null ? '∞' : r.clickDepth}</td><td class="num">${r.ipr}</td></tr>`).join('');
+  const body = rows.map(r => `<tr><td class="url" title="${esc(r.url)}">${esc(shortPath(r.url))}</td><td class="num">${fmt(r.referringDomains)}</td>${enriched ? `<td class="num">${r.trustFlow ?? '–'}</td><td>${esc(r.topTopic ?? '–')}</td>` : `<td class="num">${fmt(r.backlinks)}</td>`}<td class="num" title="${r.clickDepth == null ? 'Not reachable through in-content links from the homepage' : ''}">${r.clickDepth == null ? 'unreachable' : r.clickDepth}</td><td class="num">${r.ipr}</td></tr>`).join('');
   el.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
 }
 
@@ -1457,8 +1611,8 @@ async function loadRelated(keyword: string): Promise<void> {
       (paa.length ? `<div class="group-label">People also ask</div>${tags(paa)}` : '') +
       (rel.length ? `<div class="group-label">Related searches</div>${tags(rel)}` : '') +
       (!paa.length && !rel.length && !vol ? `<div class="group-label">No DataForSEO data for “${esc(keyword)}”.</div>` : '');
-  } catch {
-    el.innerHTML = `<div class="group-label">DataForSEO credentials needed for keyword lookups.</div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="group-label">Lookup failed: ${esc(e instanceof Error ? e.message : String(e))}</div>`;
   }
 }
 

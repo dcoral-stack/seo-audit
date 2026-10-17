@@ -1,0 +1,719 @@
+{
+ "record": {
+  "key": {
+   "formFactor": "PHONE",
+   "origin": "https://www.example.test"
+  },
+  "metrics": {
+   "experimental_ad_density": {
+    "percentilesTimeseries": {
+     "p75s": [
+      7,
+      7,
+      7,
+      7,
+      8,
+      8
+     ]
+    }
+   },
+   "experimental_cumulative_layout_shift_with_softnavs": {
+    "histogramTimeseries": [
+     {
+      "start": "0.00",
+      "end": "0.10",
+      "densities": [
+       "NaN",
+       "NaN",
+       "NaN",
+       "NaN",
+       0.9387,
+       0.9385
+      ]
+     },
+     {
+      "start": "0.10",
+      "end": "0.25",
+      "densities": [
+       "NaN",
+       "NaN",
+       "NaN",
+       "NaN",
+       0.0385,
+       0.0392
+      ]
+     },
+     {
+      "start": "0.25",
+      "densities": [
+       "NaN",
+       "NaN",
+       "NaN",
+       "NaN",
+       0.0228,
+       0.0223
+      ]
+     }
+    ],
+    "percentilesTimeseries": {
+     "p75s": [
+      null,
+      null,
+      null,
+      null,
+      "0.02",
+      "0.02"
+     ]
+    }
+   },
+   "experimental_time_to_first_byte": {
+    "histogramTimeseries": [
+     {
+      "start": 0,
+      "end": 800,
+      "densities": [
+       0.7386,
+       0.749,
+       0.7524,
+       0.735,
+       0.7134,
+       0.6949
+      ]
+     },
+     {
+      "start": 800,
+      "end": 1800,
+      "densities": [
+       0.2166,
+       0.2087,
+       0.2051,
+       0.22,
+       0.2408,
+       0.2573
+      ]
+     },
+     {
+      "start": 1800,
+      "densities": [
+       0.0448,
+       0.0422,
+       0.0424,
+       0.045,
+       0.0458,
+       0.0478
+      ]
+     }
+    ],
+    "percentilesTimeseries": {
+     "p75s": [
+      824,
+      801,
+      794,
+      834,
+      880,
+      903
+     ]
+    }
+   },
+   "round_trip_time": {
+    "histogramTimeseries": [
+     {
+      "start": 0,
+      "end": 75,
+      "densities": [
+       0.5649,
+       0.5738,
+       0.5725,
+       0.5807,
+       0.579,
+       0.5798
+      ]
+     },
+     {
+      "start": 75,
+      "end": 275,
+      "densities": [
+       0.401,
+       0.3936,
+       0.3943,
+       0.3853,
+       0.3855,
+       0.3864
+      ]
+     },
+     {
+      "start": 275,
+      "densities": [
+       0.0341,
+       0.0326,
+       0.0332,
+       0.034,
+       0.0355,
+       0.0338
+      ]
+     }
+    ],
+    "percentilesTimeseries": {
+     "p75s": [
+      102,
+      101,
+      100,
+      99,
+      99,
+      99
+     ]
+    }
+   },
+   "experimental_ad_count": {
+    "percentilesTimeseries": {
+     "p75s": [
+      "0.88",
+      "0.88",
+      "0.88",
+      "0.88",
+      "0.88",
+      "0.77"
+     ]
+    }
+   },
+   "experimental_ad_cpu": {
+    "percentilesTimeseries": {
+     "p75s": [
+      4759,
+      4464,
+      4172,
+      4020,
+      3899,
+      3864
+     ]
+    }
+   },
+   "experimental_ad_kilobytes": {
+    "percentilesTimeseries": {
+     "p75s": [
+      3517,
+      3400,
+      3323,
+      3296,
+      3240,
+      2966
+     ]
+    }
+   },
+   "first_contentful_paint": {
+    "histogramTimeseries": [
+     {
+      "start": 0,
+      "end": 1800,
+      "densities": [
+       "NaN",
+       0.8124,
+       0.8186,
+       0.8071,
+       0.7983,
+       0.7827
+      ]
+     },
+     {
+      "start": 1800,
+      "end": 3000,
+      "densities": [
+       "NaN",
+       0.1226,
+       0.1187,
+       0.1281,
+       0.1386,
+       0.1532
+      ]
+     },
+     {
+      "start": 3000,
+      "densities": [
+       "NaN",
+       0.0651,
+       0.0627,
+       0.0649,
+       0.063,
+       0.0641
+      ]
+     }
+    ],
+    "percentilesTimeseries": {
+     "p75s": [
+      null,
+      1534,
+      1509,
+      1546,
+      1597,
+      1663
+     ]
+    }
+   },
+   "largest_contentful_paint_image_resource_load_delay": {
+    "percentilesTimeseries": {
+     "p75s": [
+      159,
+      null,
+      156,
+      147,
+      145,
+      156
+     ]
+    }
+   },
+   "largest_contentful_paint_resource_type": {
+    "fractionTimeseries": {
+     "image": {
+      "fractions": [
+       0.1165,
+       0.1036,
+       0.1041,
+       0.106,
+       0.1081,
+       0.1084
+      ]
+     },
+     "text": {
+      "fractions": [
+       0.8834,
+       0.8964,
+       0.8958,
+       0.894,
+       0.8919,
+       0.8916
+      ]
+     }
+    }
+   },
+   "experimental_interaction_to_next_paint_with_softnavs": {
+    "histogramTimeseries": [
+     {
+      "start": 0,
+      "end": 200,
+      "densities": [
+       "NaN",
+       "NaN",
+       "NaN",
+       "NaN",
+       0.9198,
+       0.9193
+      ]
+     },
+     {
+      "start": 200,
+      "end": 500,
+      "densities": [
+       "NaN",
+       "NaN",
+       "NaN",
+       "NaN",
+       0.0662,
+       0.0684
+      ]
+     },
+     {
+      "start": 500,
+      "densities": [
+       "NaN",
+       "NaN",
+       "NaN",
+       "NaN",
+       0.014,
+       0.0123
+      ]
+     }
+    ],
+    "percentilesTimeseries": {
+     "p75s": [
+      null,
+      null,
+      null,
+      null,
+      130,
+      129
+     ]
+    }
+   },
+   "experimental_largest_contentful_paint_with_softnavs": {
+    "histogramTimeseries": [
+     {
+      "start": 0,
+      "end": 2500,
+      "densities": [
+       "NaN",
+       "NaN",
+       "NaN",
+       "NaN",
+       0.8883,
+       0.8829
+      ]
+     },
+     {
+      "start": 2500,
+      "end": 4000,
+      "densities": [
+       "NaN",
+       "NaN",
+       "NaN",
+       "NaN",
+       0.0843,
+       0.0886
+      ]
+     },
+     {
+      "start": 4000,
+      "densities": [
+       "NaN",
+       "NaN",
+       "NaN",
+       "NaN",
+       0.0274,
+       0.0285
+      ]
+     }
+    ],
+    "percentilesTimeseries": {
+     "p75s": [
+      null,
+      null,
+      null,
+      null,
+      1736,
+      1811
+     ]
+    }
+   },
+   "interaction_to_next_paint": {
+    "histogramTimeseries": [
+     {
+      "start": 0,
+      "end": 200,
+      "densities": [
+       0.912,
+       0.9119,
+       0.9156,
+       0.9146,
+       0.9175,
+       0.9206
+      ]
+     },
+     {
+      "start": 200,
+      "end": 500,
+      "densities": [
+       0.0736,
+       0.0735,
+       0.072,
+       0.0728,
+       0.0691,
+       0.0677
+      ]
+     },
+     {
+      "start": 500,
+      "densities": [
+       0.0144,
+       0.0147,
+       0.0124,
+       0.0127,
+       0.0135,
+       0.0117
+      ]
+     }
+    ],
+    "percentilesTimeseries": {
+     "p75s": [
+      134,
+      134,
+      132,
+      133,
+      130,
+      129
+     ]
+    }
+   },
+   "navigation_types": {
+    "fractionTimeseries": {
+     "reload": {
+      "fractions": [
+       0.0822,
+       0.0767,
+       0.0719,
+       0.0712,
+       0.0682,
+       0.0713
+      ]
+     },
+     "restore": {
+      "fractions": [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     },
+     "back_forward": {
+      "fractions": [
+       0.0197,
+       0.0161,
+       0.0172,
+       0.0161,
+       0.0189,
+       0.0176
+      ]
+     },
+     "back_forward_cache": {
+      "fractions": [
+       0.0366,
+       0.0342,
+       0.0353,
+       0.0343,
+       0.034,
+       0.0344
+      ]
+     },
+     "prerender": {
+      "fractions": [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     },
+     "navigate": {
+      "fractions": [
+       0.8018,
+       0.8122,
+       0.8155,
+       0.8169,
+       0.8126,
+       0.8112
+      ]
+     },
+     "navigate_cache": {
+      "fractions": [
+       0.0596,
+       0.0608,
+       0.0601,
+       0.0613,
+       0.0662,
+       0.0655
+      ]
+     }
+    }
+   },
+   "largest_contentful_paint": {
+    "histogramTimeseries": [
+     {
+      "start": 0,
+      "end": 2500,
+      "densities": [
+       0.8924,
+       0.8938,
+       0.895,
+       0.8904,
+       0.8901,
+       0.8826
+      ]
+     },
+     {
+      "start": 2500,
+      "end": 4000,
+      "densities": [
+       0.078,
+       0.0755,
+       0.0751,
+       0.0805,
+       0.0835,
+       0.0883
+      ]
+     },
+     {
+      "start": 4000,
+      "densities": [
+       0.0296,
+       0.0307,
+       0.0299,
+       0.0291,
+       0.0264,
+       0.029
+      ]
+     }
+    ],
+    "percentilesTimeseries": {
+     "p75s": [
+      1685,
+      1665,
+      1650,
+      1687,
+      1741,
+      1811
+     ]
+    }
+   },
+   "largest_contentful_paint_image_element_render_delay": {
+    "percentilesTimeseries": {
+     "p75s": [
+      486,
+      497,
+      479,
+      470,
+      479,
+      484
+     ]
+    }
+   },
+   "largest_contentful_paint_image_resource_load_duration": {
+    "percentilesTimeseries": {
+     "p75s": [
+      305,
+      299,
+      278,
+      261,
+      256,
+      253
+     ]
+    }
+   },
+   "largest_contentful_paint_image_time_to_first_byte": {
+    "percentilesTimeseries": {
+     "p75s": [
+      884,
+      837,
+      780,
+      783,
+      828,
+      850
+     ]
+    }
+   },
+   "cumulative_layout_shift": {
+    "histogramTimeseries": [
+     {
+      "start": "0.00",
+      "end": "0.10",
+      "densities": [
+       0.9421,
+       0.9415,
+       0.9433,
+       0.9419,
+       0.9384,
+       0.9388
+      ]
+     },
+     {
+      "start": "0.10",
+      "end": "0.25",
+      "densities": [
+       0.0349,
+       0.0356,
+       0.0343,
+       0.035,
+       0.0386,
+       0.0382
+      ]
+     },
+     {
+      "start": "0.25",
+      "densities": [
+       0.023,
+       0.023,
+       0.0224,
+       0.0231,
+       0.023,
+       0.0229
+      ]
+     }
+    ],
+    "percentilesTimeseries": {
+     "p75s": [
+      "0.02",
+      "0.02",
+      "0.02",
+      "0.02",
+      "0.02",
+      "0.02"
+     ]
+    }
+   }
+  },
+  "collectionPeriods": [
+   {
+    "firstDate": {
+     "year": 2026,
+     "month": 8,
+     "day": 9
+    },
+    "lastDate": {
+     "year": 2026,
+     "month": 9,
+     "day": 5
+    }
+   },
+   {
+    "firstDate": {
+     "year": 2026,
+     "month": 8,
+     "day": 16
+    },
+    "lastDate": {
+     "year": 2026,
+     "month": 9,
+     "day": 12
+    }
+   },
+   {
+    "firstDate": {
+     "year": 2026,
+     "month": 8,
+     "day": 23
+    },
+    "lastDate": {
+     "year": 2026,
+     "month": 9,
+     "day": 19
+    }
+   },
+   {
+    "firstDate": {
+     "year": 2026,
+     "month": 8,
+     "day": 30
+    },
+    "lastDate": {
+     "year": 2026,
+     "month": 9,
+     "day": 26
+    }
+   },
+   {
+    "firstDate": {
+     "year": 2026,
+     "month": 9,
+     "day": 6
+    },
+    "lastDate": {
+     "year": 2026,
+     "month": 10,
+     "day": 3
+    }
+   },
+   {
+    "firstDate": {
+     "year": 2026,
+     "month": 9,
+     "day": 13
+    },
+    "lastDate": {
+     "year": 2026,
+     "month": 10,
+     "day": 10
+    }
+   }
+  ]
+ }
+}

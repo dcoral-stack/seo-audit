@@ -2,7 +2,7 @@
 
 Everything in the core audit runs on your own Search Console data and your own crawl. But GSC can only describe searches where **you already appear**. The moment the question becomes "how big is this market?", "who do I compete with?" or "what do they rank for that I don't?", you need third-party data.
 
-That's what the DataForSEO integration is for. Together these tools cover most of what I used to open Semrush for - the organic overview, top pages, ranked keywords, the content gap - inside the same conversation as your audit, joined to your own data. One workflow, [link intersect](#link-intersect-link_intersect), has a second optional service behind it - **Majestic**, for Trust Flow and Topical Trust Flow - because link prospecting is the one place where DataForSEO's authority metric isn't the right one to sort on.
+That's what the DataForSEO integration is for. Together these tools cover most of what I used to open Semrush for - the organic overview, top pages, ranked keywords, the content gap - inside the same conversation as your audit, joined to your own data. One workflow, [link intersect](#link-intersect-link_intersect), has a second optional service behind it - **Majestic**, for Trust Flow and Topical Trust Flow - because link prospecting is the one place where DataForSEO's authority metric isn't the right one to sort on. (The same key also adds Trust Flow to your own backlinked pages in `pull_backlinks`.)
 
 ## Setting up DataForSEO
 
@@ -19,10 +19,10 @@ That's what the DataForSEO integration is for. Together these tools cover most o
 
 ## What it costs
 
-- Calls happen **on demand only** - one per question you ask. Nothing loops, nothing runs in bulk behind your back, and there are no scheduled pulls.
+- Calls happen **on demand only** - when you ask a question that needs one. Nothing loops, nothing runs in bulk behind your back, and there are no scheduled pulls. The one paid call you might not think of asking for is the rank-history phase of `refresh_property`, which runs whenever DataForSEO credentials are set (`ranks:false` skips it).
 - Every response is **cached for 20 days** (configurable via `DATAFORSEO_CACHE_DAYS`). Ask the same question twice in a fortnight and the second answer is free.
-- Live tool responses show the actual cost of the call; cached ones say "cached". `topic_gaps` is the biggest spender and it's bounded at four Labs calls maximum.
-- **Majestic bills separately**, in its own resource units rather than dollars per call, and only when you run `link_intersect` with `MAJESTIC_API_KEY` set - roughly one unit per prospect enriched, capped at 100 by default, cached 30 days. Details in [the Majestic section](#the-directory-problem-and-the-majestic-fix) below.
+- Live tool responses show the actual cost of the call; cached ones say "cached". The multi-call tools are all bounded: `topic_gaps` makes four Labs calls at most, `market_sizing` one per domain (five at most), and `recon_targets` one SERP call per page in its batch (5 by default).
+- **Majestic bills separately**, in its own resource units rather than dollars per call, and only when `MAJESTIC_API_KEY` is set and you run `link_intersect` (roughly one unit per prospect enriched, capped at 100 by default) or `pull_backlinks` (your most-backlinked pages, up to 500 per pull) - all cached 30 days. Details in [the Majestic section](#the-directory-problem-and-the-majestic-fix) below.
 - `page_lighthouse` is the priciest single call (a full Lighthouse run on DataForSEO's infrastructure) and also the slowest (20-120s), which is why it's strictly one URL per request.
 
 My own usage across several properties runs to a few dollars a month. Your mileage depends on how curious you are, but the design intent is that you can't accidentally spend real money.
@@ -52,9 +52,9 @@ Every keyword a target ranks for, scoped however you like: a whole domain, a sub
 > What does competitor.com/blog/ rank for?
 > What does this exact page rank for: https://rival.com/best-widgets
 
-**The AI Overview view.** Set `aioOnly:true` and the same tool returns only keywords where the target is **exposed as a source in Google's AI Overviews**. Run it on yourself to see where you're feeding AI answers; run it on a competitor to see where they've become the quoted source. Then compose it with your own click data (recipe 1 in [composition.md](composition.md)) to find citations that cost you visits.
+**The AI Overview view.** Set `aioOnly:true` and the same tool returns only keywords where the target ranks **and the SERP shows a Google AI Overview** - its AI Overview exposure. Run it on yourself to see where AI answers sit above your results; run it on a competitor to see theirs. It's exposure, not citation: the Labs data doesn't say who the Overview quotes. To check that, take the short list to a live SERP call per keyword (recipe 1 in [composition.md](composition.md)), or run content recon, which reads the citations for each page it analyses.
 
-> Which keywords cite mysite.com in AI Overviews?
+> Which of mysite.com's keywords show an AI Overview?
 
 ### Who you compete with: `competitors_domain`
 
@@ -82,8 +82,8 @@ Where `suggest_pages` (free, GSC-only) mines demand Google has already shown you
 - **`related_terms`** - People Also Ask questions and related searches from a live SERP.
 - **`search_intent`** - informational / navigational / commercial / transactional per keyword. Pass your `siteUrl` to persist the labels, which switches on the intent-vs-pagetype-mismatch audit check.
 - **`page_lighthouse`** - lab Core Web Vitals for one URL. Pass `siteUrl` to persist, which switches on high-yield-cwv-fail.
-- **`pull_backlinks`** - your backlink profile with a live status check on every linked page, so backlinks pointing at 404s become findings with ready-made 301s. Needs the separate Backlinks subscription, as above.
-- **`link_intersect`** - the links your competitors have that you don't. One `domain_intersection` call over the rival set (or a single company), returning every domain that links to them but not you, sorted followed-first then by domain trust, spam filtered. Needs the separate Backlinks subscription. Covered in full below.
+- **`pull_backlinks`** - your backlink profile with a live status check on every linked page, so backlinks pointing at 404s become `backlinks-to-404` findings, and `triage_404s` folds them into a paste-ready 301 map. Needs the separate Backlinks subscription, as above.
+- **`link_intersect`** - the links your competitors have that you don't. One `domain_intersection` call over the rival set (or a single company) - plus a `competitors_domain` call if you don't name the rivals - returning the domains that link to them but not you, sorted followed-first then by domain trust, spam filtered. Needs the separate Backlinks subscription. Covered in full below.
 - **`track_ranks`** - the monthly rank-distribution history that gives the dashboard's visibility chart its time axis. Runs as part of `refresh_property` when credentials are present.
 
 ## Market sizing: `market_sizing` and `serp_features`
@@ -95,7 +95,7 @@ Two views that open an engagement. **`market_sizing`** takes your domain plus up
 
 ## Link intersect: `link_intersect`
 
-The classic outreach question - *what links do our competitors have that we don't?* - and, for a single company, *what links does company X have that we don't?* One DataForSEO `domain_intersection` call over the target set (with your own domain excluded) returns every domain that links to your rivals but not to you. Each prospect is aggregated: how many of the targets it links to, its domain trust, its worst spam score, whether the link is followed, the anchor mix. The default sort is the link builder's - **followed links first, then domain trust** - with spam filtered out.
+The classic outreach question - *what links do our competitors have that we don't?* - and, for a single company, *what links does company X have that we don't?* One DataForSEO `domain_intersection` call over the target set (with your own domain excluded) returns the domains that link to your rivals but not to you - the strongest `poolLimit` of them (default 300), filtered, with the top `topN` (default 100) returned and kept. Name the targets yourself (up to 20), or leave them out and it derives your top competitors first with one `competitors_domain` call. Each prospect is aggregated: how many of the targets it links to, its domain trust, its worst spam score, whether the link is followed, the anchor mix. The default sort is the link builder's - **followed links first, then domain trust** - with spam filtered out.
 
 > Link intersect for mysite.com vs rival1.com, rival2.com
 > What links does rival.com have that we don't?
@@ -111,7 +111,7 @@ Set an optional **`MAJESTIC_API_KEY`** and every qualifying prospect is enriched
 - **Trust Flow (0-100)** - editorial authority, propagated from a seed set of trusted sites. It answers "who *vouches* for this domain?" rather than "how many links has it accumulated?" The difference is stark: in testing, a domain DataForSEO ranked 227 came back **Trust Flow 0**. Pure noise the volume metric couldn't see.
 - **Topical Trust Flow** - what that authority is *about*, as ranked topics (`Recreation/Autos`, `Computers/Internet`, and so on). This is the one that changes how you work: a Trust Flow 45 domain in your topic beats a Trust Flow 60 domain in someone else's, every time, and now you can see which is which before you write the email.
 
-With the key set the whole list **re-sorts by Trust Flow**, the `Domain trust` column becomes `Trust Flow`, and a `Top topic` column appears carrying each prospect's leading Topical Trust Flow. That's also how you tell the tier is live at a glance - if you're still looking at a `Domain trust` column, the key isn't reaching the server (add it to the `env` block, then fully restart the client).
+With the key set the whole list **re-sorts by Trust Flow**, the `Domain trust` column becomes `Trust Flow`, and a `Top topic` column appears carrying each prospect's leading Topical Trust Flow. That's also how you tell the tier is live at a glance - if you're still looking at a `Domain trust` column, no prospect was enriched: usually the key isn't reaching the server (add it to the `env` block, then fully restart the client), otherwise Majestic returned an error or nothing for those domains.
 
 ```json
 "env": {
@@ -121,25 +121,26 @@ With the key set the whole list **re-sorts by Trust Flow**, the `Domain trust` c
 }
 ```
 
-**What it costs, and how it's kept cheap.** Majestic bills resource units per item looked up, so the tier is deliberately frugal: only prospects that survived the spam and intersection filters are enriched, top-down by domain trust; they go up in batches of 100 (one call, roughly one unit each); requests are serialised so nothing runs away; and `enrichLimit` caps the whole thing at 100 by default. If more prospects qualified than got enriched, the response says so explicitly and tells you to raise `enrichLimit` - it won't quietly hand you a half-scored list. (Anything left unenriched sinks to the bottom of a Trust Flow sort, which is the honest place for a domain with no score yet, so raise the limit if your filters kept more than 100 and you want the full picture.) Everything is cached for `MAJESTIC_CACHE_DAYS` (default 30) in `majestic-cache.db`, keyed per domain, so re-running the same intersect inside that window spends nothing.
+**What it costs, and how it's kept cheap.** Majestic bills resource units per item looked up, so the tier is deliberately frugal: only prospects that survived the spam and intersection filters are enriched, top-down by domain trust; they go up in batches of 100 (one call, roughly one unit each); requests are serialised so nothing runs away; and `enrichLimit` caps the whole thing at 100 by default. If more prospects qualified than got enriched, the response says so explicitly and tells you to raise `enrichLimit` - it won't quietly hand you a half-scored list. (The sort is still followed links first, so anything left unenriched sinks below the scored prospects within its followed or nofollow group - the honest place for a domain with no score yet. Raise the limit if your filters kept more than 100 and you want the full picture.) Everything is cached for `MAJESTIC_CACHE_DAYS` (default 30) in `majestic-cache.db`, keyed per domain, so re-running the same intersect inside that window spends nothing.
 
 > Link intersect for mysite.com vs rival1.com, rival2.com, enrich the top 200
 > Which of those prospects have Topical Trust Flow in our category?
 
 Majestic is entirely optional - the tool works without it, and `link_intersect` still returns a sensible followed-first list. The key is what makes the priority order defensible to a client.
 
-> Trust Flow and Topical Trust Flow are trademarks of [Majestic](https://majestic.com) (Majestic-12 Ltd). This tier calls the Majestic API with your own key, sending only the prospect domain names it needs scoring; get a key from their [plans and pricing](https://majestic.com/plans-pricing).
+> Trust Flow and Topical Trust Flow are trademarks of [Majestic](https://majestic.com) (Majestic-12 Ltd). This tier calls the Majestic API with your own key, sending only the prospect domain names it needs scoring (and, from `pull_backlinks`, your own backlinked page URLs); get a key from their [plans and pricing](https://majestic.com/plans-pricing).
 
 ## Content recon: why a page is losing
 
-The deepest use of the SERP data. **`recon_targets`** takes your worst declining or striking-distance pages, fetches your live page with the crawler, pulls the live Google SERP for its top query, and classifies *why* you're behind on the **organic-rank × AI-Overview-citation** matrix:
+The deepest use of the SERP data. **`recon_targets`** takes your striking-distance pages (the top query per page at positions 3-15, highest impressions first) or the URLs you name, fetches your live page with the crawler, pulls the live Google SERP for its top query, and classifies *why* you're behind on the **organic-rank × AI-Overview-citation** matrix:
 
 - **defend-and-deepen** - you rank well and the AI Overview already cites you; deepen to become the primary source.
 - **accuracy-or-freshness** - you rank but the AI Overview won't quote you. This is the sharpest, most actionable class: it's a data-accuracy, freshness or markup problem, not a rewrite.
 - **consolidate-weak-page** - cited on a weak page; strengthen it.
-- **competitive-gap** - not cited, weak rank; run the full competitor diff.
+- **competitive-gap** - a weak rank with no citation (or no AI Overview at all); run the full competitor diff.
+- **page-cannot-rank** - the crawl says the page is non-indexable or canonicalised elsewhere, so its search history belongs to another URL; the one to-do is to resolve the duplicate.
 
-It seeds deterministic to-dos (schema, freshness, cannibalisation, video) and returns the competitor set Google rewards. Set `scrapeCompetitors:true` and it fetches them too, free and with no API key: competitor **pages** through a browser-profile fetch that even reaches Reddit, and the ranking **videos** listed for you to watch (usually what wins these SERPs). Cloudflare-challenge publishers (PCMag) can't be fetched from a server - they're flagged so you can paste their copy and have it diffed in.
+It seeds deterministic to-dos (schema, freshness, cannibalisation, video) and returns the competitor set Google rewards. Set `scrapeCompetitors:true` and it fetches them too, free and with no API key, routed by source: **Reddit** threads through Reddit's own JSON, other competitor **pages** through a browser-profile fetch, and the ranking **videos** listed for you to watch (usually what wins these SERPs). Cloudflare-challenge publishers (PCMag) can't be fetched from a server - they're flagged so you can paste their copy and have it diffed in.
 
 Then **`save_recon_todo`** writes the competitor-diff gaps back with a baseline, and **`recon_todos`** is the trackable, annotatable board - filter by page or status, update a to-do's status, append dated notes, and on `status:shipped remeasure:true` it re-fetches the SERP to show whether the fix moved you from AIO-uncited to cited.
 

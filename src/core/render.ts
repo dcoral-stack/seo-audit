@@ -10,7 +10,15 @@ let browserP: Promise<any> | null = null;
 // at build time (it isn't installed in the default build), while runtime import still works when present.
 const PLAYWRIGHT = 'playwright';
 
-/** True if the optional `playwright` package is importable. Cheap check for graceful degradation. */
+/** Rendering can't work at all on this install (no `playwright` package, or no browser binary).
+ * Distinct from a per-URL failure (timeout, unreachable page), which a batch skips and carries on from. */
+export class RendererUnavailableError extends Error {
+  constructor(message: string) { super(message); this.name = 'RendererUnavailableError'; }
+}
+
+/** True if the optional `playwright` package is importable. Cheap check for graceful degradation.
+ * NOT proof that rendering works: npm installs the optional package without its browser, so the
+ * launch can still fail, and renderHtml then throws RendererUnavailableError. */
 export async function rendererAvailable(): Promise<boolean> {
   try { await import(PLAYWRIGHT); return true; } catch { return false; }
 }
@@ -22,14 +30,17 @@ async function getBrowser(): Promise<any> {
       try {
         pw = await import(PLAYWRIGHT);
       } catch {
-        throw new Error('Rendering needs the optional "playwright" package: run `npm i playwright && npx playwright install chromium`. The rest of the audit works without it (the crawler is HTTP-only by design).');
+        throw new RendererUnavailableError('Rendering needs the optional "playwright" package: run `npm i playwright && npx playwright install chromium`. The rest of the audit works without it (the crawler is HTTP-only by design).');
       }
       try {
         return await pw.chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
       } catch (e) {
-        throw new Error(`Playwright is installed but Chromium would not launch — run \`npx playwright install chromium\`. (${e instanceof Error ? e.message.slice(0, 140) : String(e)})`);
+        throw new RendererUnavailableError(`Playwright is installed but Chromium would not launch — run \`npx playwright install chromium\`. (${e instanceof Error ? e.message.slice(0, 140) : String(e)})`);
       }
     })();
+    // Don't cache a failed launch for the life of the process: once the user installs the browser,
+    // the next render_pages call should try again rather than replay the old failure.
+    browserP.catch(() => { browserP = null; });
   }
   return browserP;
 }

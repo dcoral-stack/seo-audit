@@ -1,9 +1,10 @@
 import { fetch as ufetch, Agent } from 'undici';
+import * as cheerio from 'cheerio';
 import { AuditDatabase } from './AuditDatabase.js';
 import { dbPathFor } from './paths.js';
 import { hostFormForProperty } from './url-key.js';
 import { extractPage, decodeHtmlBody, type ExtractedPage } from './extract.js';
-import { renderHtml, closeRenderer, rendererAvailable } from './render.js';
+import { renderHtml, closeRenderer, rendererAvailable, RendererUnavailableError } from './render.js';
 
 const DEFAULT_UA = 'Mozilla/5.0 (compatible; seo-audit-console/0.1; +https://github.com/houtini-ai/seo-audit-console)';
 
@@ -19,11 +20,39 @@ export interface RenderDiff {
   rawTitle: string | null;
   renderedTitle: string | null;
   canonicalChanged: boolean;
+  // #55 group E: canonical, robots and main-content words on each side.
+  rawCanonical: string | null;      // absolute canonical in the raw HTML
+  renderedCanonical: string | null;
+  rawRobots: string | null;         // <meta name="robots"> content
+  renderedRobots: string | null;
+  rawNoindex: boolean;              // meta robots or X-Robots-Tag noindex, before JS
+  renderedNoindex: boolean;         // after JS (the header can't change, so a header noindex holds on both sides)
+  robotsChanged: boolean;           // effective noindex differs between raw and rendered
+  rawMainWords: number | null;      // mainWordCount of the raw HTML (null when the HTML wasn't supplied)
+  renderedMainWords: number | null;
+}
+
+/**
+ * Words in the page's main content: the first <main> or [role=main] when there is one, otherwise the
+ * <body> without its nav, header, footer and aside (and their ARIA roles). Scripts, styles, noscript,
+ * template and inline SVG are dropped first. The same rule on both sides, so a raw-vs-rendered drop
+ * means JS removed main copy, not that chrome was counted on one side only.
+ */
+export function mainWordCount(html: string): number {
+  const $ = cheerio.load(html);
+  $('script, style, noscript, template, svg').remove();
+  let root = $('main, [role="main"]').first();
+  if (!root.length) {
+    root = $('body');
+    root.find('nav, header, footer, aside, [role="navigation"], [role="banner"], [role="contentinfo"], [role="complementary"]').remove();
+  }
+  const text = root.text().replace(/\s+/g, ' ').trim();
+  return text ? text.split(' ').length : 0;
 }
 
 /** Pure diff of the raw-HTML extract vs the rendered-DOM extract - the "Response vs Render" delta.
- * This is the testable core; no network/browser. */
-export function diffRawVsRendered(raw: ExtractedPage, rendered: ExtractedPage): RenderDiff {
+ * This is the testable core; no network/browser. Pass both HTML strings to get main-content words. */
+export function diffRawVsRendered(raw: ExtractedPage, rendered: ExtractedPage, html?: { raw: string; rendered: string }): RenderDiff {
   const rawKeys = new Set(raw.links.filter(l => l.isInternal).map(l => l.targetKey));
   const newLinks = [...new Set(
     rendered.links.filter(l => l.isInternal && !rawKeys.has(l.targetKey)).map(l => l.targetKey),
@@ -40,6 +69,15 @@ export function diffRawVsRendered(raw: ExtractedPage, rendered: ExtractedPage): 
     rawTitle: raw.title,
     renderedTitle: rendered.title,
     canonicalChanged: (raw.canonicalKey ?? '') !== (rendered.canonicalKey ?? ''),
+    rawCanonical: raw.canonicalUrl,
+    renderedCanonical: rendered.canonicalUrl,
+    rawRobots: raw.robots,
+    renderedRobots: rendered.robots,
+    rawNoindex: raw.noindex,
+    renderedNoindex: rendered.noindex,
+    robotsChanged: raw.noindex !== rendered.noindex,
+    rawMainWords: html ? mainWordCount(html.raw) : null,
+    renderedMainWords: html ? mainWordCount(html.rendered) : null,
   };
 }
 
@@ -52,7 +90,8 @@ export function dependsOnJsFlag(d: RenderDiff): boolean {
 
 export interface RenderAuditResult {
   available: boolean;              // was the renderer usable
-  note?: string;                   // why not, when unavailable
+  note?: string;                   // why not, when unavailable; or which pages failed to render
+  failed?: number;                 // pages skipped because fetching or rendering them failed
   audited: number;
   dependsOnJs: number;             // pages where content/links appear only after render
   rows: (RenderDiff & { urlKey: string })[];
@@ -90,32 +129,55 @@ export async function auditRender(
     const ua = opts.userAgent ?? DEFAULT_UA;
     const upsert = db.db.prepare(
       `INSERT INTO render_audit (url_key, raw_word_count, rendered_word_count, raw_internal_links, rendered_internal_links,
-         links_only_rendered, sample_new_links, title_changed, raw_title, rendered_title, canonical_changed, rendered_at)
+         links_only_rendered, sample_new_links, title_changed, raw_title, rendered_title, canonical_changed,
+         raw_canonical, rendered_canonical, raw_robots, rendered_robots, x_robots_tag, raw_noindex, rendered_noindex, robots_changed,
+         raw_main_words, rendered_main_words, raw_status, rendered_at)
        VALUES (@url_key,@raw_word_count,@rendered_word_count,@raw_internal_links,@rendered_internal_links,
-         @links_only_rendered,@sample_new_links,@title_changed,@raw_title,@rendered_title,@canonical_changed,datetime('now'))
+         @links_only_rendered,@sample_new_links,@title_changed,@raw_title,@rendered_title,@canonical_changed,
+         @raw_canonical,@rendered_canonical,@raw_robots,@rendered_robots,@x_robots_tag,@raw_noindex,@rendered_noindex,@robots_changed,
+         @raw_main_words,@rendered_main_words,@raw_status,datetime('now'))
        ON CONFLICT(url_key) DO UPDATE SET raw_word_count=excluded.raw_word_count, rendered_word_count=excluded.rendered_word_count,
          raw_internal_links=excluded.raw_internal_links, rendered_internal_links=excluded.rendered_internal_links,
          links_only_rendered=excluded.links_only_rendered, sample_new_links=excluded.sample_new_links,
          title_changed=excluded.title_changed, raw_title=excluded.raw_title, rendered_title=excluded.rendered_title,
-         canonical_changed=excluded.canonical_changed, rendered_at=datetime('now')`,
+         canonical_changed=excluded.canonical_changed, raw_canonical=excluded.raw_canonical, rendered_canonical=excluded.rendered_canonical,
+         raw_robots=excluded.raw_robots, rendered_robots=excluded.rendered_robots, x_robots_tag=excluded.x_robots_tag,
+         raw_noindex=excluded.raw_noindex, rendered_noindex=excluded.rendered_noindex, robots_changed=excluded.robots_changed,
+         raw_main_words=excluded.raw_main_words, rendered_main_words=excluded.rendered_main_words, raw_status=excluded.raw_status,
+         rendered_at=datetime('now')`,
     );
 
     const rows: (RenderDiff & { urlKey: string })[] = [];
     let dependsOnJs = 0;
+    let failed = 0;
+    let firstFailure: string | null = null;
     try {
       for (let i = 0; i < pages.length; i++) {
         if (signal?.aborted) break;
         const url = pages[i].url;
         update({ phase: 'render', done: i, total: pages.length, current: url });
-        let rawHtml: string, rendered: string;
+        let rawHtml: string, rendered: string, rawStatus: number, xRobotsTag: string | null;
         try {
           const res = await ufetch(url, { dispatcher, headers: { 'user-agent': ua, 'accept-encoding': 'gzip, deflate, br' }, signal: AbortSignal.timeout(20000) }) as unknown as Response;
+          rawStatus = res.status;
+          xRobotsTag = res.headers.get('x-robots-tag');
           rawHtml = decodeHtmlBody(Buffer.from(await res.arrayBuffer()), res.headers.get('content-type'));
           rendered = await renderHtml(url, ua);
-        } catch { continue; } // unreachable / render timeout - skip this URL, keep the batch going
-        const rawEx = extractPage(rawHtml, url, baseHost, keyOpts);
-        const renEx = extractPage(rendered, url, baseHost, keyOpts);
-        const diff = diffRawVsRendered(rawEx, renEx);
+        } catch (e) {
+          // No browser on this install (npm ships the optional playwright package without Chromium):
+          // every URL would fail the same way, so stop and say how to fix it instead of reporting a
+          // "completed" batch that rendered nothing.
+          if (e instanceof RendererUnavailableError) {
+            return { available: false, note: `${e.message} The HTTP audit is unaffected.`, audited: rows.length, dependsOnJs, rows };
+          }
+          failed++;
+          firstFailure ??= `${url}: ${e instanceof Error ? e.message.slice(0, 160) : String(e)}`;
+          continue; // unreachable page / render timeout - skip this URL, keep the batch going
+        }
+        // The response header is the same before and after JS, so it applies to both extracts.
+        const rawEx = extractPage(rawHtml, url, baseHost, keyOpts, xRobotsTag);
+        const renEx = extractPage(rendered, url, baseHost, keyOpts, xRobotsTag);
+        const diff = diffRawVsRendered(rawEx, renEx, { raw: rawHtml, rendered });
         const found = db.db.prepare('SELECT url_key FROM pages WHERE url=? LIMIT 1').get(url) as { url_key?: string } | undefined;
         const key = found?.url_key ?? url;
         upsert.run({
@@ -123,6 +185,9 @@ export async function auditRender(
           raw_internal_links: diff.rawInternalLinks, rendered_internal_links: diff.renderedInternalLinks,
           links_only_rendered: diff.linksOnlyRendered, sample_new_links: diff.sampleNewLinks.length ? JSON.stringify(diff.sampleNewLinks) : null,
           title_changed: diff.titleChanged ? 1 : 0, raw_title: diff.rawTitle, rendered_title: diff.renderedTitle, canonical_changed: diff.canonicalChanged ? 1 : 0,
+          raw_canonical: diff.rawCanonical, rendered_canonical: diff.renderedCanonical, raw_robots: diff.rawRobots, rendered_robots: diff.renderedRobots,
+          x_robots_tag: xRobotsTag, raw_noindex: diff.rawNoindex ? 1 : 0, rendered_noindex: diff.renderedNoindex ? 1 : 0, robots_changed: diff.robotsChanged ? 1 : 0,
+          raw_main_words: diff.rawMainWords, rendered_main_words: diff.renderedMainWords, raw_status: rawStatus,
         });
         rows.push({ ...diff, urlKey: key });
         if (dependsOnJsFlag(diff)) dependsOnJs++;
@@ -131,7 +196,10 @@ export async function auditRender(
       await closeRenderer();
       await dispatcher.close().catch(() => { /* pool already gone */ });
     }
-    return { available: true, audited: rows.length, dependsOnJs, rows };
+    const note = failed
+      ? `${failed} of ${pages.length} page(s) could not be rendered and were skipped (first: ${firstFailure}).`
+      : undefined;
+    return { available: true, audited: rows.length, dependsOnJs, rows, ...(note ? { note, failed } : {}) };
   } finally {
     db.close();
   }

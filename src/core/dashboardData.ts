@@ -1,14 +1,39 @@
+import type Database from 'better-sqlite3';
 import { AuditDatabase } from './AuditDatabase.js';
+import type { AiBotAccess } from './agentReadiness.js';
 import { getDataFreshness, type DataFreshness } from './dataFreshness.js';
 import { liveJobTypes } from './JobManager.js';
 import { dbPathFor, jobScopeFor } from './paths.js';
 import { gscFreshness } from './gscFreshness.js';
 import { expectedCtr } from './ctrModel.js';
-import { brandToken } from './url-key.js';
+import { loadBrandQueries, brandPredicate } from './brand.js';
+import { TITLE_MAX_CHARS, TITLE_MIN_CHARS, META_DESC_MAX_CHARS, META_DESC_MIN_CHARS } from './onPageLimits.js';
+import { SMALL_BASE_MIN, QUICK_WIN_MIN_IMPRESSIONS, QUICK_WIN_MAX_POSITION, TRAPPED_MIN_REF_DOMAINS, TRAPPED_MIN_DEPTH } from './displayRules.js';
 import { HTML_CT } from './sql.js';
+import { gscMixedShape } from './gscRows.js';
 import { latestSerpFootprint, ensureFootprintTable, type SerpFootprint } from './serpFootprint.js';
 import { latestMarketSizing, ensureMarketTable, type MarketSizing } from './marketSizing.js';
 import { contentArchitecture, type TopicCluster } from '../audit/contentArchitecture.js';
+import { auditHistory, backfillAuditHealth, computeHealth, healthBand, HEALTH_DEFINITION, type AuditHistory } from '../audit/history.js';
+import {
+  monthlyClicks, yearOnYear, summaryEvents, driftSummary, findingsByCategory, clicksAtRiskByCheck, aiOverviewSummary, pageMovers, coverage,
+  clickWindows,
+  type MonthlyClicks, type YearOnYear, type SummaryEvent, type DriftSummary, type CategoryRow, type AiOverviewSummary, type PageMovers, type Coverage,
+  type GscShape, type ClickWindows,
+} from './summaryData.js';
+import { monthlyFromHistory, type HistoryRow, type MonthRow } from './backlinkProfile.js';
+import { cwvFieldPayload, type CwvField } from './CruxSync.js';
+
+export interface BacklinkProfile {
+  summary: { backlinks: number; referringDomains: number; domainRank: number | null; brokenBacklinks: number; brokenPages: number; nofollowPct: number | null; fetchedAt: string | null } | null;
+  topPages: { url: string; backlinks: number; referringDomains: number; dofollow: number; status: number | null; trustFlow: number | null }[];
+  brokenPages: { url: string; backlinks: number; referringDomains: number; status: number }[];
+  pagesTotal: number;
+  pagesUnchecked: number;
+  referringDomains: { snapshotAt: string; live: number; lost: number; top: { domain: string; rank: number | null; backlinks: number; referringPages: number; nofollowPages: number; spamScore: number | null; firstSeen: string | null }[] } | null;
+  anchors: { snapshotAt: string; mix: { kind: string; anchors: number; backlinks: number; referringDomains: number }[]; top: { anchor: string; kind: string; backlinks: number; referringDomains: number }[] } | null;
+  history: { fetchedAt: string | null; months: MonthRow[] } | null;
+}
 
 export interface DashboardData {
   siteUrl: string;
@@ -33,7 +58,7 @@ export interface DashboardData {
   quickWins?: { query: string; position: number; impressions: number; clicks: number; ctr: number; expectedCtr: number; type: 'striking' | 'snippet' | 'serp' | 'ok'; potential: number }[];
   contentDecay?: { urlKey: string; prevClicks: number; clicks: number; lost: number; dropPct: number; impressions: number; position: number }[];
   cannibalisationTable?: { query: string; urlCount: number; totalImpressions: number; totalClicks: number; verdict: 'split' | 'dominant'; crossType: boolean; urls: { url: string; impressions: number; clicks: number; position: number; template: string }[] }[];
-  brandedSplit?: { brand: string; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
+  brandedSplit?: { brand: string; variants: string[]; brandedQueries: number; uncertain: import('./brand.js').UncertainBrand | null; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
   topKeywords?: {
     query: string;
     clicks: number;
@@ -44,7 +69,7 @@ export interface DashboardData {
   }[];
   deviceBreakdown?: { device: string; clicks: number; prevClicks: number; impressions: number; ctr: number; position: number }[];
   countryBreakdown?: { country: string; clicks: number; prevClicks: number; impressions: number }[];
-  pagePerformance?: { urlKey: string; clicks: number; prevClicks: number; clicksChangePct: number; impressions: number; position: number; category: string }[];
+  pagePerformance?: { urlKey: string; clicks: number; prevClicks: number; clicksChangePct: number | null; impressions: number; position: number; category: string }[];
   keywordMovement?: { query: string; firstPos: number; lastPos: number; delta: number; firstDate: string; lastDate: string; category: string }[];
   // Equity vs reality: per-page internal PageRank (x) vs GSC impressions (y), bucketed by template.
   equityScatter?: { x: number; y: number; t: string; u: string }[];
@@ -73,7 +98,12 @@ export interface DashboardData {
     totalPages: number;
   };
   // Agent readiness (from check_agent_readiness) — how ready the site is for AI agents.
-  agentReadiness?: { score: number; level: string; checkedAt: string; byCategory: { category: string; passed: number; total: number }[]; checks: { id: string; category: string; label: string; present: boolean; detail: string; fix: string }[] };
+  agentReadiness?: {
+    score: number; level: string; checkedAt: string; byCategory: { category: string; passed: number; total: number }[]; checks: { id: string; category: string; label: string; present: boolean; detail: string; fix: string }[];
+    /** Per-AI-bot robots.txt verdicts, grouped search vs training by src/core/aiBots.ts. Null = the
+     *  stored result predates per-bot verdicts (re-run check_agent_readiness) or the site has no robots.txt. */
+    bots: AiBotAccess[] | null;
+  };
   serpFootprint?: SerpFootprint | null;
   marketSizing?: MarketSizing | null;
   // Internal link explorer: folder-to-folder iPR flow (bipartite Sankey - left sources, right targets).
@@ -85,13 +115,18 @@ export interface DashboardData {
     nodes: { id: string; ipr: number; depth: number | null; status: number | null; indexable: boolean }[];
     edges: { source: string; target: string }[];
     totalPages: number;
+    /** Mapped pages with no in-content link to or from another mapped page (they float free in the
+     *  force layout): their internal links in, and how many of those sit in content. */
+    isolated?: { id: string; inlinks: number; bodyInlinks: number }[];
   };
   findings?: {
     runId: string;
     total: number;
     finishedAt: string | null;
-    byCheck: { check_id: string; category: string; severity: string; count: number; priority: number; urls?: number; coveragePct?: number | null }[];
-    top: { check_id: string; category: string; severity: string; url_key: string | null; evidence: string; traffic_at_risk: string; effort: string; priority: number; recommendation: string; impact?: number; size?: string }[];
+    byCheck: { check_id: string; category: string; severity: string; count: number; priority: number; urls?: number; coveragePct?: number | null; clicksAtRisk?: number | null }[];
+    /** Summary panel 4: findings by area (category), with the change since the previous comparable audit. */
+    byCategory?: CategoryRow[];
+    top: { check_id: string; category: string; severity: string; labels?: string; url_key: string | null; evidence: string; traffic_at_risk: string; effort: string; priority: number; recommendation: string; impact?: number; size?: string }[];
     // Audit-deliverable view: issues grouped by category, each a sub-heading with a real example + fix.
     recommendations: {
       category: string;
@@ -120,9 +155,19 @@ export interface DashboardData {
   // Trapped authority — pages with real external authority (referring domains) buried deep
   // internally (high click depth / low iPR), so their link equity isn't reaching money pages.
   trappedAuthority?: { url: string; referringDomains: number; backlinks: number; clickDepth: number | null; ipr: number; trustFlow: number | null; topTopic: string | null }[];
+  // Backlink profile (#47) — our OWN links, from pull_backlinks. Every number traces to a stored row;
+  // a section that was never collected is null (the panel says "not collected"), never zero.
+  backlinkProfile?: BacklinkProfile | null;
   // Site Health Score (the headline every paid tool has): % of crawled internal pages with no
   // error-class (critical/high) finding. Honest + defensible; banded Weak/Fair/Good/Excellent.
   healthScore?: { score: number; band: string; errorPages: number; totalPages: number; definition: string } | null;
+  // Audit history (summary page panel 3). healthHistory: the stored health per completed run (score
+  // NULL where it couldn't be rebuilt honestly; `basis` says how/why). auditDeltas: opened / resolved
+  // / carried findings (key check_id + url_key, "site" when null) between consecutive completed runs,
+  // compared only with the same scope AND check set; otherwise `skipped` names why.
+  healthHistory?: AuditHistory['healthHistory'];
+  auditDeltas?: AuditHistory['auditDeltas'];
+  auditHistoryTruncated?: AuditHistory['truncated'] | null;
   // Security / HTTPS coverage (V2): share of 200 internal pages carrying each security header.
   securityCoverage?: { total: number; headers: { key: string; label: string; present: number }[]; mixedContent: number } | null;
   // Structured-data coverage (V2): JSON-LD @types across the crawl, most common first.
@@ -141,13 +186,46 @@ export interface DashboardData {
   entityGraph?: { total: number; nodes: { qid: string; label: string; pages: number }[]; edges: { source: string; target: string; relation: string }[] } | null;
   // AI answerability (V2): cross-encoder max-passage scores for ranking pages.
   answerability?: { scored: number; weak: number; pages: { url: string; score: number; query: string | null; impr: number }[] } | null;
+  // ── Site summary page (slice 1; src/core/summaryData.ts). Missing is null or a reason, never 0. ──
+  /** Monthly clicks, up to 16 months, partial months flagged. Absent with no GSC. */
+  monthly?: MonthlyClicks | null;
+  /** Latest 28 days vs the same 28 days 52 weeks earlier, or why it's unavailable. */
+  yoy?: YearOnYear | null;
+  /** Completed crawls and audits (the trend chart's event ticks), oldest first. */
+  events?: SummaryEvent[];
+  /** What changed between the two latest crawl snapshots (detect_changes, summarised). */
+  drift?: DriftSummary | null;
+  /** AI Overview presence / citation over the queries content recon has checked. Null = none checked. */
+  aiOverview?: AiOverviewSummary | null;
+  /** Largest click gainers / losers across all pages (prior 28d clicks >= the stated minimum). */
+  pageMovers?: PageMovers | null;
+  /** What data the dashboard holds (the UI names what it doesn't). */
+  coverage?: Coverage;
+  /** Days holding both GSC row shapes (all-country AND segmented rows), or null. The summary
+   *  aggregations count each such day once; the older payload totals (summary, rankTrend, ...) don't. */
+  gscShape?: GscShape | null;
+  /** Last 28 days vs the prior 28, clicks counted once per day (the Summary's verdict and tile). */
+  clickWindows?: ClickWindows;
+  // Field Core Web Vitals (#55): CrUX latest origin window per form factor + p75 history. Read live on
+  // every load (outside the payload cache, like freshness): sync_crux writes on its own schedule.
+  cwvField?: CwvField | null;
 }
 
 interface Totals { clicks: number; impressions: number; position: number }
 
 // Bump when the dashboard payload SHAPE/content changes, so cached entries from older code are
 // invalidated even if the underlying GSC/crawl data hasn't changed. Part of the cache version key.
-const PAYLOAD_VERSION = '22'; // 22: crawl-health urlFlow counts redirects from redirect_sources
+// 22: crawl-health urlFlow counts redirects from redirect_sources. 23: healthHistory + auditDeltas.
+// 24: site summary aggregations (monthly, yoy, events, drift, byCategory, clicksAtRisk, aiOverview,
+//     pageMovers, coverage, agentReadiness.bots, gscShape, clickWindows) and the crawl-only payload
+//     when there is no GSC.
+// 25: every GSC total reads gsc_rows (each day counted once, #61); brandedSplit.terms (spaced brand variants).
+// 26: backlinkProfile (#47), merged onto the summary stack (its branch numbered it 24).
+// 27: crawlHealth.responseCodes gains the rate-limited bucket (#54; its branch numbered it 25).
+// (#65 changed where segment rows live, not the payload; the version probe reads both tables.)
+// 28: the real-data dashboard fixes (#68 follow-up): small-base clicksChangePct, cwvField detail, brand on exact-match domains.
+// 29: structureGraph.isolated (mapped pages with no in-content link, named in the Network tab).
+const PAYLOAD_VERSION = '29';
 
 /** Build the dashboard payload for a property from its synced GSC history. */
 export function getDashboardData(dataDir: string, siteUrl: string): DashboardData {
@@ -155,32 +233,50 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
   try {
     // Cache: the payload is ~20 GROUP-BY scans over search_analytics (~6s at 1.8M rows) but only
     // changes on sync/audit. Probe a cheap data-version; serve the cached JSON on a hit.
-    // Probe every table the payload reads from — search_analytics + pages + the latest audit run,
+    // Probe every table the payload reads from — search_analytics (+ its segment table, #65) + pages + the latest audit run,
     // PLUS agent_readiness and rank_history (written by check_agent_readiness / track_ranks via their
     // own paths). Omitting the latter two would serve a stale dashboard after those tools run.
     ensureFootprintTable(db.db); // probe below reads it; create before first serp_features run
     ensureMarketTable(db.db);
+    // Lazy, one-time health backfill for past audit runs (a no-op probe once every run is visited).
+    backfillAuditHealth(db.db);
     const ver = db.db.prepare(
-      `SELECT (SELECT MAX(date)||':'||COALESCE(MAX(rowid),0) FROM search_analytics) sa,
-              (SELECT run_id FROM audit_runs ORDER BY started_at DESC LIMIT 1) run,
+      `SELECT (SELECT MAX(date)||':'||COALESCE(MAX(rowid),0) FROM search_analytics)||':'||(SELECT COALESCE(MAX(rowid),0) FROM search_analytics_segments) sa,
+              (SELECT run_id FROM audit_runs ORDER BY started_at DESC LIMIT 1)||':'||(SELECT COUNT(*)||':'||COALESCE(MAX(finished_at),'')||':'||COUNT(health_basis) FROM audit_runs) run,
               (SELECT COALESCE(MAX(rowid),0) FROM pages) pg,
               (SELECT COALESCE(MAX(checked_at),'') FROM agent_readiness) ar,
               (SELECT COUNT(*)||':'||COALESCE(MAX(period),'') FROM rank_history) rh,
               (SELECT COALESCE(MAX(id),0) FROM serp_footprint) sf,
               (SELECT COALESCE(MAX(id),0) FROM market_sizing) ms,
               (SELECT COUNT(*)||':'||COALESCE(MAX(fetched_at),'')||':'||COALESCE(MAX(majestic_at),'') FROM page_backlinks) pb,
-              (SELECT COUNT(*)||':'||COALESCE(MAX(fetched_at),'') FROM link_prospects) lp`).get() as { sa: string | null; run: string | null; pg: number; ar: string | null; rh: string | null; sf: number; ms: number; pb: string | null; lp: string | null };
-    const version = `${PAYLOAD_VERSION}|${ver.sa ?? 'none'}|${ver.run ?? 'none'}|${ver.pg}|${ver.ar ?? ''}|${ver.rh ?? ''}|${ver.sf}|${ver.ms}|${ver.pb ?? ''}|${ver.lp ?? ''}`;
+              (SELECT COUNT(*)||':'||COALESCE(MAX(fetched_at),'') FROM link_prospects) lp,
+              (SELECT COALESCE(MAX(rowid),0) FROM page_snapshots)||':'||(SELECT COUNT(*)||':'||COALESCE(MAX(finished_at),'') FROM crawl_metadata) cr,
+              (SELECT COUNT(*)||':'||COALESCE(MAX(researched_at),'') FROM recon_page) rp,
+              (SELECT COUNT(*)||':'||COALESCE(MAX(inspected_at),'') FROM url_inspection) ui,
+              (SELECT COALESCE(MAX(snapshot_at),'')||':'||(SELECT COALESCE(MAX(snapshot_at),'') FROM backlink_anchors)||':'||(SELECT COUNT(*) FROM backlink_history) FROM referring_domains) bp`).get() as { sa: string | null; run: string | null; pg: number; ar: string | null; rh: string | null; sf: number; ms: number; pb: string | null; lp: string | null; cr: string | null; rp: string | null; ui: string | null; bp: string | null };
+    const version = `${PAYLOAD_VERSION}|${ver.sa ?? 'none'}|${ver.run ?? 'none'}|${ver.pg}|${ver.ar ?? ''}|${ver.rh ?? ''}|${ver.sf}|${ver.ms}|${ver.pb ?? ''}|${ver.lp ?? ''}|${ver.cr ?? ''}|${ver.rp ?? ''}|${ver.ui ?? ''}|${ver.bp ?? ''}`;
     const hit = db.db.prepare('SELECT payload FROM dashboard_cache WHERE id=1 AND version=?').get(version) as { payload: string } | undefined;
     // A corrupt/truncated cache row must fall through to a rebuild, not throw forever.
-    if (hit) { try { return { ...(JSON.parse(hit.payload) as DashboardData), freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))) }; } catch { /* rebuild below */ } }
+    if (hit) { try { return { ...(JSON.parse(hit.payload) as DashboardData), freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))), cwvField: cwvFieldPayload(db.db) }; } catch { /* rebuild below */ } }
 
     // Use the finalised date (trailing partial GSC days trimmed) for ALL windows + charts, so the
     // dashboard never shows the "traffic tanking" cliff of unfinalised data.
     const fresh = gscFreshness(db.db);
     const maxDate = fresh.effectiveMax;
     // No GSC data yet: still carry freshness, so a crawled-but-unsynced property shows its job status.
-    if (!maxDate) return { siteUrl, empty: true, freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))) };
+    if (!maxDate) {
+      // No GSC yet: `empty` stays true (the GSC-driven tabs have nothing to show), but everything the
+      // Summary can say from the crawl, the audit and the probes still ships: health and its history,
+      // findings by area and the top actions, drift, AI readiness, URL inspection and coverage.
+      // Nothing GSC-derived is filled with zeros; the traffic fields are simply absent.
+      const payload: DashboardData = { siteUrl, empty: true, ...crawlSide(db.db, null) };
+      try {
+        db.db.prepare(`INSERT INTO dashboard_cache (id, version, payload, created_at) VALUES (1, ?, ?, datetime('now'))
+          ON CONFLICT(id) DO UPDATE SET version=excluded.version, payload=excluded.payload, created_at=excluded.created_at`)
+          .run(version, JSON.stringify(payload));
+      } catch { /* cache is an optimisation */ }
+      return { ...payload, freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))), cwvField: cwvFieldPayload(db.db) };
+    }
     // Upper bound: never include unfinalised days past effectiveMax. Windows anchored on maxDate
     // only set a lower bound (date > date(maxDate,'-Nd')), so without this the partial trailing
     // days would still slip into current-period sums and the daily charts. (Prior windows already
@@ -193,7 +289,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         : `date > date(?, '${start}') AND ${UB}`;
       const args = end ? [maxDate, maxDate] : [maxDate];
       const r = db.db
-        .prepare(`SELECT COALESCE(SUM(clicks),0) clicks, COALESCE(SUM(impressions),0) impressions, COALESCE(AVG(position),0) position FROM search_analytics WHERE ${where}`)
+        .prepare(`SELECT COALESCE(SUM(clicks),0) clicks, COALESCE(SUM(impressions),0) impressions, COALESCE(AVG(position),0) position FROM gsc_rows WHERE ${where}`)
         .get(...args) as Totals;
       return r;
     };
@@ -201,30 +297,31 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const prior = totals('-56 days', '-28 days');
     const ctr = (t: Totals): number => (t.impressions ? t.clicks / t.impressions : 0);
 
-    // Branded vs non-branded — brand derived from the property's registrable label, matched against
-    // the space-stripped query (so "my brand name" matches brand "mybrandname"). Done in
-    // one SQL pass. The detected brand is surfaced in the UI so the split is verifiable, not a
-    // black box — for descriptive domains where the brand equals a generic term, the user can see it.
-    const brandKey = brandToken(siteUrl); // shared helper — same derivation the audit's brandExcl uses
+    // Branded vs non-branded. The brand is the domain stem; a query is branded when a run of its
+    // whole words spells it ("sim racing cockpit", "simracingcockpit.gg" for simracingcockpit.gg),
+    // so "ehi" never matches "vehicle" (core/brand.ts). The matched spellings ship with the split
+    // so the UI can show what was counted: on a descriptive domain the spaced spelling is also the
+    // generic search.
+    const brand = loadBrandQueries(db.db, siteUrl); // shared with the audit's brandExcl
     let brandedSplit: DashboardData['brandedSplit'];
-    if (brandKey) {
-      // Whole-token match (brand surrounded by word boundaries), NOT substring — so a 3-letter brand
-      // like "ehi" matches the query "ehi inspections" but NOT "vehicle". Strict: this under-detects
-      // for descriptive concatenated domains (where the brand is typed spaced = the category) rather
-      // than over-detecting — a wrong split is worse than a conservative one.
-      const tok = `% ${brandKey} %`;
+    if (brand) {
+      const isB = brandPredicate();
       const splitRow = db.db.prepare(
-        `SELECT COALESCE(SUM(CASE WHEN (' '||LOWER(query)||' ') LIKE ? THEN clicks ELSE 0 END),0) bClk,
-                COALESCE(SUM(CASE WHEN (' '||LOWER(query)||' ') LIKE ? THEN impressions ELSE 0 END),0) bImp,
+        `SELECT COALESCE(SUM(CASE WHEN ${isB} THEN clicks ELSE 0 END),0) bClk,
+                COALESCE(SUM(CASE WHEN ${isB} THEN impressions ELSE 0 END),0) bImp,
                 COALESCE(SUM(clicks),0) tClk, COALESCE(SUM(impressions),0) tImp
-         FROM search_analytics WHERE query IS NOT NULL AND ${UB} AND date > date(?, '-28 days')`)
-        .get(tok, tok, maxDate) as { bClk: number; bImp: number; tClk: number; tImp: number };
+         FROM gsc_rows WHERE query IS NOT NULL AND ${UB} AND date > date(?, '-28 days')`)
+        .get(maxDate) as { bClk: number; bImp: number; tClk: number; tImp: number };
       const priorRow = db.db.prepare(
-        `SELECT COALESCE(SUM(CASE WHEN (' '||LOWER(query)||' ') LIKE ? THEN clicks ELSE 0 END),0) bClk, COALESCE(SUM(clicks),0) tClk
-         FROM search_analytics WHERE query IS NOT NULL AND date > date(?, '-56 days') AND date <= date(?, '-28 days')`)
-        .get(tok, maxDate, maxDate) as { bClk: number; tClk: number };
+        `SELECT COALESCE(SUM(CASE WHEN ${isB} THEN clicks ELSE 0 END),0) bClk, COALESCE(SUM(clicks),0) tClk
+         FROM gsc_rows WHERE query IS NOT NULL AND date > date(?, '-56 days') AND date <= date(?, '-28 days')`)
+        .get(maxDate, maxDate) as { bClk: number; tClk: number };
       brandedSplit = {
-        brand: brandKey,
+        brand: brand.token,
+        variants: brand.variants,
+        brandedQueries: brand.queries,
+        // Exact-match domain: the spaced spellings counted as non-brand, shown as uncertain.
+        uncertain: brand.uncertain,
         branded: { clicks: splitRow.bClk, impressions: splitRow.bImp },
         nonBranded: { clicks: splitRow.tClk - splitRow.bClk, impressions: splitRow.tImp - splitRow.bImp },
         priorBrandedClicks: priorRow.bClk,
@@ -235,21 +332,21 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const rankTrend = db.db
       .prepare(
         `SELECT date, COALESCE(SUM(clicks),0) clicks, COALESCE(SUM(impressions),0) impressions, COALESCE(AVG(position),0) position
-         FROM search_analytics WHERE ${UB} AND date > date(?, '-90 days') GROUP BY date ORDER BY date`,
+         FROM gsc_rows WHERE ${UB} AND date > date(?, '-90 days') GROUP BY date ORDER BY date`,
       )
       .all(maxDate) as { date: string; clicks: number; impressions: number; position: number }[];
 
     const curKw = db.db
       .prepare(
         `SELECT query, SUM(clicks) clicks, AVG(position) position
-         FROM search_analytics WHERE query IS NOT NULL AND ${UB} AND date > date(?, '-28 days')
+         FROM gsc_rows WHERE query IS NOT NULL AND ${UB} AND date > date(?, '-28 days')
          GROUP BY query ORDER BY clicks DESC LIMIT 15`,
       )
       .all(maxDate) as { query: string; clicks: number; position: number }[];
     const priorKw = db.db
       .prepare(
         `SELECT query, SUM(clicks) clicks, AVG(position) position
-         FROM search_analytics WHERE query IS NOT NULL AND date > date(?, '-56 days') AND date <= date(?, '-28 days')
+         FROM gsc_rows WHERE query IS NOT NULL AND date > date(?, '-56 days') AND date <= date(?, '-28 days')
          GROUP BY query`,
       )
       .all(maxDate, maxDate) as { query: string; clicks: number; position: number }[];
@@ -275,7 +372,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
            COALESCE(SUM(CASE WHEN position>3 AND position<=10 THEN impressions ELSE 0 END),0) b2,
            COALESCE(SUM(CASE WHEN position>10 AND position<=20 THEN impressions ELSE 0 END),0) b3,
            COALESCE(SUM(CASE WHEN position>20 THEN impressions ELSE 0 END),0) b4
-         FROM search_analytics WHERE ${UB} AND date > date(?, '-90 days') GROUP BY date ORDER BY date`,
+         FROM gsc_rows WHERE ${UB} AND date > date(?, '-90 days') GROUP BY date ORDER BY date`,
       )
       .all(maxDate) as { date: string; b1: number; b2: number; b3: number; b4: number }[];
 
@@ -283,7 +380,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const strikingDistance = (db.db
       .prepare(
         `SELECT query, AVG(position) position, SUM(impressions) impressions, SUM(clicks) clicks
-         FROM search_analytics WHERE query IS NOT NULL AND ${UB} AND date > date(?, '-28 days')
+         FROM gsc_rows WHERE query IS NOT NULL AND ${UB} AND date > date(?, '-28 days')
          GROUP BY query HAVING AVG(position) > 10 AND AVG(position) <= 20 AND SUM(impressions) > 0
          ORDER BY SUM(impressions) DESC LIMIT 40`,
       )
@@ -296,8 +393,8 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     // grounded in the same CTR model the audit uses. 'ok' queries are context dots.
     const quickWins = (db.db.prepare(
       `SELECT query, SUM(impressions) impr, SUM(clicks) clicks, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
-       FROM search_analytics WHERE query IS NOT NULL AND ${UB} AND date > date(?, '-28 days')
-       GROUP BY query HAVING SUM(impressions) >= 50 AND pos <= 20
+       FROM gsc_rows WHERE query IS NOT NULL AND ${UB} AND date > date(?, '-28 days')
+       GROUP BY query HAVING SUM(impressions) >= ${QUICK_WIN_MIN_IMPRESSIONS} AND pos <= ${QUICK_WIN_MAX_POSITION}
        ORDER BY SUM(impressions) DESC LIMIT 300`).all(maxDate) as { query: string; impr: number; clicks: number; pos: number }[])
       .map(r => {
         const ctr = r.impr ? r.clicks / r.impr : 0;
@@ -319,24 +416,25 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const rankHistory = db.db
       .prepare('SELECT period, pos_1_3, pos_4_10, pos_11_20, pos_21_100, etv, keyword_count FROM rank_history ORDER BY period')
       .all() as DashboardData['rankHistory'];
-    const gscMin = (db.db.prepare('SELECT MIN(date) d FROM search_analytics').get() as { d: string | null }).d;
+    const gscMin = (db.db.prepare('SELECT MIN(date) d FROM gsc_rows').get() as { d: string | null }).d;
     const dateAlignment = reconcileRanges(gscMin, maxDate, rankHistory ?? []);
 
     // Device breakdown (current vs prior 28d)
-    const devCur = db.db.prepare(`SELECT device, SUM(clicks) clicks, SUM(impressions) impressions, AVG(position) position FROM search_analytics WHERE device <> '' AND ${UB} AND date > date(?, '-28 days') GROUP BY device`).all(maxDate) as any[];
-    const devPrior = new Map((db.db.prepare(`SELECT device, SUM(clicks) clicks FROM search_analytics WHERE device <> '' AND date > date(?, '-56 days') AND date <= date(?, '-28 days') GROUP BY device`).all(maxDate, maxDate) as any[]).map(d => [d.device, d.clicks]));
+    const devCur = db.db.prepare(`SELECT device, SUM(clicks) clicks, SUM(impressions) impressions, AVG(position) position FROM gsc_device_rows WHERE device <> '' AND ${UB} AND date > date(?, '-28 days') GROUP BY device`).all(maxDate) as any[];
+    const devPrior = new Map((db.db.prepare(`SELECT device, SUM(clicks) clicks FROM gsc_device_rows WHERE device <> '' AND date > date(?, '-56 days') AND date <= date(?, '-28 days') GROUP BY device`).all(maxDate, maxDate) as any[]).map(d => [d.device, d.clicks]));
     const deviceBreakdown = devCur.map(d => ({ device: d.device, clicks: d.clicks, prevClicks: (devPrior.get(d.device) as number) ?? 0, impressions: d.impressions, ctr: d.impressions ? d.clicks / d.impressions : 0, position: Math.round(d.position * 10) / 10 }));
 
     // Country breakdown (top 10 current, with prior clicks)
-    const ctyPrior = new Map((db.db.prepare(`SELECT country, SUM(clicks) clicks FROM search_analytics WHERE country <> '' AND date > date(?, '-56 days') AND date <= date(?, '-28 days') GROUP BY country`).all(maxDate, maxDate) as any[]).map(c => [c.country, c.clicks]));
-    const countryBreakdown = (db.db.prepare(`SELECT country, SUM(clicks) clicks, SUM(impressions) impressions FROM search_analytics WHERE country <> '' AND ${UB} AND date > date(?, '-28 days') GROUP BY country ORDER BY clicks DESC LIMIT 10`).all(maxDate) as any[]).map(c => ({ country: c.country, clicks: c.clicks, prevClicks: (ctyPrior.get(c.country) as number) ?? 0, impressions: c.impressions }));
+    const ctyPrior = new Map((db.db.prepare(`SELECT country, SUM(clicks) clicks FROM gsc_country_rows WHERE country <> '' AND date > date(?, '-56 days') AND date <= date(?, '-28 days') GROUP BY country`).all(maxDate, maxDate) as any[]).map(c => [c.country, c.clicks]));
+    const countryBreakdown = (db.db.prepare(`SELECT country, SUM(clicks) clicks, SUM(impressions) impressions FROM gsc_country_rows WHERE country <> '' AND ${UB} AND date > date(?, '-28 days') GROUP BY country ORDER BY clicks DESC LIMIT 10`).all(maxDate) as any[]).map(c => ({ country: c.country, clicks: c.clicks, prevClicks: (ctyPrior.get(c.country) as number) ?? 0, impressions: c.impressions }));
 
     // Page performance + categorisation (current vs prior 28d)
-    const pagePrior = new Map((db.db.prepare(`SELECT page_key, SUM(clicks) clicks, SUM(impressions) impressions FROM search_analytics WHERE page_key IS NOT NULL AND date > date(?, '-56 days') AND date <= date(?, '-28 days') GROUP BY page_key`).all(maxDate, maxDate) as any[]).map(p => [p.page_key, p]));
-    const pagePerformance = (db.db.prepare(`SELECT page_key, SUM(clicks) clicks, SUM(impressions) impressions, AVG(position) position FROM search_analytics WHERE page_key IS NOT NULL AND ${UB} AND date > date(?, '-28 days') GROUP BY page_key ORDER BY clicks DESC LIMIT 40`).all(maxDate) as any[]).map(p => {
+    const pagePrior = new Map((db.db.prepare(`SELECT page_key, SUM(clicks) clicks, SUM(impressions) impressions FROM gsc_rows WHERE page_key IS NOT NULL AND date > date(?, '-56 days') AND date <= date(?, '-28 days') GROUP BY page_key`).all(maxDate, maxDate) as any[]).map(p => [p.page_key, p]));
+    const pagePerformance = (db.db.prepare(`SELECT page_key, SUM(clicks) clicks, SUM(impressions) impressions, AVG(position) position FROM gsc_rows WHERE page_key IS NOT NULL AND ${UB} AND date > date(?, '-28 days') GROUP BY page_key ORDER BY clicks DESC LIMIT 40`).all(maxDate) as any[]).map(p => {
       const prev = (pagePrior.get(p.page_key) as any) ?? { clicks: 0, impressions: 0 };
-      const pct = prev.clicks ? ((p.clicks - prev.clicks) / prev.clicks) * 100 : (p.clicks > 0 ? 100 : 0);
-      return { urlKey: p.page_key, clicks: p.clicks, prevClicks: prev.clicks, clicksChangePct: Math.round(pct), impressions: p.impressions, position: Math.round(p.position * 10) / 10, category: pageCategory(p, prev) };
+      // The small-base rule (displayRules): no % on a prior under SMALL_BASE_MIN clicks (0 -> 1 is not +100%).
+      const pct = prev.clicks >= SMALL_BASE_MIN ? Math.round(((p.clicks - prev.clicks) / prev.clicks) * 100) : null;
+      return { urlKey: p.page_key, clicks: p.clicks, prevClicks: prev.clicks, clicksChangePct: pct, impressions: p.impressions, position: Math.round(p.position * 10) / 10, category: pageCategory(p, prev) };
     });
 
     // Content decay & refresh ROI — pages that earned ≥10 clicks last period and have since fallen
@@ -344,8 +442,8 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     // row is a real page with a measured before/after over matched 28-day windows.
     const contentDecay = (db.db.prepare(
       `WITH cur AS (SELECT page_key, SUM(clicks) c, SUM(impressions) i, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
-                    FROM search_analytics WHERE page_key IS NOT NULL AND ${UB} AND date > date(?, '-28 days') GROUP BY page_key),
-            prev AS (SELECT page_key, SUM(clicks) c FROM search_analytics WHERE page_key IS NOT NULL AND date > date(?, '-56 days') AND date <= date(?, '-28 days') GROUP BY page_key)
+                    FROM gsc_rows WHERE page_key IS NOT NULL AND ${UB} AND date > date(?, '-28 days') GROUP BY page_key),
+            prev AS (SELECT page_key, SUM(clicks) c FROM gsc_rows WHERE page_key IS NOT NULL AND date > date(?, '-56 days') AND date <= date(?, '-28 days') GROUP BY page_key)
        SELECT prev.page_key url, prev.c prevC, COALESCE(cur.c,0) curC, COALESCE(cur.i,0) curI, COALESCE(cur.pos,0) pos
        FROM prev LEFT JOIN cur ON cur.page_key=prev.page_key
        WHERE prev.c >= 10 AND COALESCE(cur.c,0) < prev.c * 0.8
@@ -354,10 +452,10 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
 
     // Keyword ranking movement (first-seen vs last-seen position over 90d)
     const keywordMovement = (db.db.prepare(
-      `WITH q AS (SELECT query, MIN(date) fd, MAX(date) ld FROM search_analytics WHERE query IS NOT NULL AND ${UB} AND date > date(?, '-90 days') GROUP BY query HAVING SUM(impressions) >= 50 AND MIN(date) < MAX(date))
+      `WITH q AS (SELECT query, MIN(date) fd, MAX(date) ld FROM gsc_rows WHERE query IS NOT NULL AND ${UB} AND date > date(?, '-90 days') GROUP BY query HAVING SUM(impressions) >= 50 AND MIN(date) < MAX(date))
        SELECT q.query,
-         (SELECT AVG(position) FROM search_analytics s WHERE s.query=q.query AND s.date=q.fd AND s.impressions>0) firstPos,
-         (SELECT AVG(position) FROM search_analytics s WHERE s.query=q.query AND s.date=q.ld AND s.impressions>0) lastPos,
+         (SELECT AVG(position) FROM gsc_rows s WHERE s.query=q.query AND s.date=q.fd AND s.impressions>0) firstPos,
+         (SELECT AVG(position) FROM gsc_rows s WHERE s.query=q.query AND s.date=q.ld AND s.impressions>0) lastPos,
          q.fd firstDate, q.ld lastDate
        FROM q`,
     ).all(maxDate) as any[])
@@ -367,71 +465,10 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
       .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
       .slice(0, 40);
 
-    // Latest audit findings (if run_audit has run for this property)
-    const lastRun = db.db.prepare('SELECT run_id, finding_count, finished_at FROM audit_runs ORDER BY started_at DESC LIMIT 1').get() as
-      | { run_id: string; finding_count: number; finished_at: string | null }
-      | undefined;
-    const totalInternalPages = (db.db.prepare(`SELECT COUNT(*) n FROM pages WHERE is_internal=1`).get() as { n: number }).n;
-    let findings: DashboardData['findings'] = null;
-    if (lastRun) {
-      const byCheckRaw = db.db.prepare('SELECT check_id, category, severity, COUNT(*) count, COUNT(DISTINCT url_key) urls, AVG(priority) priority FROM findings WHERE run_id=? GROUP BY check_id ORDER BY count DESC').all(lastRun.run_id) as NonNullable<DashboardData['findings']>['byCheck'];
-      const byCheck = byCheckRaw.map(c => ({ ...c, coveragePct: totalInternalPages > 0 && c.urls ? Math.min(100, Math.round((c.urls / totalInternalPages) * 1000) / 10) : null }));
-      const topRaw = db.db.prepare('SELECT check_id, category, severity, url_key, evidence, traffic_at_risk, effort, priority, recommendation FROM findings WHERE run_id=? ORDER BY priority DESC LIMIT 50').all(lastRun.run_id) as NonNullable<DashboardData['findings']>['top'];
-      // Impact = priority normalised to the run's top finding (preserves magnitude), shown as a
-      // 0–100 index + S/M/L/XL size instead of a clicks "forecast".
-      const maxPrio = Math.max(1, ...topRaw.map(f => f.priority || 0));
-      const top = topRaw.map(f => { const impact = Math.round((f.priority || 0) / maxPrio * 100); return { ...f, impact, size: impact >= 50 ? 'XL' : impact >= 20 ? 'L' : impact >= 5 ? 'M' : 'S' }; });
-
-      // One representative (highest-priority) example per check → the audit-report view.
-      const exRows = db.db.prepare('SELECT check_id, url_key, evidence, traffic_at_risk, recommendation, priority FROM findings WHERE run_id=? ORDER BY priority DESC').all(lastRun.run_id) as
-        { check_id: string; url_key: string | null; evidence: string; traffic_at_risk: string; recommendation: string; priority: number }[];
-      const parse = (s: string): any => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
-      // Up to 3 representative examples per check (highest-priority first) → richer recs view.
-      const exByCheck = new Map<string, typeof exRows>();
-      for (const r of exRows) { const arr = exByCheck.get(r.check_id) ?? []; if (arr.length < 3) { arr.push(r); exByCheck.set(r.check_id, arr); } }
-
-      const SEV: Record<string, number> = { crit: 0, high: 1, med: 2, low: 3, info: 4 };
-      const sevRank = (s: string): number => SEV[s] ?? 5; // unknown severity sorts last, not NaN
-      const catMap = new Map<string, NonNullable<DashboardData['findings']>['recommendations'][number]['checks']>();
-      const mkEx = (r: typeof exRows[number]): { urlKey: string | null; evidence: Record<string, unknown>; clicks: number; impressions: number } => {
-        const t = parse(r.traffic_at_risk);
-        return { urlKey: r.url_key, evidence: parse(r.evidence), clicks: t.clicks || 0, impressions: t.impressions || 0 };
-      };
-      for (const c of byCheck) {
-        const exs = exByCheck.get(c.check_id) ?? [];
-        const rec = exs[0] ? parse(exs[0].recommendation) : {};
-        const list = catMap.get(c.category) ?? [];
-        const examples = exs.map(mkEx);
-        list.push({
-          checkId: c.check_id,
-          title: rec.title || c.check_id,
-          fix: rec.text || '',
-          severity: c.severity,
-          count: c.count,
-          coveragePct: c.coveragePct,
-          example: examples[0] ?? null,
-          examples,
-        });
-        catMap.set(c.category, list);
-      }
-      const recommendations = [...catMap.entries()]
-        .map(([category, checks]) => ({ category, checks: checks.sort((a, b) => (sevRank(a.severity) - sevRank(b.severity)) || (b.count - a.count)) }))
-        .sort((a, b) => Math.min(...a.checks.map(c => sevRank(c.severity))) - Math.min(...b.checks.map(c => sevRank(c.severity))));
-
-      findings = { runId: lastRun.run_id, total: lastRun.finding_count, finishedAt: lastRun.finished_at, byCheck, top, recommendations };
-    }
-
-    // Site Health Score - the headline metric every paid tool has. Ahrefs-style and honest:
-    // the share of crawled internal pages carrying no error-class (critical/high) finding.
-    let healthScore: DashboardData['healthScore'] = null;
-    if (lastRun && totalInternalPages > 0) {
-      // Count only crawled internal pages that carry a crit/high finding, so a check whose url_key
-      // is not a crawled page (ghost-pages, backlinks-to-404) can't push errPages past the total.
-      const errPages = (db.db.prepare(`SELECT COUNT(DISTINCT f.url_key) n FROM findings f JOIN pages p ON p.url_key = f.url_key AND p.is_internal = 1 WHERE f.run_id=? AND f.severity IN ('crit','high') AND f.url_key IS NOT NULL`).get(lastRun.run_id) as { n: number }).n;
-      const score = Math.max(0, Math.min(100, Math.round((1 - errPages / totalInternalPages) * 100)));
-      const band = score >= 91 ? 'Excellent' : score >= 71 ? 'Good' : score >= 31 ? 'Fair' : 'Weak';
-      healthScore = { score, band, errorPages: errPages, totalPages: totalInternalPages, definition: 'Share of crawled internal pages with no critical or high finding.' };
-    }
+    // Crawl / audit / probe side of the payload, shared with the no-GSC path: findings, health and
+    // its history, index coverage, agent readiness, drift, AI Overview, coverage and event ticks.
+    const side = crawlSide(db.db, maxDate);
+    const totalInternalPages = side.coverage!.crawlPages;
 
     // Security / HTTPS coverage (V2 view): share of 200 internal pages carrying each header.
     let securityCoverage: DashboardData['securityCoverage'] = null;
@@ -479,18 +516,6 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         if (types.length) schemaCoverage = { pagesWithSchema: schemaRows.length, totalPages: totalInternalPages, types };
       }
     }
-
-    // GSC index coverage (V2 view): per-URL index status from URL Inspection.
-    let indexCoverage: DashboardData['indexCoverage'] = null;
-    try {
-      const total = (db.db.prepare(`SELECT COUNT(*) n FROM url_inspection`).get() as { n: number }).n;
-      if (total > 0) {
-        const states = (db.db.prepare(`SELECT COALESCE(coverage_state,'Unknown') state, COUNT(*) count FROM url_inspection GROUP BY coverage_state ORDER BY count DESC`).all() as { state: string; count: number }[]);
-        const canonicalMismatch = (db.db.prepare(`SELECT COUNT(*) n FROM url_inspection WHERE google_canonical IS NOT NULL AND user_canonical IS NOT NULL AND google_canonical <> user_canonical`).get() as { n: number }).n;
-        const indexed = (db.db.prepare(`SELECT COUNT(*) n FROM url_inspection WHERE coverage_state LIKE '%indexed%' AND coverage_state NOT LIKE '%not indexed%'`).get() as { n: number }).n;
-        indexCoverage = { total, states, canonicalMismatch, indexed };
-      }
-    } catch { /* no url_inspection */ }
 
     // Redirect chains (V2 view): multi-hop redirects captured during the crawl.
     let redirectChains: DashboardData['redirectChains'] = null;
@@ -578,7 +603,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const pageRows = db.db.prepare(`SELECT url_key, COALESCE(ipr,0) ipr FROM pages WHERE status_code=200 AND indexable=1`).all() as { url_key: string; ipr: number }[];
     if (pageRows.length) {
       const g28 = new Map<string, { clicks: number; impr: number }>();
-      for (const r of db.db.prepare(`SELECT page_key, SUM(clicks) c, SUM(impressions) i FROM search_analytics WHERE page_key IS NOT NULL AND ${UB} AND date > date(?, '-28 days') GROUP BY page_key`).all(maxDate) as any[]) g28.set(r.page_key, { clicks: r.c, impr: r.i });
+      for (const r of db.db.prepare(`SELECT page_key, SUM(clicks) c, SUM(impressions) i FROM gsc_rows WHERE page_key IS NOT NULL AND ${UB} AND date > date(?, '-28 days') GROUP BY page_key`).all(maxDate) as any[]) g28.set(r.page_key, { clicks: r.c, impr: r.i });
       const scatter: NonNullable<DashboardData['equityScatter']> = [];
       const agg = new Map<string, { ipr: number; clicks: number; n: number }>();
       for (const p of pageRows) {
@@ -661,10 +686,17 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         ).all(thr, thr, MAX_EDGES) as { s: string; t: string; w: number }[];
         const ids = new Set(nodeRows.map(n => n.url_key));
         const keptEdges = edges.filter(e => ids.has(e.s) && ids.has(e.t)).map(e => ({ source: e.s, target: e.t }));
+        const linked = new Set(keptEdges.flatMap(e => [e.source, e.target]));
+        const inl = db.db.prepare(`SELECT COUNT(DISTINCT source_key) n, COUNT(DISTINCT CASE WHEN placement='body' THEN source_key END) body FROM links WHERE is_internal=1 AND target_key=? AND source_key <> target_key`);
+        const isolated = nodeRows.filter(n => !linked.has(n.url_key)).slice(0, 20).map(n => {
+          const r = inl.get(n.url_key) as { n: number; body: number };
+          return { id: n.url_key, inlinks: r.n, bodyInlinks: r.body };
+        });
         structureGraph = {
           nodes: nodeRows.map(n => ({ id: n.url_key, ipr: Math.round(n.ipr), depth: n.click_depth, status: n.status_code, indexable: !!n.indexable })),
           edges: keptEdges,
           totalPages,
+          isolated,
         };
       }
     }
@@ -690,6 +722,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
             SUM(CASE WHEN status_code BETWEEN 400 AND 499 THEN 1 ELSE 0 END) r4,
             SUM(CASE WHEN status_code BETWEEN 500 AND 599 THEN 1 ELSE 0 END) r5,
             SUM(CASE WHEN indexable_reason='robots-disallowed' THEN 1 ELSE 0 END) rb,
+            SUM(CASE WHEN fetch_state='rate_limited' THEN 1 ELSE 0 END) rl,
             SUM(CASE WHEN ${HTML_CT} AND response_time_ms < 200 THEN 1 ELSE 0 END) s1,
             SUM(CASE WHEN ${HTML_CT} AND response_time_ms BETWEEN 200 AND 499 THEN 1 ELSE 0 END) s2,
             SUM(CASE WHEN ${HTML_CT} AND response_time_ms BETWEEN 500 AND 999 THEN 1 ELSE 0 END) s3,
@@ -701,11 +734,11 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
           FROM pages`).get() as Record<string, unknown>;
         const g2 = db.db.prepare(`SELECT
             SUM(CASE WHEN title IS NULL OR TRIM(title)='' THEN 1 ELSE 0 END) tMissing,
-            SUM(CASE WHEN title_length > 60 THEN 1 ELSE 0 END) tLong,
-            SUM(CASE WHEN title_length BETWEEN 1 AND 29 THEN 1 ELSE 0 END) tShort,
+            SUM(CASE WHEN title_length > ${TITLE_MAX_CHARS} THEN 1 ELSE 0 END) tLong,
+            SUM(CASE WHEN title_length BETWEEN 1 AND ${TITLE_MIN_CHARS - 1} THEN 1 ELSE 0 END) tShort,
             SUM(CASE WHEN meta_description IS NULL OR TRIM(meta_description)='' THEN 1 ELSE 0 END) mMissing,
-            SUM(CASE WHEN meta_description_length > 155 THEN 1 ELSE 0 END) mLong,
-            SUM(CASE WHEN meta_description_length BETWEEN 1 AND 69 THEN 1 ELSE 0 END) mShort,
+            SUM(CASE WHEN meta_description_length > ${META_DESC_MAX_CHARS} THEN 1 ELSE 0 END) mLong,
+            SUM(CASE WHEN meta_description_length BETWEEN 1 AND ${META_DESC_MIN_CHARS - 1} THEN 1 ELSE 0 END) mShort,
             SUM(CASE WHEN h1 IS NULL OR TRIM(h1)='' THEN 1 ELSE 0 END) h1Missing,
             SUM(CASE WHEN h1_count > 1 THEN 1 ELSE 0 END) h1Multi,
             SUM(CASE WHEN images_without_alt > 0 THEN 1 ELSE 0 END) noAlt,
@@ -723,6 +756,8 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
           { label: '4xx client error', count: num(g1.r4), tone: 'warn' },
           { label: '5xx server error', count: num(g1.r5), tone: 'bad' },
           { label: 'Blocked by robots', count: num(g1.rb), tone: 'warn' },
+          // #54: the host rate limited these after every retry: status unknown, not an error.
+          { label: 'Not fetched (rate limited)', count: num(g1.rl), tone: 'muted' },
           { label: 'Fetch failed', count: one(`SELECT COUNT(*) n FROM errors WHERE error_type='fetch'`), tone: 'bad' },
         ]);
         const indexability = stats((db.db.prepare(
@@ -748,14 +783,14 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         const titles = stats([
           { label: 'Missing', count: num(g2.tMissing), tone: 'warn' },
           { label: 'Duplicate', count: dupCount('title'), tone: 'warn' },
-          { label: 'Over 60 characters', count: num(g2.tLong), tone: 'warn' },
-          { label: 'Under 30 characters', count: num(g2.tShort), tone: 'warn' },
+          { label: `Over ${TITLE_MAX_CHARS} characters`, count: num(g2.tLong), tone: 'warn' },
+          { label: `Under ${TITLE_MIN_CHARS} characters`, count: num(g2.tShort), tone: 'warn' },
         ]);
         const metas = stats([
           { label: 'Missing', count: num(g2.mMissing), tone: 'warn' },
           { label: 'Duplicate', count: dupCount('meta_description'), tone: 'warn' },
-          { label: 'Over 155 characters', count: num(g2.mLong), tone: 'warn' },
-          { label: 'Under 70 characters', count: num(g2.mShort), tone: 'warn' },
+          { label: `Over ${META_DESC_MAX_CHARS} characters`, count: num(g2.mLong), tone: 'warn' },
+          { label: `Under ${META_DESC_MIN_CHARS} characters`, count: num(g2.mShort), tone: 'warn' },
         ]);
         const onPage = stats([
           { label: 'Missing H1', count: num(g2.h1Missing), tone: 'warn' },
@@ -824,25 +859,22 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     }
 
     // Agent readiness — latest result persisted by check_agent_readiness (one property per DB).
-    const arRow = db.db.prepare(`SELECT score, level, checks, by_category, checked_at FROM agent_readiness ORDER BY checked_at DESC LIMIT 1`).get() as { score: number; level: string; checks: string; by_category: string; checked_at: string } | undefined;
-    const parseJ = (s: string): any => { try { return JSON.parse(s || '[]'); } catch { return []; } };
-    const agentReadiness = arRow ? { score: arRow.score, level: arRow.level, checkedAt: arRow.checked_at, byCategory: parseJ(arRow.by_category), checks: parseJ(arRow.checks) } : undefined;
 
     // Cannibalisation braids — queries where multiple URLs compete, each URL's weekly avg position.
     // The "braid" of crossing lines over time is Google thrashing between URLs (severity = tangle).
     const cannQueries = db.db.prepare(
       `WITH pp AS (SELECT query, page_key, SUM(impressions) imp, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
-                   FROM search_analytics WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${UB} AND date > date(?, '-90 days')
+                   FROM gsc_rows WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${UB} AND date > date(?, '-90 days')
                    GROUP BY query, page_key HAVING pos < 20 AND imp >= 30)
        SELECT query, COUNT(*) urls, SUM(imp) imp FROM pp GROUP BY query HAVING COUNT(*) >= 2 ORDER BY imp DESC LIMIT 6`,
     ).all(maxDate) as { query: string; urls: number; imp: number }[];
     const cannibalisation = cannQueries.map(q => {
-      const urls = db.db.prepare(`SELECT page_key, SUM(impressions) imp FROM search_analytics WHERE query=? AND page_key IS NOT NULL AND ${UB} AND date > date(?, '-90 days') GROUP BY page_key ORDER BY imp DESC LIMIT 4`).all(q.query, maxDate) as { page_key: string }[];
+      const urls = db.db.prepare(`SELECT page_key, SUM(impressions) imp FROM gsc_rows WHERE query=? AND page_key IS NOT NULL AND ${UB} AND date > date(?, '-90 days') GROUP BY page_key ORDER BY imp DESC LIMIT 4`).all(q.query, maxDate) as { page_key: string }[];
       return {
         query: q.query,
         urls: urls.map(u => ({
           url: u.page_key,
-          points: (db.db.prepare(`SELECT strftime('%Y-%W', date) week, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos FROM search_analytics WHERE query=? AND page_key=? AND ${UB} AND date > date(?, '-90 days') AND impressions > 0 GROUP BY week ORDER BY week`).all(q.query, u.page_key, maxDate) as { week: string; pos: number }[])
+          points: (db.db.prepare(`SELECT strftime('%Y-%W', date) week, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos FROM gsc_rows WHERE query=? AND page_key=? AND ${UB} AND date > date(?, '-90 days') AND impressions > 0 GROUP BY week ORDER BY week`).all(q.query, u.page_key, maxDate) as { week: string; pos: number }[])
             .map(w => ({ week: w.week, position: Math.round(w.pos * 10) / 10 })),
         })),
       };
@@ -856,7 +888,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     // and an article) — the clearest intent confusion and the most actionable to resolve.
     const cannRows = db.db.prepare(
       `WITH pp AS (SELECT query, page_key, SUM(impressions) imp, SUM(clicks) clk, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
-                   FROM search_analytics WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${UB} AND date > date(?, '-90 days')
+                   FROM gsc_rows WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${UB} AND date > date(?, '-90 days')
                    GROUP BY query, page_key HAVING pos < 20 AND imp >= 30),
             multi AS (SELECT query FROM pp GROUP BY query HAVING COUNT(*) >= 2)
        SELECT pp.query, pp.page_key, pp.imp, pp.clk, pp.pos FROM pp JOIN multi ON multi.query = pp.query
@@ -919,8 +951,8 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
                 COALESCE(b.referring_domains,0) rd, COALESCE(b.backlinks,0) bl,
                 b.trust_flow tf, b.topical_trust_flow ttf
          FROM page_backlinks b JOIN pages p ON p.url_key = b.url_key
-         WHERE p.status_code = 200 AND COALESCE(b.referring_domains,0) >= 2
-           AND (p.click_depth IS NULL OR p.click_depth >= 3)`,
+         WHERE p.status_code = 200 AND COALESCE(b.referring_domains,0) >= ${TRAPPED_MIN_REF_DOMAINS}
+           AND (p.click_depth IS NULL OR p.click_depth >= ${TRAPPED_MIN_DEPTH})`,
       ).all() as { url: string; ipr: number; cd: number | null; rd: number; bl: number; tf: number | null; ttf: string | null }[];
       trappedAuthority = taRows
         .map(r => {
@@ -936,10 +968,13 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         .map(({ _s, ...rest }) => rest);
     } catch { /* no page_backlinks / no crawl */ }
 
+    const backlinkProfile = buildBacklinkProfile(db.db, siteUrl);
+
     const payload: DashboardData = {
       siteUrl,
       linkProspects,
       trappedAuthority,
+      backlinkProfile,
       dateRange: { current: `last 28d to ${maxDate}`, prior: 'prior 28d', maxDate, rawMaxDate: fresh.rawMax ?? maxDate, trimmedDays: fresh.trimmedDays },
       equityScatter,
       templateMismatch,
@@ -950,17 +985,15 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
       topLinkedPages,
       linkFlows,
       structureGraph,
-      healthScore,
+      ...side,
       securityCoverage,
       schemaCoverage,
-      indexCoverage,
       redirectChains,
       cwvCoverage,
       hreflangCoverage,
       entityGraph,
       answerability,
       topicClusters,
-      agentReadiness,
       rankHistory,
       dateAlignment,
       rankingDistribution,
@@ -977,7 +1010,11 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
       countryBreakdown,
       pagePerformance,
       keywordMovement,
-      findings,
+      monthly: monthlyClicks(db.db, maxDate),
+      yoy: yearOnYear(db.db, maxDate),
+      pageMovers: pageMovers(db.db, maxDate, 3),
+      clickWindows: clickWindows(db.db, maxDate),
+      gscShape: gscMixedShape(db.db),
       serpFootprint: latestSerpFootprint(db.db),
       marketSizing: latestMarketSizing(db.db),
     };
@@ -988,10 +1025,136 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         .run(version, JSON.stringify(payload));
     } catch { /* cache is an optimisation, never block the dashboard on it */ }
     // Freshness is read live on every load (outside the cache) - see dataFreshness.ts.
-    return { ...payload, freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))) };
+    return { ...payload, freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))), cwvField: cwvFieldPayload(db.db) };
   } finally {
     db.close();
   }
+}
+
+/**
+ * The part of the payload that needs no Search Console data: the latest audit's findings (with the
+ * summary's by-area rows and clicks at risk), the health score and its per-run history, URL
+ * inspection coverage, agent readiness, drift, AI Overview, data coverage and event ticks. The
+ * full build and the no-GSC build both use it, so the Summary tab works crawl-only.
+ * `maxDate` (finalised GSC end) only bounds the event ticks to the monthly chart's range.
+ */
+function crawlSide(db: Database.Database, maxDate: string | null): Pick<DashboardData,
+  'findings' | 'healthScore' | 'healthHistory' | 'auditDeltas' | 'auditHistoryTruncated' | 'indexCoverage' | 'agentReadiness'
+  | 'drift' | 'aiOverview' | 'coverage' | 'events'> {
+  const cov = coverage(db);
+  const totalInternalPages = cov.crawlPages;
+  const history = auditHistory(db);
+
+  // Latest audit findings (if run_audit has run for this property)
+  const lastRun = db.prepare('SELECT run_id, finding_count, finished_at FROM audit_runs ORDER BY started_at DESC LIMIT 1').get() as
+    | { run_id: string; finding_count: number; finished_at: string | null }
+    | undefined;
+  let findings: DashboardData['findings'] = null;
+  if (lastRun) {
+    const atRisk = clicksAtRiskByCheck(db, lastRun.run_id);
+    const byCheckRaw = db.prepare('SELECT check_id, category, severity, COUNT(*) count, COUNT(DISTINCT url_key) urls, AVG(priority) priority FROM findings WHERE run_id=? GROUP BY check_id ORDER BY count DESC').all(lastRun.run_id) as NonNullable<DashboardData['findings']>['byCheck'];
+    const byCheck = byCheckRaw.map(c => ({
+      ...c,
+      coveragePct: totalInternalPages > 0 && c.urls ? Math.min(100, Math.round((c.urls / totalInternalPages) * 1000) / 10) : null,
+      clicksAtRisk: atRisk.get(c.check_id) ?? null,
+    }));
+    const topRaw = db.prepare('SELECT check_id, category, severity, labels, url_key, evidence, traffic_at_risk, effort, priority, recommendation FROM findings WHERE run_id=? ORDER BY priority DESC LIMIT 50').all(lastRun.run_id) as NonNullable<DashboardData['findings']>['top'];
+    // Impact = priority normalised to the run's top finding (preserves magnitude), shown as a
+    // 0–100 index + S/M/L/XL size instead of a clicks "forecast".
+    const maxPrio = Math.max(1, ...topRaw.map(f => f.priority || 0));
+    const top = topRaw.map(f => { const impact = Math.round((f.priority || 0) / maxPrio * 100); return { ...f, impact, size: impact >= 50 ? 'XL' : impact >= 20 ? 'L' : impact >= 5 ? 'M' : 'S' }; });
+
+    // One representative (highest-priority) example per check → the audit-report view.
+    const exRows = db.prepare('SELECT check_id, url_key, evidence, traffic_at_risk, recommendation, priority FROM findings WHERE run_id=? ORDER BY priority DESC').all(lastRun.run_id) as
+      { check_id: string; url_key: string | null; evidence: string; traffic_at_risk: string; recommendation: string; priority: number }[];
+    const parse = (s: string): any => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
+    // Up to 3 representative examples per check (highest-priority first) → richer recs view.
+    const exByCheck = new Map<string, typeof exRows>();
+    for (const r of exRows) { const arr = exByCheck.get(r.check_id) ?? []; if (arr.length < 3) { arr.push(r); exByCheck.set(r.check_id, arr); } }
+
+    const SEV: Record<string, number> = { crit: 0, high: 1, med: 2, low: 3, info: 4 };
+    const sevRank = (s: string): number => SEV[s] ?? 5; // unknown severity sorts last, not NaN
+    const catMap = new Map<string, NonNullable<DashboardData['findings']>['recommendations'][number]['checks']>();
+    const mkEx = (r: typeof exRows[number]): { urlKey: string | null; evidence: Record<string, unknown>; clicks: number; impressions: number } => {
+      const t = parse(r.traffic_at_risk);
+      return { urlKey: r.url_key, evidence: parse(r.evidence), clicks: t.clicks || 0, impressions: t.impressions || 0 };
+    };
+    for (const c of byCheck) {
+      const exs = exByCheck.get(c.check_id) ?? [];
+      const rec = exs[0] ? parse(exs[0].recommendation) : {};
+      const list = catMap.get(c.category) ?? [];
+      const examples = exs.map(mkEx);
+      list.push({
+        checkId: c.check_id,
+        title: rec.title || c.check_id,
+        fix: rec.text || '',
+        severity: c.severity,
+        count: c.count,
+        coveragePct: c.coveragePct,
+        example: examples[0] ?? null,
+        examples,
+      });
+      catMap.set(c.category, list);
+    }
+    const recommendations = [...catMap.entries()]
+      .map(([category, checks]) => ({ category, checks: checks.sort((a, b) => (sevRank(a.severity) - sevRank(b.severity)) || (b.count - a.count)) }))
+      .sort((a, b) => Math.min(...a.checks.map(c => sevRank(c.severity))) - Math.min(...b.checks.map(c => sevRank(c.severity))));
+
+    // By area, with the change since the previous audit only when that pair is comparable (the
+    // latest delta for this run, not skipped: same scope and check set).
+    const lastDelta = history.auditDeltas.filter(d => d.runId === lastRun.run_id).pop();
+    const prevComparable = lastDelta && !lastDelta.skipped ? lastDelta.prevRunId : null;
+    const byCategory = findingsByCategory(db, lastRun.run_id, prevComparable);
+
+    findings = { runId: lastRun.run_id, total: lastRun.finding_count, finishedAt: lastRun.finished_at, byCheck, top, recommendations, byCategory };
+  }
+
+  // Site Health Score - the share of crawled internal pages carrying no error-class (critical/high)
+  // finding. One formula (src/audit/history.ts), shared with the per-run value runAudit stores.
+  let healthScore: DashboardData['healthScore'] = null;
+  if (lastRun && totalInternalPages > 0) {
+    const h = computeHealth(db, lastRun.run_id);
+    if (h) healthScore = { score: h.score, band: healthBand(h.score), errorPages: h.errorPages, totalPages: h.totalPages, definition: HEALTH_DEFINITION };
+  }
+
+  // GSC index coverage (V2 view): per-URL index status from URL Inspection.
+  let indexCoverage: DashboardData['indexCoverage'] = null;
+  try {
+    const total = (db.prepare(`SELECT COUNT(*) n FROM url_inspection`).get() as { n: number }).n;
+    if (total > 0) {
+      const states = (db.prepare(`SELECT COALESCE(coverage_state,'Unknown') state, COUNT(*) count FROM url_inspection GROUP BY coverage_state ORDER BY count DESC`).all() as { state: string; count: number }[]);
+      const canonicalMismatch = (db.prepare(`SELECT COUNT(*) n FROM url_inspection WHERE google_canonical IS NOT NULL AND user_canonical IS NOT NULL AND google_canonical <> user_canonical`).get() as { n: number }).n;
+      const indexed = (db.prepare(`SELECT COUNT(*) n FROM url_inspection WHERE coverage_state LIKE '%indexed%' AND coverage_state NOT LIKE '%not indexed%'`).get() as { n: number }).n;
+      indexCoverage = { total, states, canonicalMismatch, indexed };
+    }
+  } catch { /* no url_inspection */ }
+
+  // Event ticks for the monthly chart: from the first month it shows (16 months back from maxDate).
+  let since: string | null = null;
+  if (maxDate) { const d = new Date(`${maxDate.slice(0, 7)}-01T00:00:00Z`); d.setUTCMonth(d.getUTCMonth() - 15); since = d.toISOString().slice(0, 10); }
+
+  return {
+    findings,
+    healthScore,
+    healthHistory: history.healthHistory,
+    auditDeltas: history.auditDeltas,
+    auditHistoryTruncated: history.truncated ?? null,
+    indexCoverage,
+    agentReadiness: readAgentReadiness(db),
+    drift: driftSummary(db),
+    aiOverview: aiOverviewSummary(db),
+    coverage: cov,
+    events: summaryEvents(db, since),
+  };
+}
+
+/** Agent readiness: the latest result persisted by check_agent_readiness (one property per DB). */
+function readAgentReadiness(db: Database.Database): DashboardData['agentReadiness'] {
+  const row = db.prepare(`SELECT score, level, checks, by_category, bots, checked_at FROM agent_readiness ORDER BY checked_at DESC LIMIT 1`).get() as
+    { score: number; level: string; checks: string; by_category: string; bots: string | null; checked_at: string } | undefined;
+  if (!row) return undefined;
+  const parseJ = (s: string | null, dflt: unknown): any => { try { return s ? JSON.parse(s) : dflt; } catch { return dflt; } };
+  return { score: row.score, level: row.level, checkedAt: row.checked_at, byCategory: parseJ(row.by_category, []), checks: parseJ(row.checks, []), bots: parseJ(row.bots, null) };
 }
 
 /** Template proxy: first URL path segment (homepage / content-root collapse to named buckets). */
@@ -1050,4 +1213,50 @@ function reconcileRanges(
       ? `GSC ${gsc.start}–${gsc.end} (daily) overlaps DataForSEO ${dfs.start}–${dfs.end} (monthly) at ${oStart}–${oEnd}; time charts share that window.`
       : `No overlap: GSC ends ${geM}, DataForSEO covers ${dfs.start}–${dfs.end}. Render on separate axes.`,
   };
+}
+
+/**
+ * Backlink profile for the Links tab (#47). Reads only what pull_backlinks stored: property_meta's
+ * summary, page_backlinks, and the latest referring_domains / backlink_anchors snapshot plus
+ * backlink_history. Returns null when nothing was ever pulled; each section is null when its own
+ * table is empty, so the UI can say "not collected" instead of showing zero.
+ */
+export function buildBacklinkProfile(db: Database.Database, siteUrl: string): BacklinkProfile | null {
+  try {
+    const meta = db.prepare(`SELECT total_backlinks, referring_domains, backlinks_rank, broken_backlinks, broken_pages, backlinks_nofollow_pct, backlinks_fetched_at FROM property_meta WHERE site_url=?`).get(siteUrl) as
+      { total_backlinks: number | null; referring_domains: number | null; backlinks_rank: number | null; broken_backlinks: number | null; broken_pages: number | null; backlinks_nofollow_pct: number | null; backlinks_fetched_at: string | null } | undefined;
+    const pageRows = db.prepare(`SELECT url, backlinks, referring_domains rd, dofollow, status_code status, trust_flow tf FROM page_backlinks ORDER BY referring_domains DESC, backlinks DESC`).all() as
+      { url: string; backlinks: number; rd: number; dofollow: number; status: number | null; tf: number | null }[];
+    const summary = meta?.backlinks_fetched_at
+      ? { backlinks: meta.total_backlinks ?? 0, referringDomains: meta.referring_domains ?? 0, domainRank: meta.backlinks_rank ?? null, brokenBacklinks: meta.broken_backlinks ?? 0, brokenPages: meta.broken_pages ?? 0, nofollowPct: meta.backlinks_nofollow_pct ?? null, fetchedAt: meta.backlinks_fetched_at }
+      : null;
+    if (!summary && !pageRows.length) return null;
+
+    const topPages = pageRows.slice(0, 15).map(r => ({ url: r.url, backlinks: r.backlinks, referringDomains: r.rd, dofollow: r.dofollow, status: r.status, trustFlow: r.tf }));
+    const brokenPages = pageRows.filter(r => r.status != null && r.status >= 400).slice(0, 25).map(r => ({ url: r.url, backlinks: r.backlinks, referringDomains: r.rd, status: r.status as number }));
+    const pagesUnchecked = pageRows.filter(r => r.status == null).length;
+
+    let referringDomains: BacklinkProfile['referringDomains'] = null;
+    const rdSnap = (db.prepare('SELECT MAX(snapshot_at) s FROM referring_domains').get() as { s: string | null }).s;
+    if (rdSnap) {
+      const counts = db.prepare('SELECT SUM(lost_date IS NULL) live, SUM(lost_date IS NOT NULL) lost FROM referring_domains WHERE snapshot_at=?').get(rdSnap) as { live: number | null; lost: number | null };
+      const top = db.prepare(`SELECT domain, rank, backlinks, referring_pages rp, nofollow_pages np, spam_score ss, first_seen fs FROM referring_domains WHERE snapshot_at=? AND lost_date IS NULL ORDER BY rank DESC, backlinks DESC LIMIT 25`).all(rdSnap) as
+        { domain: string; rank: number | null; backlinks: number; rp: number; np: number; ss: number | null; fs: string | null }[];
+      referringDomains = { snapshotAt: rdSnap, live: counts.live ?? 0, lost: counts.lost ?? 0, top: top.map(t => ({ domain: t.domain, rank: t.rank, backlinks: t.backlinks ?? 0, referringPages: t.rp ?? 0, nofollowPages: t.np ?? 0, spamScore: t.ss, firstSeen: t.fs })) };
+    }
+
+    let anchors: BacklinkProfile['anchors'] = null;
+    const anSnap = (db.prepare('SELECT MAX(snapshot_at) s FROM backlink_anchors').get() as { s: string | null }).s;
+    if (anSnap) {
+      const mix = db.prepare(`SELECT kind, COUNT(*) anchors, SUM(backlinks) backlinks, SUM(referring_domains) rd FROM backlink_anchors WHERE snapshot_at=? AND lost_date IS NULL GROUP BY kind ORDER BY backlinks DESC`).all(anSnap) as { kind: string | null; anchors: number; backlinks: number | null; rd: number | null }[];
+      const top = db.prepare(`SELECT anchor, kind, backlinks, referring_domains rd FROM backlink_anchors WHERE snapshot_at=? AND lost_date IS NULL ORDER BY backlinks DESC LIMIT 20`).all(anSnap) as { anchor: string; kind: string | null; backlinks: number; rd: number }[];
+      anchors = { snapshotAt: anSnap, mix: mix.map(m => ({ kind: m.kind ?? 'keyword', anchors: m.anchors, backlinks: m.backlinks ?? 0, referringDomains: m.rd ?? 0 })), top: top.map(t => ({ anchor: t.anchor, kind: t.kind ?? 'keyword', backlinks: t.backlinks ?? 0, referringDomains: t.rd ?? 0 })) };
+    }
+
+    let history: BacklinkProfile['history'] = null;
+    const hist = db.prepare('SELECT date, backlinks, referring_domains, new_referring_domains, lost_referring_domains, fetched_at FROM backlink_history ORDER BY date').all() as (HistoryRow & { fetched_at: string | null })[];
+    if (hist.length) history = { fetchedAt: hist[hist.length - 1].fetched_at ?? null, months: monthlyFromHistory(hist).slice(-13) };
+
+    return { summary, topPages, brokenPages, pagesTotal: pageRows.length, pagesUnchecked, referringDomains, anchors, history };
+  } catch { return null; } // pre-#47 database without the tables, or no property_meta row
 }

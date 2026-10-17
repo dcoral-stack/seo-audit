@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import * as cheerio from 'cheerio';
 import { isInternalHost } from './extract.js';
 import { CHROME_HEADERS, looksBotBlocked, type FetchedAs } from './userAgents.js';
+import { isRateLimited, parseRetryAfter } from './rateLimit.js';
 
 export interface ProbeHop { url: string; status: number; location: string | null }
 export interface ProbeResult {
@@ -33,24 +34,52 @@ export interface ProbeResult {
   /** Set when a redirect points off the property: the target was recorded (as finalUrl, with the
    * redirect's own status as finalStatus) but NOT fetched. */
   redirectsOffProperty?: string;
+  /** #54: the host still rate limited the request (429, or 503 + Retry-After) after one wait.
+   * status/finalStatus are then null (unknown) - a throttle is not the page's status. */
+  rateLimited?: boolean;
   error?: string;
 }
 
-export interface ProbeOptions { followRedirects?: boolean; userAgent?: string; concurrency?: number; budgetMs?: number; chromeFallback?: boolean }
+export interface ProbeOptions {
+  followRedirects?: boolean; userAgent?: string; concurrency?: number; budgetMs?: number; chromeFallback?: boolean;
+  /** Test seam: the fetch to use (default: the global fetch). Lets a probe script map hostnames such as
+   * www./http:// variants onto a local server without DNS or TLS. */
+  fetchImpl?: typeof fetch;
+  /** Request as Chrome from the first hop (the crawl already switched to Chrome because the site walls its UA). */
+  preferChrome?: boolean;
+}
+type ResolvedProbeOptions = Required<Omit<ProbeOptions, 'fetchImpl'>> & { fetchImpl: typeof fetch };
 
 const emptyResult = (url: string): ProbeResult => ({ url, status: null, redirectChain: [], finalUrl: null, finalStatus: null, contentType: null, title: null, canonical: null, metaRobots: null, xRobotsTag: null, contentHash: null, cache: { cfCacheStatus: null, xCache: null, age: null, cacheControl: null }, ms: 0, fetchedAs: 'bot' });
 
 const UA = 'Mozilla/5.0 (compatible; seo-audit-console probe; +https://github.com/houtini-ai/seo-audit)';
 const MAX_BODY = 2_000_000;
 
-async function probeOne(url: string, o: Required<ProbeOptions>, deadline: number, baseHost: string, chrome = false): Promise<ProbeResult & { botBlocked?: boolean }> {
+async function probeOne(url: string, o: ResolvedProbeOptions, deadline: number, baseHost: string, chrome = false): Promise<ProbeResult & { botBlocked?: boolean }> {
   const t0 = Date.now();
   const out: ProbeResult & { botBlocked?: boolean } = { ...emptyResult(url), fetchedAs: chrome ? 'chrome' : 'bot' };
   let current = url;
+  let rateWaited = false;
   try {
     for (let hop = 0; hop <= 10; hop++) {
       const left = Math.max(1000, Math.min(10000, deadline - Date.now()));
-      const res = await fetch(current, { redirect: 'manual', headers: chrome ? CHROME_HEADERS : { 'user-agent': o.userAgent, accept: 'text/html,*/*;q=0.8' }, signal: AbortSignal.timeout(left) });
+      const res = await o.fetchImpl(current, { redirect: 'manual', headers: chrome ? CHROME_HEADERS : { 'user-agent': o.userAgent, accept: 'text/html,*/*;q=0.8' }, signal: AbortSignal.timeout(left) });
+      // #54: rate limited (and not a bot wall, which the Chrome retry handles). Wait out Retry-After
+      // once if the budget allows (capped at 5 s), then report "unknown" rather than a 429 status.
+      if (isRateLimited(res.status, n => res.headers.get(n)) && !looksBotBlocked(res.status, n => res.headers.get(n))) {
+        try { await res.body?.cancel(); } catch { /* already closed */ }
+        const waitMs = Math.min(parseRetryAfter(res.headers.get('retry-after')) ?? 1000, 5000);
+        if (!rateWaited && Date.now() + waitMs < deadline - 2000) {
+          rateWaited = true;
+          await new Promise(r => setTimeout(r, waitMs));
+          hop--; // the retry is the same hop
+          continue;
+        }
+        out.rateLimited = true;
+        out.finalUrl = current;
+        out.error = `rate limited by the host (HTTP ${res.status}${res.headers.get('retry-after') ? `, Retry-After ${res.headers.get('retry-after')}` : ''}): status unknown, probe again later`;
+        break;
+      }
       if (out.status == null) out.status = res.status;
       const loc = res.headers.get('location');
       if (res.status >= 300 && res.status < 400 && loc) {
@@ -100,7 +129,10 @@ async function probeOne(url: string, o: Required<ProbeOptions>, deadline: number
     }
     if (out.finalUrl == null) out.error = 'more than 10 redirects';
   } catch (e) {
-    out.error = e instanceof Error ? (e.name === 'TimeoutError' ? 'timed out' : e.message) : String(e);
+    // undici's "fetch failed" hides the reason in `cause` (ENOTFOUND for a host that doesn't resolve,
+    // ECONNREFUSED, a TLS error); name it, so an unknown probe says why.
+    const cause = e instanceof Error ? ((e as { cause?: { code?: string; message?: string } }).cause) : undefined;
+    out.error = e instanceof Error ? (e.name === 'TimeoutError' ? 'timed out' : `${e.message}${cause?.code ? ` (${cause.code})` : cause?.message ? ` (${cause.message})` : ''}`) : String(e);
   }
   out.ms = Date.now() - t0;
   return out;
@@ -108,7 +140,7 @@ async function probeOne(url: string, o: Required<ProbeOptions>, deadline: number
 
 /** Probe up to 50 URLs on the property's host(s) within a time budget; unprobed URLs are marked. */
 export async function probeUrls(urls: { url: string; variantType?: string }[], baseHost: string, opts: ProbeOptions = {}): Promise<ProbeResult[]> {
-  const o: Required<ProbeOptions> = { followRedirects: opts.followRedirects ?? true, userAgent: opts.userAgent ?? UA, concurrency: opts.concurrency ?? 4, budgetMs: opts.budgetMs ?? 45000, chromeFallback: opts.chromeFallback ?? !opts.userAgent };
+  const o: ResolvedProbeOptions = { followRedirects: opts.followRedirects ?? true, userAgent: opts.userAgent ?? UA, concurrency: opts.concurrency ?? 4, budgetMs: opts.budgetMs ?? 45000, chromeFallback: opts.chromeFallback ?? !opts.userAgent, fetchImpl: opts.fetchImpl ?? fetch, preferChrome: opts.preferChrome ?? false };
   for (const u of urls) {
     let h: URL;
     try { h = new URL(u.url); } catch { throw new Error(`Not a URL: ${u.url}`); }
@@ -126,7 +158,7 @@ export async function probeUrls(urls: { url: string; variantType?: string }[], b
         results[i] = { ...emptyResult(u.url), ...(u.variantType ? { variantType: u.variantType } : {}), error: 'not probed: time budget reached (probe fewer URLs per call)' };
         continue;
       }
-      let r = await probeOne(u.url, o, deadline, baseHost);
+      let r = await probeOne(u.url, o, deadline, baseHost, o.preferChrome);
       // Bot-blocked under our own UA: one retry as Chrome, flagged so the reader knows (and so a
       // site that walls crawlers is visible as such).
       if (r.botBlocked && o.chromeFallback && Date.now() < deadline - 1000) r = { ...(await probeOne(u.url, o, deadline, baseHost, true)), blockedAsBot: true };

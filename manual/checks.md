@@ -1,6 +1,6 @@
 # The check registry
 
-All 111 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
+All 143 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
 
 ## Reading the labels
 
@@ -12,13 +12,29 @@ A check can carry more than one label - `noindex-with-traffic` is D+G because th
 
 Every finding is priced the same way: priority = (traffic at stake × expected yield × certainty) / effort hours. So the list you get back is ordered by expected clicks per developer-hour, not by how alarming the check sounds.
 
-## Crawlability (15)
+Zero findings from a check normally means it passed. The exception is a check whose source table is empty because the data was never collected (the asset checks read `page_resources`, `resource_assets` and `image_assets`; `soft-404-handling` and `host-variant-split` read the crawl's site probes; the four JS-render divergence checks read `render_audit`, filled by `render_pages`): `run_audit` lists those under **Not collected** with the step that collects the data, so an empty table never reads as a clean bill of health.
+
+## Thresholds we chose
+
+Most thresholds here are Google's (Core Web Vitals bands, snippet rules, redirect behaviour) or a plain fact (a status code). Two are house defaults, picked by us because Google publishes no number, and approved as the 0.16.0 defaults (17 Oct 2026). Treat them as a starting point, not a rule:
+
+| Check | Fires when | Why that number |
+|---|---|---|
+| `render-blocking-head-resources` | 3 or more render-blocking stylesheets in `<head>` (any parser-blocking script fires on its own) | A styled page needs its own stylesheet, and a font or plugin sheet beside it is the usual floor, so 1-2 aren't reported. |
+| `hydration-content-loss` | The rendered main content keeps 50% or less of the raw main content's words, where the raw had at least 200 | Below 200 words the ratio is noise (a short page swings on one block); losing more than half is past any template difference. |
+
+## Crawlability (21)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
 | `broken-internal-links` | D | Internal links pointing at 4xx/5xx URLs | Repoint them to a live, canonical URL (`fix_finding` writes the 301). |
+| `broken-subresource` | D | A CSS, JavaScript or font file pages load that answers 4xx/5xx (a 429/503 or a failed probe is unknown), one finding per file with the pages loading it. Needs a crawl with `headResources:true`; images are `broken-image`'s | Restore the file or fix the reference - the page renders without it, for Googlebot too. |
 | `content-only-in-rendered-dom` | D | Content or internal links that exist only after JavaScript runs (needs `render_pages`) | Server-side render or pre-render the critical content and in-site links so they're in the initial HTML - don't rely on client-side JS for primary navigation or copy. |
-| `redirect-chain` | D | Redirects of 2+ hops | Collapse to a single hop to the final URL. |
+| `redirect-chain` | D | Redirects of 2+ hops that stay on the site and resolve (keyed by the final page, whose row records the chain). Chains that leave the site, never resolve, loop, or run through a login/account/cart flow are not counted: a Shopify store's OAuth bounces used to read as ~1,300 chains | Collapse to a single hop to the final URL. |
+| `redirect-to-non-indexable` | D | An internal redirect whose final URL is a 4xx/5xx (not a 429/503 or a rate-limited fetch, which are unknown), a noindex page or a page canonicalised elsewhere. Excluded: a non-HTML target (a PDF), an http->https hop onto the same URL, and a backlinked source landing on a dead page (that's `backlinks-to-404`) | Point the redirect at the live, indexable, self-canonical replacement. |
+| `redirect-loop` | D | A redirect chain that revisits a URL, or is still redirecting after the crawler's 5-hop cap. Internal chains only; login/account/cart flows excluded | Fix the disagreeing rules so the URL resolves to a 200 in one hop. |
+| `temporary-redirect-with-equity` | D+G | A 302/303/307 first hop on a URL with equity: GSC clicks >= 1 or impressions >= 10 over the history held, a backlink, or an internal link from another page. Excluded: the homepage (a geo/locale 302 is deliberate), off-site and login/cart flows | Make it a 301/308 if the move is permanent, and repoint the internal links. |
+| `redirect-retired` | D+G | A URL that answered 200 in an earlier crawl's snapshot and now answers 404/410 with no redirect, with equity (same rule as above). A URL the latest crawl didn't reach is not "gone"; store products go to `product-gone-404`. Needs two crawls on different dates | 301 it to the closest live equivalent, or restore it. |
 | `internal-links-to-redirects` | D | Internal links that travel through a redirect | Repoint to the final URL - saves crawl budget and equity. |
 | `meta-nofollow` | D | Pages with meta robots nofollow | Remove it unless you mean to drop all link equity from the page. |
 | `deep-pages` | D | Pages 4+ body-link clicks from the homepage | Add in-content links from higher-level pages. |
@@ -29,13 +45,16 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `pagination-canonical-to-page-1` | D | Page 2+ canonicalising back to page 1 | Make each paginated page self-canonical, or items linked only from deep pages drop out of the crawl. |
 | `sitemap-orphan` | D | Sitemap URLs nothing on the site links to | Add internal links - sitemap discovery alone earns little authority. |
 | `robots-blocked-with-traffic` | D+G | robots.txt-disallowed URLs Google still shows and users still land on | Unblock it so it can rank properly, or unblock AND noindex (a blocked page can never see the noindex). |
+| `ai-search-bot-blocked` | D | robots.txt (as the latest crawl fetched it) blocks an AI **search** crawler - OAI-SearchBot, ChatGPT-User, Claude-SearchBot, Claude-User, PerplexityBot, Perplexity-User, DuckAssistBot - from the whole site or from any of your top 50 pages by clicks. One site-level finding listing each bot and the group that blocks it. Training crawlers (GPTBot, ClaudeBot, CCBot, Google-Extended, Bytespider...) are listed for context only: blocking them is a choice, not an issue | Allow the search bots so assistants can cite you; keep the training-bot Disallow lines if you want to opt out of training. |
 | `discover-crawl-waste` | D | Too much of the crawl going to redirects and non-indexable URLs (site-level - Discover leans on fast discovery) | Aim for almost everything Google crawls to be an indexable 200 - repoint links off redirects/404s and prune faceted/parameter URLs. |
 | `entity-internal-link-gap` | N (0.5) | Topically related pages (per Wikidata) with no link between them | Link the broader page to the more specific one - after verifying the entity match. Needs `resolve_entities`. |
 
-## Indexation (16)
+## Indexation (29)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
+| `site-wide-indexing-alarm` | D+G | **Critical, one site-level finding.** Any of: the homepage carries noindex; more than half of the sitemap's crawled 200 URLs (min 5) carry noindex; robots.txt disallows `/` for Googlebot (RFC 9309 most-specific group); or the number of distinct pages earning impressions fell more than 40% week on week (last 7 finalised GSC days vs the 7 before, prior week at least 50 pages; smaller weekly dips are ordinary variation, and a shipped noindex removes half or more within days). Each trigger cites its rows | Usually a staging setting that shipped - remove it today, resubmit the sitemap and request indexing of the homepage. |
+| `snippet-restricted` | D | Indexable pages with `nosnippet` or `max-snippet:0` in the robots meta tag, or in an X-Robots-Tag header that applies to Google (a header scoped to another bot doesn't count). Google documents that these also keep the page out of AI Overviews and AI Mode | Remove the directive (or use `max-snippet:-1`); hide a single passage with `data-nosnippet` instead. |
 | `canonical-relative` | D | Canonicals declared as relative URLs | Use an absolute https URL - relative canonicals are error-prone. |
 | `multiple-canonical` | D | More than one rel=canonical on a page | Keep exactly one; conflicting canonicals let Google pick, or ignore both. |
 | `noindex-with-traffic` | D+G | A noindexed page still earning clicks | Remove the noindex if the page should rank - it demonstrably does. |
@@ -46,19 +65,31 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `index-bloat` | D+G | Indexable pages with no impressions in 90 days | Consolidate, improve, or noindex/prune - after confirming it isn't seasonal or new. |
 | `broken-canonical-target` | D | Canonicals pointing at broken, redirecting, noindexed or chained targets | Point the canonical at a live, indexable, self-canonical HTTPS URL. |
 | `soft-404-shell` | D+G | Pages serving 200 that Google flags as soft 404 | Populate the page with real content, or return a true 404/410. |
-| `broken-hreflang-target` | D | hreflang alternates that are 4xx/5xx, redirected or noindex | Point every alternate at a live, indexable URL - one bad alternate drops the whole cluster. |
-| `hreflang-no-return-tag` | D | hreflang annotations the target never reciprocates | Add the return tag - Google ignores one-way hreflang. |
+| `soft-404-handling` | D | The site answers 200 for URLs that don't exist, or redirects them to the homepage or another 200 page. At the end of every crawl two random URLs that can't exist are requested (one at the root, one under the busiest section): one site-level finding. Also each crawled 200 page whose title (any segment around a `|`/`-` separator) or H1 is wholly a not-found message ("404", "Page not found", "Nothing found"...; an article about 404s doesn't match), highest equity first. A probe that was rate limited or got no answer is unknown | Answer 404 (or 410) for unknown URLs, not 200 and not a homepage redirect; on a single-page app, have the server 404 unknown routes. |
+| `canonical-changed-by-js` | D | The rel=canonical in the rendered DOM differs from the raw HTML's: JS added, removed or rewrote it (normalised URLs, so a trailing slash alone doesn't count). Google may use either. Needs `render_pages`; rows rendered before 0.16.0 report the change without both values | Put the final canonical in the server HTML and keep client code off it. |
+| `noindex-changed-by-js` | D | noindex (robots meta, or the X-Robots-Tag header, which holds on both sides) in the raw HTML and not after JS, or the reverse. A raw noindex removed by JS doesn't work: Google can skip rendering a raw-noindex page. Needs `render_pages` rows from 0.16.0 on; older rows report not collected | Decide, and set it server-side with no client-side change. |
+| `host-variant-split` | D | An http/https or www/apex twin of the homepage or of the most-linked deep page answers 200, a temporary redirect (302/307), a chain, or lands on a different URL, instead of one 301/308 to the same path on the canonical host. One finding per page, listing every failing twin in its evidence. At most three requests per crawl; a twin that doesn't resolve is unknown, not a finding; not run for an IP address, localhost or a host with a port | Redirect every twin in one permanent hop at the CDN or server, keeping the path and query. |
+| `broken-hreflang-target` | D | hreflang alternates that are 4xx/5xx, noindex, or a URL that redirected in the latest crawl (from `redirect_sources`; before #55 group C redirecting alternates were skipped). A rate-limited fetch or a legacy stored 429/503 is unknown, not broken; alternates on hosts we didn't crawl are not judged | Point every alternate at a live, indexable URL - one bad alternate drops the whole cluster. |
+| `hreflang-no-return-tag` | D | hreflang annotations a crawled, live, indexable target never reciprocates (x-default is not required to return). Alternates that canonicalise elsewhere, and pages that are themselves canonicalised, are left to `hreflang-canonical-conflict` | Add the return tag - Google ignores one-way hreflang. |
+| `canonical-cross-host` | D | A 200 page whose canonical names a different host (an old domain, staging, a CDN or sister host, a subdomain). The www/apex twin and an http/https switch don't count. Pages with equity (GSC clicks >= 1 or impressions >= 10, a backlink, or an internal link) are listed first | Make the canonical self-referencing on this host, or redirect if the move is real. |
+| `hreflang-invalid-code` | D | hreflang values Google can't read: not `x-default` or a two-letter ISO 639-1 language with an optional ISO 3166-1 alpha-2 region, hyphenated (`en-uk`, `en_US`, `eng`, `es-419`, `en-EU`). Checked against the platform's ICU data; a four-letter script subtag (`zh-Hant`) is accepted | Use codes like `en-GB`, `pt-BR`, `x-default`. |
+| `hreflang-missing-self` | D | A 200 page whose hreflang set doesn't list the page itself | Add the self-referencing annotation to the template. |
+| `hreflang-duplicate-locale` | D | One locale value (case-insensitive) pointing at two different URLs in a page's set; the same URL listed twice is not counted | Keep one URL per locale. |
+| `hreflang-canonical-conflict` | D | A page declaring hreflang that canonicalises elsewhere (Google ignores its annotations), or a crawled 200 alternate that canonicalises elsewhere. Broken, noindex and redirecting alternates are `broken-hreflang-target`'s | Point alternates at canonical URLs and keep every locale page self-canonical. |
 | `sitemap-non-indexable` | D | Sitemaps listing dead, redirected, noindexed or blocked URLs | List only canonical, indexable pages, or Google loses trust in the sitemap. |
 | `indexable-not-in-sitemap` | D | Indexable pages the sitemap omits | Add them so Google discovers and prioritises them. |
 | `image-preview-restricted` | D | max-image-preview capped below large | Set max-image-preview:large - Discover strongly favours it - unless licensing forbids. |
 | `sitemap-lastmod-untrustworthy` | D | lastmod dates that are generator stamps, future-dated, or claim changes that didn't happen | Make lastmod reflect genuine content changes, or drop it - dishonest dates teach Google to ignore yours. |
+| `redirect-to-homepage` | D | A deep URL redirected to the bare homepage, which Google treats as a soft 404. `/index.html`-style aliases and locale roots (`/en`, `/en-au`) don't count; URLs with clicks or links are listed first | Redirect to the closest equivalent page, or let it 404/410. |
+| `product-gone-404` | D+G | A store product (Shopify `/products/`, WooCommerce `/product/`, or Product schema in the earlier snapshot) that answered 200 in an earlier crawl and now answers 404/410, with equity (GSC clicks >= 1 or impressions >= 10 over the history held, a backlink, or an internal link). Ranked by the clicks it earned. A product the latest crawl didn't reach, or a rate-limited fetch, is not reported | 301 to the replacement or parent category; keep an out-of-stock product live at 200 marked OutOfStock. |
 
-## On-page (22)
+## On-page (24)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
 | `missing-title` | D | No title tag | Add a unique, descriptive title (~50-60 chars). |
 | `duplicate-title` | D | The same title on multiple indexable pages | Make each one unique. |
+| `title-changed-by-js` | D | The `<title>` after JS differs from a non-empty raw title, or JS empties it (a title only present after JS is `content-only-in-rendered-dom`). Needs `render_pages` | Render the final title on the server; if the client sets it, make it the same text. |
 | `title-too-long` | D | Titles over ~60 chars | Trim so the primary keyword sits inside the visible length. |
 | `missing-meta-description` | D | No meta description | Add a unique one (~120-155 chars). |
 | `meta-description-length` | D | Meta descriptions over ~160 chars | Tighten so it isn't truncated. |
@@ -67,6 +98,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `multiple-h1` | D | More than one H1 | Use one per page. |
 | `title-h1-mismatch` | D | Title and H1 sharing no significant words | Align them - the mismatch blurs the page's topic signal. |
 | `image-alt` | D | Content images without alt text | Add descriptive alt text (empty alt only for decorative images). |
+| `broken-image` | D | An `<img>` src answering 4xx/5xx, or answering 200 with an HTML page (a redirect to the homepage, a soft 404). From `image_assets`, the 500 most-used images sampled after each crawl | Fix the src or restore the file. |
 | `external-broken` | D (0.9) | Outbound links whose target is dead (4xx/5xx, DNS, timeout, refused, TLS), per linking page. Bot walls (401/403/429, Cloudflare challenges) are "unverifiable" and never counted | Replace or remove each dead link: the current page on that site, a better source, or nothing. |
 | `external-redirected` | D (0.9) | Outbound links that permanently redirect, per linking page; a deep link now landing on the site's homepage is flagged as likely removed | Update each link to its final URL; find a replacement where the target page is gone. |
 | `images-missing-dimensions` | D | Images without width/height attributes | Add them (or CSS aspect-ratio) so the browser reserves space - but confirm with field CLS first; if your CSS already reserves space there's nothing to fix. |
@@ -80,18 +112,19 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `discover-max-image-preview` | D | Article-template pages without `max-image-preview:large` (no large Google Discover card) | Add the directive via meta robots or an X-Robots-Tag header - usually one site-wide template change. |
 | `discover-missing-og` | D | Article-template pages missing `og:title` or `og:image` (Discover builds cards straight from Open Graph) | Add both; size og:image ≥1200px wide at 16:9, and write og:title for click-through. |
 
-## Content (6)
+## Content (7)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
 | `thin-content` | D+N (0.6) | Pages under ~200 words of body text | Expand or consolidate. |
+| `hydration-content-loss` | D | The rendered main content (`<main>` or `[role=main]`, else the body without nav/header/footer/aside) keeps at most 50% of the raw main content's words, where the raw had at least 200. The threshold is ours; Google publishes none. Rows rendered before 0.16.0 use whole-body words, labelled. Needs `render_pages` | Fix the client so it keeps the server's content (look for hydration errors, failed client fetches, a script that replaces the copy). |
 | `near-duplicate-content` | N (0.7) | Pages that are semantically near-identical (local embedding cosine ≥ threshold) | Consolidate to one canonical page or genuinely differentiate them. Populate with `find_duplicates` first; verify each pair before merging. |
 | `poor-chunkability` | D | 400+ words with no heading structure | Break the copy into headed sections - AI search and snippets lift self-contained passages, and a wall of text gives them nothing to quote. |
 | `low-extractability` | D+N (0.5) | Sections that open with "it / this / they" and never name their subject | Open key sections by naming the entity - lifted out of context, these passages read as meaningless. |
 | `content-bloat` | D+N (0.6) | Very long unbroken sections | Split into focused, headed passages - AI grounding has sharp diminishing returns past a certain length, and density beats length. |
 | `ai-slop-signals` | N (0.5) | Copy tripping statistical tells of generic AI text (stock filler, uniform sentence lengths, identical section openers) | Rewrite the flagged sections with specifics only you can supply - and verify by reading first; competent human writing can trip these tells. |
 
-## Structured data (13)
+## Structured data (14)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -105,6 +138,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `rich-result-issues` | D+G | Rich-result issues Google itself reports via URL Inspection | Fix the listed issues - this is Google's own validation, not ours, so it's authoritative. |
 | `article-date-illogical` | D | Article dateModified earlier than datePublished | Fix the dates - an impossible pair undermines trust in the markup. |
 | `article-no-author` | D | Article schema where no Article node names an author (an `@id` reference to a named Person counts) | Add a Person author and a visible byline - AI-search guidance rewards a demonstrable first-hand point of view. |
+| `merchant-listing-incomplete` | N (0.5) | Product markup on a store page missing what [Google's merchant listings](https://developers.google.com/search/docs/appearance/structured-data/merchant-listing) use. Required: `image`, an `Offer` (an `AggregateOffer` alone isn't accepted), `price` and `priceCurrency` (directly or in `priceSpecification`). Recommended: `availability`, `itemCondition`. Store product pages with no offers at all roll up into one site-level finding, because a quote-only product has no price and is not a merchant listing. A review page's Product without offers is skipped | Fix the product template once; ignore it for quote-only products. |
 | `duplicate-article-entities` | D (0.9) | More than one Article entity on one URL, typically an SEO plugin's graph plus a theme- or block-embedded Article | Emit one Article per page: remove the second source or merge it into the graph with the same `@id`. |
 | `discover-generic-article-type` | D+N (0.5) | Article schema using only the generic `Article` type where a more specific one fits | Use `NewsArticle` / `LiveBlogPosting` / `ProfilePage` where it genuinely applies - it unlocks richer Discover/News treatment. |
 | `discover-image-schema` | D | Article schema that declares no `image` (Discover cards need a large image) | Add an `image` (≥1200px wide, ideally 16:9 / 4:3 / 1:1 crops), matching the main visible image. |
@@ -117,7 +151,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `non-https` | D | Pages served over HTTP | Serve over HTTPS and 301 the HTTP version. |
 | `missing-hsts` | D | No Strict-Transport-Security header | Add it with a sensible max-age. |
 
-## Performance (6)
+## Performance (14)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -126,11 +160,19 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `uncompressed-html` | D | HTML served without gzip/brotli | Enable compression - usually a one-line server or CDN setting. |
 | `no-304-revalidation` | D | Servers that advertise Last-Modified/ETag but re-serve full 200s to conditional requests | Configure the server to answer 304 Not Modified - it saves bandwidth on every revalidating crawler and signals stability to Googlebot. |
 | `high-yield-cwv-fail` | D+G | Pages earning real clicks while failing lab Core Web Vitals (needs `page_lighthouse`) | Prioritise CWV work here - this is where engineering effort has measurable ROI. |
+| `crux-field-lcp` | G | Real-user Largest Contentful Paint at p75 over Google's 2.5 s "good" line (poor above 4 s), latest 28-day CrUX window, origin and URL level, phone and desktop separately (needs `sync_crux`) | Use the LCP sub-parts (TTFB, load delay, load duration, render delay) to pick the fix. |
+| `crux-field-inp` | G | Real-user Interaction to Next Paint at p75 over 200 ms (poor above 500 ms) - the field-only Core Web Vital no lab tool measures (needs `sync_crux`) | Break up long tasks, defer third-party scripts, lighten input handlers. |
+| `crux-field-cls` | G | Real-user Cumulative Layout Shift at p75 over 0.1 (poor above 0.25) (needs `sync_crux`) | Give media and ad slots dimensions; reserve space for late content. |
+| `crux-regression` | G | A Core Web Vital whose p75 moved into a worse band (good, needs improvement, poor) between the 4th-newest and the newest CrUX window (needs `sync_crux` history) | Find what shipped when it started and roll it back or fix it. |
 | `discover-slow-response` | D+N (0.5) | Article-template pages whose fetch wall-time exceeds ~600ms (a proxy, not a measured TTFB) | Aim for server response under 600ms - ideal under 200ms - since Discover favours freshly-crawlable content; confirm with a real TTFB before prioritising. |
+| `render-blocking-head-resources` | D | Pages with 1+ parser-blocking `<script src>` in `<head>` (no async, defer or type=module, not a preload hint) or 3+ render-blocking stylesheets (media absent, `all` or `screen`). The stylesheet threshold is ours: 1-2 sheets are the normal floor. Rolled up per identical set of blocking files (one finding per template). Reads `page_resources` (every crawl since 0.15.0); inline scripts and styles aren't counted | `defer` head scripts; inline critical CSS and load the rest without blocking. |
+| `static-asset-uncached` | D | First-party CSS/JS/font files with no Cache-Control, no max-age, no-store/no-cache, or max-age under one day (86,400 s). Third-party files are left out; `Expires` isn't recorded. Needs a crawl with `headResources:true` | Serve hashed static files with a long max-age (a year, plus `immutable`). |
+| `image-oversized` | D | An `<img>` over 300,000 bytes (Content-Length, the dashboard's 300 KB line). The probe sends a browser's image `Accept`, so a CDN that negotiates WebP/AVIF is measured as browsers see it; images sampled by older crawls (no Accept recorded) are not judged until a re-crawl | Resize, compress, serve WebP/AVIF, use `srcset`. |
+| `image-legacy-format` | D | A JPEG/PNG/GIF/BMP `<img>` of 32 KiB to 300 KB. WebP is 25-34% smaller than JPEG (Google's WebP study), so each saves at least the 8 KiB Lighthouse counts; bigger images are `image-oversized`'s. Same Accept rule as above | Convert to WebP/AVIF at build time, or turn on format negotiation at the CDN. |
 
 ## Accessibility (7)
 
-A deterministic subset of the [axe-core](https://github.com/dequelabs/axe-core) rules - the ones decidable from the raw HTML, no render needed (the full rule set rides on `render_pages`). These sit alongside the on-page `image-alt`, `heading-hierarchy` and `missing-lang` checks.
+A deterministic subset of the [axe-core](https://github.com/dequelabs/axe-core) rules - the ones decidable from the raw HTML, no render needed. The rest of axe-core needs a rendered page and isn't run (`render_pages` diffs content and links, not accessibility). These sit alongside the on-page `image-alt`, `heading-hierarchy` and `missing-lang` checks.
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -142,7 +184,7 @@ A deterministic subset of the [axe-core](https://github.com/dequelabs/axe-core) 
 | `a11y-positive-tabindex` | D | Elements with `tabindex` greater than 0 | Use `tabindex="0"`/`-1` and order the DOM instead - positive values break keyboard focus order (axe tabindex). |
 | `image-empty-alt-content` | N (0.5) | Images with `alt=""` inside the main content (main/article/figure, outside nav/header/footer) | Give content images descriptive alt text; keep `alt=""` only for genuinely decorative ones. |
 
-## The merged checks (23)
+## The merged checks (24)
 
 These are the ones that need both datasets - your crawl (what the site says) joined to Search Console (what Google did about it). In my experience this family is where most of the recoverable traffic hides.
 
@@ -154,6 +196,7 @@ These are the ones that need both datasets - your crawl (what the site says) joi
 | `traffic-decay` | G | Pages whose clicks fell sharply against the previous 28 days | Refresh the content and check for lost rankings. |
 | `lost-queries` | G | Queries that drove clicks last period and drive none now | Find the page that ranked and win it back. |
 | `position-slipping` | G | Page-1 rankings that worsened by 3+ positions | Investigate before the clicks follow the position down. |
+| `nonbrand-decline-masked` | G | Total clicks flat or up (no more than 5% down) while non-brand clicks fell more than 15% on the prior 28 days (finalised days, prior non-brand at least 100 clicks). Brand = whole-token match of the domain label, the same heuristic as the dashboard's branded split, named in the evidence; a day holding both GSC row shapes is counted once | Brand demand is hiding a ranking loss - work through traffic-decay, lost-queries and position-slipping. |
 | `rising-pages` | G | Pages gaining clicks fast | Reinforce with internal links and related content while the momentum is there. |
 | `stale-content` | D+G | Pages unmodified for over a year with clicks down year-on-year | Refresh and expand it, and re-date only once the content has changed. |
 | `traffic-to-dead-url` | D+G | Google still sending traffic to a URL that returns 4xx/5xx | Recover the page or 301 it - you rank for a page that no longer works. |

@@ -99,7 +99,7 @@ export function triage404s(db: Database.Database, opts: TriageOptions = {}): Tri
   const q = {
     links: db.prepare(`SELECT COUNT(DISTINCT source_key) n FROM links WHERE target_key=? AND is_internal=1`),
     sitemap: db.prepare(`SELECT 1 FROM sitemap_urls WHERE url_key=? LIMIT 1`),
-    gsc: db.prepare(`SELECT COALESCE(SUM(clicks),0) c, COALESCE(SUM(impressions),0) i, MAX(CASE WHEN impressions>0 THEN date END) last FROM search_analytics WHERE page_key=?`),
+    gsc: db.prepare(`SELECT COALESCE(SUM(clicks),0) c, COALESCE(SUM(impressions),0) i, MAX(CASE WHEN impressions>0 THEN date END) last FROM gsc_rows WHERE page_key=?`),
     bl: db.prepare(`SELECT backlinks, referring_domains FROM page_backlinks WHERE url_key=?`),
   };
   const safe = <T>(f: () => T, d: T): T => { try { return f(); } catch { return d; } }; // tables absent on a crawl-only DB

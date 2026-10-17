@@ -25,7 +25,7 @@ you  › run an SEO audit on mysite.com
      ⣾ search console  1.8M rows synced (19s - incremental)
      ⣾ crawl           868 pages · HTTP/2 · robots-polite · 8 parallel
      ⣾ link graph      internal PageRank · click depth · in-degree
-     ✓ 111 checks · 220 findings · ranked by expected clicks per dev-hour
+     ✓ 143 checks · 220 findings · ranked by expected clicks per dev-hour
 
      #1  CTR far below position-expected     /pricing                   XL
      #2  Page losing clicks (trend)          site-wide                  XL
@@ -35,7 +35,7 @@ you  › run an SEO audit on mysite.com
 you  › generate the fix for #1 ▍
 ```
 
-[![The dashboard overview - the KPI strip with the Site Health Score, search performance over time, findings by priority, crawl health and the site-network preview](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/dashboard-overview.png)](https://github.com/houtini-ai/seo-audit)
+[![The Summary tab - data freshness, a one-line verdict, the headline tiles, 16 months of clicks, health per audit, what's broken and what to fix first, what changed since the last crawl, AI search and data coverage](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/dashboard-summary.png)](https://github.com/houtini-ai/seo-audit)
 
 [![The Network tab - the site-network map of your internal link skeleton, equity vs traffic by template, and the folder-to-folder equity flow](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/network.png)](https://github.com/houtini-ai/seo-audit)
 
@@ -52,22 +52,48 @@ It's on npm, so there's nothing to clone or build. You need Node.js 20 or newer 
       "command": "npx",
       "args": ["-y", "@houtini/seo-audit-console"],
       "env": {
-        "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json"
+        "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json",
+        "DATAFORSEO_USERNAME": "",
+        "DATAFORSEO_PASSWORD": "",
+        "MAJESTIC_API_KEY": "",
+        "CRUX_API_KEY": ""
       }
     }
   }
 }
 ```
 
-**Claude Code** - one command:
+The first line is required. The others are optional: paste your key between the quotes, or **leave them empty to switch the tier off**. DataForSEO and Majestic are paid tiers; `CRUX_API_KEY` is field Core Web Vitals from a free Google API key restricted to the Chrome UX Report API. Empty means off. Template text such as `your-key-here`, `<your key>` or `changeme` is treated as empty too, and the server's log says so in one line (e.g. `MAJESTIC_API_KEY looks like a placeholder; Majestic tier disabled.`), so a tier you expected that stays off is worth a look at the log.
+
+**Claude Code** - one command (add `--env DATAFORSEO_USERNAME=…` and the others the same way if you use them):
 
 ```bash
 claude mcp add seo-audit-console --env GOOGLE_APPLICATION_CREDENTIALS=C:/path/to/service-account.json -- npx -y @houtini/seo-audit-console
 ```
 
-That one env var is the whole core audit. The step everyone misses: the JSON key belongs to a Google Cloud service account, and that account's email has to be **added as a user on your property** in Search Console, or the tool can't see any of your data. [Getting started](manual/getting-started.md) walks through it with screenshots, plus the one-click Claude Desktop extension and the build-from-source route.
+`GOOGLE_APPLICATION_CREDENTIALS` alone is the whole core audit. The step everyone misses: the JSON key belongs to a Google Cloud service account, and that account's email has to be **added as a user on your property** in Search Console, or the tool can't see any of your data. [Getting started](manual/getting-started.md) walks through it with screenshots, plus the one-click Claude Desktop extension and the build-from-source route.
 
 Then ask Claude: *"list properties"*, *"refresh mysite.com"*, *"run an SEO audit"*.
+
+## Opening the dashboard
+
+Once a property has been refreshed or audited, there are three ways to see it:
+
+| You want | Ask Claude | What you get |
+|---|---|---|
+| A quick look in the chat | *"show me the dashboard for mysite.com"* | The dashboard drawn inside the conversation (`get_dashboard`) |
+| The full dashboard in your browser | *"open the dashboard for mysite.com"* | A link such as `http://127.0.0.1:53817/dashboard?siteUrl=…` (`open_dashboard`). Click it. It reads the local database live, so reload after each refresh |
+| Something to send a client | *"export the report for mysite.com"* | One self-contained HTML file (`export_report`) |
+
+You often don't need to ask: when a refresh, crawl, sync or audit finishes, the reply says the dashboard is updated and includes the browser link. The link is local to your machine (it only answers on `127.0.0.1`), and the port changes each time the server starts, so use the link from the latest reply. Add `&theme=dark` for dark mode, or `&redact=1` to blur the numbers for a screenshot.
+
+**Running it under Docker or the Docker MCP gateway?** The browser link points at a port inside the container, which your browser can't reach. Run the dashboard as its own small container on a fixed port instead, on the same data volume:
+
+```bash
+docker run -d --name seo-audit-dashboard --restart unless-stopped -p 127.0.0.1:8788:8788 -e SAC_DATA_DIR=/data -e SAC_DASHBOARD_BIND=0.0.0.0 -e SAC_DASHBOARD_PORT=8788 -v seo-audit-data:/data node:22-slim npx -y -p @houtini/seo-audit-console seo-audit-dashboard
+```
+
+Then open `http://127.0.0.1:8788/dashboard?siteUrl=sc-domain:mysite.com`. Use the volume name your MCP server writes to. In Git Bash on Windows, put `MSYS_NO_PATHCONV=1` in front of the command so `/data` isn't rewritten as a Windows path. More in [dashboard.md](manual/dashboard.md).
 
 ## The manual
 
@@ -77,13 +103,13 @@ This README is the story and the quick start. The detail lives in the manual:
 |---|---|
 | [Getting started](manual/getting-started.md) | Install, the GSC service-account setup (and the step everyone misses), Claude Desktop and Claude Code config, your first audit, troubleshooting |
 | [Tool reference](manual/tools.md) | Every tool: what it does, inputs, joins, an example prompt |
-| [The check registry](manual/checks.md) | All 111 checks with what each catches, its D/N label, and the fix |
-| [Composition](manual/composition.md) | The join keys, the grains, and thirteen worked recipes for asking your own questions across the data |
+| [The check registry](manual/checks.md) | All 143 checks with what each catches, its D/N label, and the fix |
+| [Composition](manual/composition.md) | The join keys, the grains, and fourteen recipes for asking your own questions across the data |
 | [Competitive analysis](manual/competitive.md) | The Semrush-replacement workflows, DataForSEO setup, link intersect with the Majestic Trust Flow tier, and the real costs |
 | [SEO Recon](manual/recon.md) | Why a page is losing: the live SERP + AI-Overview citation verdict, the competitor diff, and the trackable to-do ledger |
 | [DataForSEO functions](manual/dataforseo.md) | Every DataForSEO-backed tool grouped by API module - Keywords, SERP, Labs, Backlinks, OnPage - each with its endpoint and cost |
-| [Majestic functions](manual/majestic.md) | The optional Trust Flow tier - what it adds and how `link_intersect` uses it |
-| [Dashboard & reports](manual/dashboard.md) | The eight tabs, what each chart shows, and the shareable export |
+| [Majestic functions](manual/majestic.md) | The optional Trust Flow tier - what it adds, and how `link_intersect` and `pull_backlinks` use it |
+| [Dashboard & reports](manual/dashboard.md) | The eight tabs, what each chart shows, the browser dashboard (and its standalone version for Docker), and the shareable export |
 
 ## Surprisingly little has changed in twenty years
 
@@ -115,17 +141,18 @@ Yes. The crawl-plus-GSC merge is not a novelty; it's the method. On one property
 
 ## What the audit checks
 
-`run_audit` executes **111 checks** over the joined data and returns a ranked list - not a wall of everything, a priority order with the traffic at stake attached to each finding. The families, briefly:
+`run_audit` executes **143 checks** over the joined data and returns a ranked list - not a wall of everything, a priority order with the traffic at stake attached to each finding. The families, briefly:
 
 | Family | What it catches |
 |---|---|
-| **Crawlability & indexation** | Broken links, redirect chains, orphans, index bloat, spider-traps, robots-blocked pages still earning traffic, and the *reason* every URL isn't indexable |
-| **On-page & structured data** | Titles, metas, H1s, alt text - plus a local validator covering ~30 rich-result types, required fields only, so it never nags about properties Google ignores |
+| **Crawlability & indexation** | Broken links, redirect hygiene (chains, loops, temporary redirects carrying equity, redirects onto non-indexable pages or the homepage, live pages removed without a redirect), URLs that don't exist answering 200 (soft-404 setup) and http/https or www/apex twins not redirected in one 301, orphans, index bloat, spider-traps, robots-blocked pages still earning traffic, canonicals that hand indexing to another host, hreflang that Google would ignore (invalid codes, no self-reference, duplicate locales, canonical conflicts), and the *reason* every URL isn't indexable |
+| **On-page & structured data** | Titles, metas, H1s, alt text - plus a local validator covering ~30 rich-result types, required fields only, so it never nags about properties Google ignores. For stores: product pages that went from 200 to 404, and Product markup missing what merchant listings need |
+| **Page weight & assets** | What every page loads, from the crawl: CSS, JavaScript and font files that return errors, render-blocking scripts and stylesheets in `<head>`, static files with no cache lifetime, broken images, images over 300 KB and JPEG/PNG where WebP would be smaller (measured as a browser is served them). Real-user Core Web Vitals come from CrUX |
 | **Trends (GSC over time)** | Pages losing clicks, rankings slipping, vanished queries, rising pages worth doubling down on, stale content decaying year-on-year |
 | **The merged questions** | Cannibalisation, striking distance, ghost pages, traffic to dead URLs, internal authority wasted on no-click pages, titles missing the query you already rank for |
 | **AI-search readiness** | Phrases you rank for but never say, queries your copy never answers in one passage, content that doesn't chunk cleanly for retrieval |
 | **Accessibility** | A deterministic subset of the axe-core rules read straight from the HTML - links and buttons with no accessible name, unlabelled form fields, pinch-zoom disabled, positive tabindex, duplicate ids - alongside alt text, heading order and missing `lang` |
-| **JavaScript rendering & duplication** | On demand: *Response vs Render* (`render_pages`) crawls each page in headless Chromium and flags content and links that exist only after JavaScript, and semantic near-duplicate detection (`find_duplicates`) finds pages that say the same thing - both run locally, no API cost |
+| **JavaScript rendering & duplication** | On demand: *Response vs Render* (`render_pages`) crawls each page in headless Chromium and flags content and links that exist only after JavaScript, and what JavaScript changes (canonical, title, noindex in either direction, server-rendered copy it removes), and semantic near-duplicate detection (`find_duplicates`) finds pages that say the same thing - both run locally, no API cost |
 
 Every check is labelled **D** (deterministic - here are the bytes) or **N** (judgement - off by default, ask for *"the judgement findings"* to see them). In my view a wrong finding is worse than no finding at all, so the heuristic checks have to ask permission. The full registry, check by check, is in [the manual](manual/checks.md).
 
@@ -143,7 +170,13 @@ The crawl is where audits usually go wrong, so it's worth understanding what thi
 
 **It refuses to be fooled.** A redirect that leaves your site (Shopify OAuth flows, I'm looking at you) is recorded as a redirect-out, never stored as a page. It always uses GET rather than HEAD, because a HEAD request can return a different status than the real request would - but it abandons the body for images, PDFs and assets, so it records status and size without downloading the bytes.
 
-**It's quick without being rude.** HTTP/2 where your origin supports it, gzip and brotli negotiated, keep-alive connections reused. The speed comes from efficiency, not from hammering your server. It respects robots.txt properly (a bot-specific group replaces `*`, per the spec, which plenty of commercial crawlers get wrong), backs off when your host rate-limits, and skips the junk: internal search, faceted filter combinations, login flows. This is a crawler for sites you own. Being a good guest is the point.
+**It's quick without being rude.** HTTP/2 where your origin supports it, gzip and brotli negotiated, keep-alive connections reused. The speed comes from efficiency, not from hammering your server. It respects robots.txt properly (a bot-specific group replaces `*`, per the spec, which plenty of commercial crawlers get wrong), and skips the junk: internal search, faceted filter combinations, login flows. This is a crawler for sites you own. Being a good guest is the point.
+
+**It slows down when your host asks it to.** A 429 (or a 503 with `Retry-After`) halves the crawl's concurrency, waits out the `Retry-After`, and puts the URL at the back of the queue for two more tries; clean responses add workers back. Shopify stores are spotted from their headers and start gently. A URL still rate limited at the end is stored as *rate limited* with no status, never as a broken page, and the crawl status tells you how many.
+
+**It tests what a crawl can't find on its own.** Each crawl ends with up to five site probes: two URLs that can't exist (does the site answer 404, or 200 and a soft-404?) and the http/https and www/apex twins of the homepage and a deep page (one 301 to the canonical host, or a split?). It also records what every page loads - stylesheets, scripts, fonts, images, first or third party, in the head or the body - without downloading any of it; `headResources:true` adds a header-only pass for their status, size and caching.
+
+**It says what it didn't measure.** A check whose data was never collected - the asset checks before a `headResources` crawl, the render checks before `render_pages`, field Core Web Vitals before `sync_crux` - is listed in the audit as *not collected*, with the step that collects it. An empty table never reads as a clean bill of health.
 
 After the crawl it computes a real link graph: internal PageRank with nav and footer links down-weighted, click depth from the homepage counting body links only, in-degree per page. That graph powers the orphan, equity-leak and underlinked-page checks - and the donor rankings when the tool suggests internal links.
 
@@ -157,7 +190,7 @@ Each of these is a real procedure I use, and each is one prompt. The expanded ve
 
 1. **Your first audit.** *"Refresh sc-domain:mysite.com"*, then *"Run an SEO audit on mysite.com"*. Twenty minutes on a mid-size site, and the top five findings are usually worth more than the other eighty-five combined. Then *"generate the fix for #1"*. → [getting-started.md](manual/getting-started.md)
 2. **Sitewide keyword optimisation.** The question isn't "what keywords should I target?" - it's "where does my copy fail to say what I already rank for?" *"Score the passages on mysite.com"* runs a small local relevance model over every ranking page; *"draft the missing content for /page"* writes the fix in your site's own voice, grounded so it invents nothing. → [tools.md](manual/tools.md#ai-search-readiness)
-3. **Cannibalisation.** *"Show me the cannibalisation findings with evidence"* - thresholds tuned so incidental long-tail overlap doesn't count, so the consolidate-or-differentiate call is made on numbers. → [checks.md](manual/checks.md#the-merged-checks-23)
+3. **Cannibalisation.** *"Show me the cannibalisation findings with evidence"* - thresholds tuned so incidental long-tail overlap doesn't count, so the consolidate-or-differentiate call is made on numbers. → [checks.md](manual/checks.md#the-merged-checks-24)
 4. **The content plan.** *"Suggest new pages for mysite.com"* mines demand Google already shows you; *"what topics should mysite.com cover?"* maps the demand it doesn't. Together: a quarter's plan. → [competitive.md](manual/competitive.md)
 5. **The template play.** *"List the page templates"* - big sites aren't 50,000 pages, they're a dozen templates repeated, and one template fix corrects the whole cluster. → [tools.md](manual/tools.md#list_templates)
 6. **Monitoring and migrations.** *"Detect changes on mysite.com"* diffs your two most recent crawls by severity. During a migration this is the difference between catching a stray noindex on Tuesday and explaining a traffic graph in a board meeting three weeks later. I've been on the wrong end of that one. → [tools.md](manual/tools.md#monitoring)
@@ -166,7 +199,7 @@ Each of these is a real procedure I use, and each is one prompt. The expanded ve
 9. **Reporting.** *"Show me the dashboard"* in the chat, *"serve the dashboard"* for the live version in your browser, or *"export the report"* as one self-contained HTML file you can send a client. → [dashboard.md](manual/dashboard.md)
 10. **The content opportunity report.** If you write for a living, this is your page one: *"Content opportunities for mysite.com"* returns what to WRITE next (demand you already earn impressions for with no winning page), what to REFRESH (pages bleeding clicks), which SNIPPETS to rewrite (ranking well, under-clicked), and which clusters to STRENGTHEN (position 4-20, one push from the money). Every row traces to your own Search Console data - no invented keyword ideas - and *"draft the brief for row 1"* turns any of them into a grounded outline. → [competitive.md](manual/competitive.md)
 11. **Market Sizing and Prioritisation.** *"Size the market: mysite.com vs rival1.com and rival2.com"* - the keyword universe, total monthly demand, and share of voice per topic cluster, from one cached call per domain. The engagement-opening read that used to need a Semrush subscription. → [competitive.md](manual/competitive.md)
-12. **Content recon - why is this page losing?** *"Run content recon on mysite.com"* takes your worst declining pages, pulls the live Google SERP for each, and reads whether the **AI Overview** cites you. The verdict is the honest bit: *rank but not cited* is a data-accuracy or freshness problem, not a rewrite. It reads the reachable competitors with a free browser-profile fetch (one that even gets Reddit), lists the ranking videos for you to watch, and writes the gaps into a tracked to-do board you can annotate and re-measure. → [recon.md](manual/recon.md)
+12. **Content recon - why is this page losing?** *"Run content recon on mysite.com"* takes your highest-impression pages sitting at positions 3-15 (the ones a push could move), pulls the live Google SERP for each, and reads whether the **AI Overview** cites you. The verdict is the honest bit: *rank but not cited* is a data-accuracy or freshness problem, not a rewrite. It reads the reachable competitors with a free browser-profile fetch (Reddit through its own JSON), lists the ranking videos for you to watch, and writes the gaps into a tracked to-do board you can annotate and re-measure. → [recon.md](manual/recon.md)
 13. **Link prospecting, sorted by authority that's real.** *"Link intersect for mysite.com vs rival1.com, rival2.com"* returns the domains linking to your rivals and not to you - the outreach list, followed-first and spam-filtered. Add a **Majestic** key and it re-sorts on **Trust Flow** and shows each prospect's **Topical Trust Flow**, so the directories drop out and what's left is authority that's on your topic. → [Majestic, below](#link-intersect-and-the-majestic-trust-flow-tier)
 
 [![The Search performance tab - branded vs non-branded, ranking distribution over time (impressions by position bucket) and search visibility over time](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/search-performance.png)](https://github.com/houtini-ai/seo-audit)
@@ -177,9 +210,9 @@ Each of these is a real procedure I use, and each is one prompt. The expanded ve
 
 ## What DataForSEO adds (and what it costs)
 
-Everything above works with just your Search Console data. But GSC can only describe searches where you already appear. The moment your question is "how big is this market?" or "what do competitors rank for that I don't?", you need third-party data - and that's [DataForSEO](https://dataforseo.com/?aff=213701): a pay-as-you-go API for volumes, live rankings, competitor data and Lighthouse runs. No subscription; calls cost fractions of a cent to a few cents, cached for 7 days, and only ever run when you ask. My own usage runs to a few dollars a month.
+Everything above works with just your Search Console data. But GSC can only describe searches where you already appear. The moment your question is "how big is this market?" or "what do competitors rank for that I don't?", you need third-party data - and that's [DataForSEO](https://dataforseo.com/?aff=213701): a pay-as-you-go API for volumes, live rankings, competitor data and Lighthouse runs. No subscription; calls cost fractions of a cent to a few cents, cached for 20 days, and only ever run when you ask. My own usage runs to a few dollars a month.
 
-It unlocks the Semrush-replacement layer: the organic visibility overview for any domain, any site's top pages and ranked keywords (including which keywords cite a site in **AI Overviews**), the content gap, topic gaps, search intent, lab Core Web Vitals and backlinks. It also drives **content recon** - `recon_targets` pulls the live Google SERP for a losing page, reads whether the AI Overview cites you, and tells you *why* you're behind. The full workflows and setup: [competitive.md](manual/competitive.md).
+It unlocks the Semrush-replacement layer: the organic visibility overview for any domain, any site's top pages and ranked keywords (including which of them show an **AI Overview**), the content gap, topic gaps, search intent, lab Core Web Vitals and backlinks. It also drives **content recon** - `recon_targets` pulls the live Google SERP for a losing page, reads whether the AI Overview cites you, and tells you *why* you're behind. The full workflows and setup: [competitive.md](manual/competitive.md).
 
 One more thing DataForSEO unlocks gets a section of its own, because the link work has a second, optional service behind it.
 
@@ -215,7 +248,7 @@ The tier is careful with your allowance: enrichment is batched 100 domains per c
 
 Optional, and I mean optional: with no key, `link_intersect` still runs and still sorts followed-first by domain trust. Majestic is what turns "here are 100 domains" into "here are the 20 worth an email, and here's why". Grab a key on their [plans and pricing](https://majestic.com/plans-pricing) page; the full workflow is in [competitive.md](manual/competitive.md#link-intersect-link_intersect).
 
-> Trust Flow and Topical Trust Flow are trademarks of [Majestic](https://majestic.com) (Majestic-12 Ltd). This tier calls the Majestic API with your own key, only when you run `link_intersect`, and nothing else in the tool touches it.
+> Trust Flow and Topical Trust Flow are trademarks of [Majestic](https://majestic.com) (Majestic-12 Ltd). This tier calls the Majestic API with your own key, only when you run `link_intersect` or `pull_backlinks` (which adds Trust Flow to your own backlinked pages for the dashboard's Trapped authority report), and nothing else in the tool touches it.
 
 ---
 
@@ -227,7 +260,7 @@ Three steps - the [quick start](#quick-start) above is the short version, and th
 2. **Connect Search Console:** create a Google Cloud service account, download its JSON key, and - the step everyone misses - **add the service account's email as a user on your property** in Search Console. Prefer a walkthrough with pictures? [Setting it up from scratch](https://houtini.com/articles/better-search-console/#setting-it-up-from-scratch) covers the whole flow.
 3. **Point your MCP client at it** with `GOOGLE_APPLICATION_CREDENTIALS` set: `npx -y @houtini/seo-audit-console` for the published package, or `node /path/to/seo-audit-console/dist/index.js` if you built from source. Works in Claude Desktop and Claude Code; only the one env var is required.
 
-Every environment variable the server reads, in one block - the first is required and everything below it is optional, so delete the lines for services you don't use:
+Every environment variable the server reads, in one block. The first is required and everything below it is optional: fill in the ones you use and leave the rest as empty strings (or delete them). An empty value switches that service off, and so does leftover template text such as `your-key-here` (with one line in the server's log saying so).
 
 ```json
 {
@@ -237,12 +270,13 @@ Every environment variable the server reads, in one block - the first is require
       "args": ["-y", "@houtini/seo-audit-console"],
       "env": {
         "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json",
-        "SAC_DATA_DIR": "C:/path/to/where/audits/are/stored",
-        "DATAFORSEO_USERNAME": "you@example.com",
-        "DATAFORSEO_PASSWORD": "your-dataforseo-password",
+        "SAC_DATA_DIR": "",
+        "DATAFORSEO_USERNAME": "",
+        "DATAFORSEO_PASSWORD": "",
         "DATAFORSEO_CACHE_DAYS": "20",
-        "MAJESTIC_API_KEY": "your-majestic-api-key",
-        "MAJESTIC_CACHE_DAYS": "30"
+        "MAJESTIC_API_KEY": "",
+        "MAJESTIC_CACHE_DAYS": "30",
+        "CRUX_API_KEY": ""
       }
     }
   }
@@ -251,22 +285,55 @@ Every environment variable the server reads, in one block - the first is require
 
 Built from source instead? Swap the two launch lines for `"command": "node"` and `"args": ["C:/path/to/seo-audit-console/dist/index.js"]`; the `env` block is identical.
 
-`GOOGLE_APPLICATION_CREDENTIALS` gets you the whole core audit. DataForSEO adds the market layer, and `MAJESTIC_API_KEY` adds the Trust Flow re-sort to `link_intersect`. Line-by-line, including the two advanced ones you'll probably never need: [getting-started.md](manual/getting-started.md#environment-variables).
+`GOOGLE_APPLICATION_CREDENTIALS` gets you the whole core audit. DataForSEO adds the market layer, `MAJESTIC_API_KEY` adds the Trust Flow re-sort to `link_intersect`, and `CRUX_API_KEY` (optional: field Core Web Vitals, a free Google API key restricted to the Chrome UX Report API) adds real-user LCP, INP and CLS. Line-by-line, including the advanced ones you'll probably never need (the reranker device, the Majestic sandbox host, and the dashboard server's bind, port and auto-start): [getting-started.md](manual/getting-started.md#environment-variables).
 
 Then: *"list properties"* to check it's connected, *"refresh"*, *"run an SEO audit"*.
 
+### Upgrading to 0.16.0
+
+0.16.0 changes how Search Console rows are stored. The device and country rows a `segments:true` sync pulls now live in their own table (`search_analytics_segments`), and `search_analytics` holds only the all-country totals, so no total can count a day twice. Nothing to do by hand, but know what the first sync after upgrading does to a database that held both shapes:
+
+- **It backs the database up first**, to `<database>.bak-<date-time>` beside it. The backup is a full copy, so a 5 GB database leaves a 5 GB `.bak` file.
+- **It checks free disk before it starts**: room for the backup, plus half the database again, plus 256 MB. Without that room the migration waits: the sync still runs in the old layout (totals stay correct, because the views count each day once), the reply says "storage migration deferred: needs N GB free", nothing is moved, and it migrates on a later sync once there's space.
+- **Then it moves the rows**, a batch of days at a time. On a 5.5 GB database that took under three and a half minutes, backup included. If it's interrupted it carries on from where it stopped on the next sync, and the numbers read correctly throughout.
+- **Afterwards, reclaim the space.** The database file keeps its size until it's compacted: ask *"vacuum the mysite.com database"* (`data_storage`, `prune` with `vacuum`). On the 5.5 GB test database that took it to 4.4 GB. Once you're happy with the numbers, delete the `.bak` file yourself; nothing deletes it for you.
+
+A database that only ever held one shape (most do: a sync without `segments`) is marked as migrated on first open, with no backup and no move. The [changelog](CHANGELOG.md) has the rest of the release.
+
 ### Docker and the Docker MCP gateway
 
-Crawls, syncs and refreshes run as background jobs: the tool returns a job id at once and the work carries on inside the server process while you poll `check_crawl_status`. So the process has to stay alive between calls.
+Crawls, syncs and refreshes run as background jobs: the tool returns a job id at once and the work carries on while you poll `check_crawl_status`. Run normally (npx, or `node dist/index.js` from Claude Desktop), the server process is long-lived and does that work itself. Nothing below applies.
 
-The Docker MCP gateway, by default, starts a fresh container for each tool call and removes it afterwards. The job dies with that container. To keep the server alive:
+The Docker MCP gateway is different. It runs the server in a worker container per client connection, and it replaces workers freely: on disconnect, on a router recreate, when it reaps idle ones. A job running inside a worker dies with it. The fix is to move the work out of the worker into one long-running **job runner** container that the gateway never touches:
 
-- set `longLived: true` on this server's entry in your gateway catalog, or start the gateway with `--long-lived`;
-- mount named volumes for the data directory and the credentials, so audits and the job list survive a container restart: for example `-v seo-audit-data:/data -e SAC_DATA_DIR=/data` and `-v seo-audit-creds:/creds:ro -e GOOGLE_APPLICATION_CREDENTIALS=/creds/service-account.json`.
+- the MCP server, started with `SAC_JOB_RUNNER=external`, only queues each job in `_jobs.db` in the data directory and reads its status;
+- the runner (`seo-audit-runner`, in the same npm package) claims queued jobs, runs them and writes progress back to the same database.
 
-Plain `docker run -i --rm` with those volumes works too: it is one long-lived stdio process for the whole session.
+The workers become disposable: recreate the router mid-crawl and the crawl carries on in the runner.
 
-Jobs are also recorded in `_jobs.db` in the data directory. If the process running a job exits before it finishes, the job reads as `interrupted` (with this advice) rather than disappearing, and a finished job's result can still be read after a restart.
+**1. Start the runner** on the same data volume, with the same credentials as the gateway's catalog entry:
+
+```bash
+docker run -d --init --name seo-audit-runner --restart unless-stopped \
+  -v mcp-sac-data:/data -v mcp-sac-creds:/creds:ro \
+  -e SAC_DATA_DIR=/data -e GOOGLE_APPLICATION_CREDENTIALS=/creds/gsc.json \
+  -e DATAFORSEO_USERNAME -e DATAFORSEO_PASSWORD -e MAJESTIC_API_KEY -e CRUX_API_KEY \
+  node:22-slim npx -y -p @houtini/seo-audit-console seo-audit-runner
+```
+
+The four `-e NAME` flags with no value pass those variables through from your shell, so the keys stay out of the command line; leave out any you don't use. On Windows in Git Bash, prefix the command with `MSYS_NO_PATHCONV=1`, otherwise MSYS rewrites `/data` and `/creds` into Windows paths (PowerShell doesn't need it). `--init` makes `docker stop` reach the runner as a clean SIGTERM. The first start takes about a minute while npx installs the package; `docker logs seo-audit-runner` shows it start and every job it claims.
+
+**2. Switch the gateway to queueing.** Add `SAC_JOB_RUNNER=external` to the env of this server's catalog entry, and remove `longLived: true` (it was only ever a stopgap for this).
+
+**What you'll see.** A job reads `queued: waiting for the job runner` until the runner picks it up, then `running` as before. If a job stays queued for over a minute and no runner has checked in, the status says so and prints the `docker run` line above. After about two minutes with no runner heartbeat it reads `queued (no runner)` and no longer blocks `data_storage` prune or repair; it stays listed until the usual one-day prune. One runner runs one job at a time by default; set `SAC_RUNNER_CONCURRENCY` to run more, though two jobs for the same property never run at once. To update, recreate the runner container (`docker rm -f seo-audit-runner`, then the `docker run` line again, so npx installs the new release; a plain `docker restart` can keep running the copy npx already installed in the container). Keep the runner and the gateway on the same release: pin `@houtini/seo-audit-console@<version>` in both if you want updates to be deliberate. A job running when the runner stops is recorded as `interrupted`, so re-run it.
+
+**Without the runner,** the older options still work: `longLived: true` on the catalog entry (or `--long-lived` on the gateway), or plain `docker run -i --rm` with the volumes mounted, which is one long-lived stdio process for the session. Either way, mount named volumes for the data directory and the credentials (for example `-v seo-audit-data:/data -e SAC_DATA_DIR=/data` and `-v seo-audit-creds:/creds:ro -e GOOGLE_APPLICATION_CREDENTIALS=/creds/service-account.json`) so audits and the job list survive a restart.
+
+There's no published image for the server itself: build one from this repo's `Dockerfile` (`docker build -t seo-audit-console .`). Its entrypoint is `node dist/index.js`, the stdio server.
+
+Every job is recorded in `_jobs.db` in the data directory. If the process running a job exits before it finishes, the job reads as `interrupted` with the reason rather than disappearing, and a finished job's result can still be read after a restart.
+
+The gateway doesn't publish the server container's ports, so the browser dashboard the server starts after a job isn't reachable from your machine. `get_dashboard` still renders it in chat, and for a browser tab you can run the standalone dashboard, `seo-audit-dashboard`, as a second container on the same data volume with a published port. The command is in [dashboard.md](manual/dashboard.md#in-your-browser).
 
 ---
 
@@ -276,8 +343,8 @@ The one-line version - full descriptions, inputs and example prompts for every t
 
 | Tool | What it does |
 |---|---|
-| `refresh_property` | Sync GSC + crawl + inspect + rank history, one job |
-| `sync_gsc` · `start_crawl` · `inspect_urls` · `track_ranks` | Run a single part on its own |
+| `refresh_property` | Sync GSC + crawl + inspect + rank history + CrUX field data, one job |
+| `sync_gsc` · `start_crawl` · `inspect_urls` · `track_ranks` · `sync_crux` | Run a single part on its own (`sync_crux`: real-user Core Web Vitals from the Chrome UX Report, free with a `CRUX_API_KEY`) |
 | `check_sync_status` · `check_crawl_status` | Watch a long job's progress |
 | `run_audit` · `query_audit` · `list_checks` | The scored audit · one check with evidence · the catalogue |
 | `query_data` | Read-only queries over the raw tables - aggregates in the database, answers not rows |
@@ -288,11 +355,12 @@ The one-line version - full descriptions, inputs and example prompts for every t
 | `check_agent_readiness` | 0-100 AI-agent readiness score with copy-paste fixes |
 | `list_templates` · `suggest_pages` | Template clusters · new-page ideas from real demand |
 | `score_passages` · `draft_content` | Local relevance scoring · grounded writing briefs |
+| `find_duplicates` · `render_pages` | Semantic near-duplicate pages (local model) · Response vs Render in headless Chromium (optional Playwright) |
 | `resolve_entities` | Wikidata entities and the link gaps between them |
 | `keyword_volume` · `related_terms` · `search_intent` | DataForSEO keyword data |
 | `youtube_discovery` · `news_discovery` · `topic_trend` · `trend_categories` | Content research: the videos ranking for a topic (pair with a transcript tool) · recent news coverage / freshness · Google Trends interest-over-time for keywords, a whole category, or a term inside one (rising / falling / seasonal, plus breakout topics and queries) · free lookup of the Trends category codes |
 | `competitors_domain` · `page_intersection` · `topic_gaps` | Competitors · content gap · topic gaps |
-| `domain_visibility` · `top_pages` · `ranked_keywords` | The Semrush-style views, any domain (+ `aioOnly` for AI Overview citations) |
+| `domain_visibility` · `top_pages` · `ranked_keywords` | The Semrush-style views, any domain (+ `aioOnly` for the keywords that show an AI Overview) |
 | `page_lighthouse` · `pull_backlinks` | Lab CWV · backlink profile with live status |
 | `link_intersect` | The links your competitors have that you don't - a prioritised outreach list (followed-first, sorted by domain trust; optional Majestic Trust Flow re-sort kills directory noise) |
 | `market_sizing` · `serp_features` | Share of voice vs named competitors · AI-Overview / snippet / video exposure by volume |
@@ -301,7 +369,7 @@ The one-line version - full descriptions, inputs and example prompts for every t
 | `get_dashboard` · `serve_dashboard` · `export_report` | In-chat dashboard · the same in a local browser tab · shareable HTML |
 | `get_dashboard_data` | Internal: the dashboard widget fetches its data through this; not for direct use |
 | `composition_cookbook` | The data-surface map and recipes for bespoke analyses |
-| `data_storage` | Per-property disk usage and row counts, with confirm-gated pruning |
+| `data_storage` | Per-property disk usage and row counts, confirm-gated pruning, and an integrity check with index repair |
 | `normalize_url` · `data_location` · `list_properties` · `seo_audit_help` | Utilities and the help menu |
 
 ---
@@ -316,7 +384,7 @@ The one-line version - full descriptions, inputs and example prompts for every t
 
 ## Privacy and data
 
-Your Search Console data and the crawl live in local SQLite files under `SAC_DATA_DIR`. The passage-scoring model runs locally too. Nothing leaves your machine except the API calls *you* trigger - Google (your own GSC) and, if you've set them up, DataForSEO and Majestic (`link_intersect` sends prospect domain names, nothing else). Content recon's competitor fetch requests those public pages directly, with no service in between. Every one of those is keyed by you, called on demand, and cached locally so it isn't called twice. No telemetry. None.
+Your Search Console data and the crawl live in local SQLite files under `SAC_DATA_DIR`. The passage-scoring model runs locally too. Nothing leaves your machine except the API calls *you* trigger - Google (your own GSC, and the Chrome UX Report if you've set `CRUX_API_KEY`: it's sent your origin and top page URLs) and, if you've set them up, DataForSEO and Majestic (`link_intersect` sends prospect domain names; `pull_backlinks` sends your own backlinked page URLs). Every one of those is keyed by you, called on demand, and cached locally so it isn't called twice. Content recon's competitor fetch requests those public pages directly, with no service in between. The crawl also reaches beyond your own site in one way: after each crawl it checks the outbound links your pages carry (a HEAD request, or a ranged GET, to each linked URL; `checkExternal:false` turns that off). And the free extras fetch from public sources: the local models download once from Hugging Face, `resolve_entities` queries Wikidata, and `news_discovery` reads the Google News feed. No telemetry. None.
 
 ---
 
@@ -328,7 +396,7 @@ A few things I'm building next, in rough order:
 - **A per-page content scorecard.** A dedicated table of *every* ranking phrase your copy misses, not just the top query.
 - **More agent readiness.** A WebMCP advisory (which tool actions your site could expose to agents) and the agent-commerce protocols.
 - **A printable report.** A proper A4 document you can hand a client, not a slide deck.
-- **Source-level parser checks.** The layer most tools never touch: elements that silently break `<head>` parsing, and directives hoisted into the body and ignored. (Raw-vs-rendered divergence now ships - see JavaScript rendering below.)
+- **Source-level parser checks.** The layer most tools never touch: elements that silently break `<head>` parsing, and directives hoisted into the body and ignored. (Raw-vs-rendered divergence now ships - see JavaScript rendering above.)
 
 Got a weird edge case you wish a tool caught? Tell me - that's exactly how the merged GSC×crawl checks got built.
 

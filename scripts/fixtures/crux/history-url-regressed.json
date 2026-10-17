@@ -1,0 +1,203 @@
+{
+ "record": {
+  "key": {
+   "formFactor": "PHONE",
+   "url": "https://www.example.test/guides/widgets/"
+  },
+  "metrics": {
+   "largest_contentful_paint": {
+    "histogramTimeseries": [
+     {
+      "start": 0,
+      "end": 2500,
+      "densities": [
+       0.8,
+       0.78,
+       0.6,
+       0.4
+      ]
+     },
+     {
+      "start": 2500,
+      "end": 4000,
+      "densities": [
+       0.15,
+       0.15,
+       0.25,
+       0.3
+      ]
+     },
+     {
+      "start": 4000,
+      "densities": [
+       0.05,
+       0.07,
+       0.15,
+       0.3
+      ]
+     }
+    ],
+    "percentilesTimeseries": {
+     "p75s": [
+      2100,
+      2300,
+      2700,
+      4300
+     ]
+    }
+   },
+   "interaction_to_next_paint": {
+    "histogramTimeseries": [
+     {
+      "start": 0,
+      "end": 200,
+      "densities": [
+       0.9,
+       0.85,
+       0.8,
+       0.72
+      ]
+     },
+     {
+      "start": 200,
+      "end": 500,
+      "densities": [
+       0.08,
+       0.12,
+       0.15,
+       0.2
+      ]
+     },
+     {
+      "start": 500,
+      "densities": [
+       0.02,
+       0.03,
+       0.05,
+       0.08
+      ]
+     }
+    ],
+    "percentilesTimeseries": {
+     "p75s": [
+      150,
+      180,
+      210,
+      260
+     ]
+    }
+   },
+   "cumulative_layout_shift": {
+    "histogramTimeseries": [
+     {
+      "start": "0.00",
+      "end": "0.10",
+      "densities": [
+       0.95,
+       0.94,
+       0.95,
+       0.96
+      ]
+     },
+     {
+      "start": "0.10",
+      "end": "0.25",
+      "densities": [
+       0.03,
+       0.04,
+       0.03,
+       0.02
+      ]
+     },
+     {
+      "start": "0.25",
+      "densities": [
+       0.02,
+       0.02,
+       0.02,
+       0.02
+      ]
+     }
+    ],
+    "percentilesTimeseries": {
+     "p75s": [
+      "0.02",
+      "0.03",
+      "0.02",
+      "0.02"
+     ]
+    }
+   },
+   "largest_contentful_paint_image_element_render_delay": {
+    "percentilesTimeseries": {
+     "p75s": [
+      400,
+      420,
+      null,
+      900
+     ]
+    }
+   },
+   "experimental_ad_density": {
+    "percentilesTimeseries": {
+     "p75s": [
+      null,
+      null,
+      7,
+      8
+     ]
+    }
+   }
+  },
+  "collectionPeriods": [
+   {
+    "firstDate": {
+     "year": 2026,
+     "month": 8,
+     "day": 23
+    },
+    "lastDate": {
+     "year": 2026,
+     "month": 9,
+     "day": 19
+    }
+   },
+   {
+    "firstDate": {
+     "year": 2026,
+     "month": 8,
+     "day": 30
+    },
+    "lastDate": {
+     "year": 2026,
+     "month": 9,
+     "day": 26
+    }
+   },
+   {
+    "firstDate": {
+     "year": 2026,
+     "month": 9,
+     "day": 6
+    },
+    "lastDate": {
+     "year": 2026,
+     "month": 10,
+     "day": 3
+    }
+   },
+   {
+    "firstDate": {
+     "year": 2026,
+     "month": 9,
+     "day": 13
+    },
+    "lastDate": {
+     "year": 2026,
+     "month": 10,
+     "day": 10
+    }
+   }
+  ]
+ }
+}

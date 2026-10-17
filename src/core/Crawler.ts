@@ -4,13 +4,20 @@ import { AuditDatabase } from './AuditDatabase.js';
 import { dbPathFor } from './paths.js';
 import { urlKey, hostFormForProperty, type UrlKeyOptions } from './url-key.js';
 import { extractPage, isInternalHost, decodeHtmlBody } from './extract.js';
-import { fetchRobots } from './robots.js';
+import { fetchRobotsTxt, rulesFromText } from './robots.js';
+import { storeRobotsTxt } from './robotsStore.js';
 import { finalizeLinkGraph } from './linkGraph.js';
+import { crawlRate, type CrawlStage } from './crawlProgress.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { snapshotCrawl } from '../audit/drift.js';
 import { checkExternalLinks, type ExternalSummary } from './externalLinks.js';
+import { runSiteProbes, type SiteProbeSummary } from './siteProbes.js';
 import { CLEAR_CRAWL_FTS } from './fts.js';
 import { BOT_UA, CHROME_HEADERS, looksBotBlocked, type FetchedAs } from './userAgents.js';
+import {
+  AimdLimiter, isRateLimited, looksLikeShopify, rateLimitWaitMs, retrySpacingMs,
+  RATE_LIMIT_RETRIES, SHOPIFY_START_CONCURRENCY, PLATFORM_SNIFF_RESPONSES, RETRY_AFTER_CAP_MS, type RateLimitReport,
+} from './rateLimit.js';
 
 // Robust HTML detection from a Content-Type header: take the MIME type before any
 // parameters (charset, boundary), normalised — text/html and XHTML count as HTML.
@@ -64,6 +71,7 @@ export interface CrawlOptions {
   checkExternal?: boolean;    // check outbound link targets after the crawl (default true) (#36)
   externalCacheDays?: number; // reuse external results younger than this (default 7)
   chromeFallback?: boolean;   // retry bot-blocked requests once as Chrome (default true; off when userAgent is set)
+  siteProbes?: boolean;       // soft-404 + host-variant probes after the crawl, at most 5 requests (default true) (#55 group D)
 }
 
 export interface CrawlResult {
@@ -76,22 +84,34 @@ export interface CrawlResult {
   sitemaps?: { declared: string[]; undeclared: string[]; fetched: number; urls: number };
   /** Outbound link status pass (#36). */
   external?: ExternalSummary;
+  /** Soft-404 and host-variant probes (#55 group D): what was probed and each verdict. */
+  siteProbes?: SiteProbeSummary;
   /** Bot blocking seen on the site's own pages: requests blocked for the crawler UA, how many got
    *  through as Chrome, and whether the crawl switched to Chrome for the rest. */
   blocking?: { blockedAsBot: number; okAsChrome: number; blockedForBoth: number; switchedToChrome: boolean };
+  /** Host rate limiting (#54): AIMD concurrency, URLs re-queued, URLs never fetched. Always present. */
+  rateLimited: RateLimitReport;
+  /** Hosting platform recognised from response headers (#54); it sets the starting concurrency. */
+  platform?: CrawlPlatform;
 }
+
+/** A platform recognised from the crawl's first responses, and what the crawl did about it. */
+export interface CrawlPlatform { name: 'shopify'; startConcurrency: number; userSetConcurrency: boolean }
 
 const DEFAULT_UA = BOT_UA;
 const FETCH_TIMEOUT_MS = 20000;
-const MAX_TRANSIENT_RETRIES = 6; // 429/503 backoff attempts before recording the status
+const MAX_TRANSIENT_RETRIES = 6; // plain-503 backoff attempts before recording the status (429s are re-queued instead, #54)
 const MAX_NET_RETRIES = 4;       // network-error (timeout/reset) retries — separate budget so a slow URL can't stall a worker for minutes
-const RETRY_AFTER_CAP_MS = 30000; // honour Retry-After up to this (a hostile header can't stall the crawl)
 const BACKOFF_CAP_MS = 15000;     // cap for the exponential fallback when no Retry-After is given
 const FLUSH_EVERY = 50;
+/** Chrome's Accept for <img> requests: the image-weight probe measures what a browser is served. */
+export const IMAGE_ACCEPT = 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8';
 
 // Shared throttle gate: a 429/503 on ONE request backs off the WHOLE worker pool, not just that
 // request's own retries — otherwise the other N-1 workers keep hammering a rate-limited host and it
 // never recovers (how 56 Shopify product pages ended up recorded as 429 despite per-request retries).
+// Since #54 the gate carries the Retry-After pause for a 429 ONCE (set by the pool, not slept in the
+// request as well), and the AIMD limiter lowers how many requests the pool runs at all.
 interface ThrottleGate { until: number }
 const gateWaitMs = (g: ThrottleGate): number => Math.max(0, g.until - Date.now());
 const gatePenalise = (g: ThrottleGate, ms: number): void => { g.until = Math.max(g.until, Date.now() + ms); };
@@ -113,8 +133,14 @@ interface FetchOutcome {
   xRobotsTag: string | null;
   bytes: number | null;
   timeMs: number;
-  throttled: boolean; // saw a 429/503 (after retries) — signal for adaptive pacing
+  throttled: boolean; // saw a plain 503 or a network error (after retries) — signal for adaptive pacing
   fetchedAs: FetchedAs; // which user agent produced this response
+  /** Set when the host rate limited this request (429, or 503 + Retry-After): NOT a page status (#54). */
+  rateLimited: { retryAfter: string | null } | null;
+  /** When the request that produced this outcome went out (ms): AIMD reacts once per generation. */
+  sentAt: number;
+  /** Any response on the way carried Shopify storefront headers. */
+  shopify: boolean;
 }
 
 /** Per-crawl bot-block bookkeeping: whether the Chrome fallback is allowed, and how it's going. */
@@ -134,7 +160,9 @@ async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, ga
   const redirects: RedirectHop[] = [];
   let current = url;
   let hops = 0;
-  let transientRetries = 0; // 429/503 backoff budget
+  let transientRetries = 0; // plain-503 backoff budget
+  let shopify = false;
+  let sentAt = Date.now();
   let netRetries = 0;       // network-error (timeout/reset) budget — separate so a 503 then a timeout doesn't starve it
   const start = Date.now();
   // Always GET — never HEAD. Some servers/CDNs return a different status for HEAD than for GET
@@ -149,6 +177,7 @@ async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, ga
     if (cool) await sleep(Math.min(cool, RETRY_AFTER_CAP_MS) + Math.floor(Math.random() * 500));
     let res: Response;
     try {
+      sentAt = Date.now();
       res = (await ufetch(current, {
         method,
         redirect: 'manual',
@@ -190,15 +219,25 @@ async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, ga
       retriedAsChrome = true;
       continue;
     }
-    // Transient throttling (429 Too Many Requests / 503 Service Unavailable) is NOT a broken
-    // page — back off (respecting Retry-After) and retry, so a fast crawl doesn't poison the
-    // data with rate-limit statuses. Only the final status after retries is recorded.
-    if ((res.status === 429 || res.status === 503) && transientRetries < MAX_TRANSIENT_RETRIES) {
-      // Retry-After is seconds (or an HTTP-date); honour the numeric form capped, else exponential.
-      const ra = Number(res.headers.get('retry-after'));
-      const waitMs = Number.isFinite(ra) && ra > 0
-        ? Math.min(ra * 1000, RETRY_AFTER_CAP_MS)
-        : Math.min(1000 * 2 ** transientRetries, BACKOFF_CAP_MS);
+    const header = (name: string): string | null => res.headers.get(name);
+    if (!shopify && looksLikeShopify(header)) shopify = true;
+    // Rate limiting (429, or 503 with Retry-After) is NOT a page status and is not retried here
+    // (#54): the outcome goes back to the pool, which halves its concurrency, sets the pool-wide
+    // Retry-After pause once and re-queues the URL at the end of the frontier. Retrying in place
+    // held a worker for 46-91 s per URL and still ended by storing the 429 as the page's status.
+    if (isRateLimited(res.status, header)) {
+      try { await res.body?.cancel(); } catch { /* no body */ }
+      return {
+        finalUrl: current, status: res.status, contentType: '', contentEncoding: null, cacheControl: null, lastModified: null,
+        etag: null, vary: null, securityHeaders: null, body: '', redirects, xRobotsTag: null, bytes: null,
+        timeMs: Date.now() - start, throttled: false, fetchedAs: asChrome ? 'chrome' : 'bot',
+        rateLimited: { retryAfter: header('retry-after') }, sentAt, shopify,
+      };
+    }
+    // A plain 503 (no Retry-After) is a server that is down or overloaded: back off and retry, and
+    // record the status only if it persists (a real outage is a real 503).
+    if (res.status === 503 && transientRetries < MAX_TRANSIENT_RETRIES) {
+      const waitMs = Math.min(1000 * 2 ** transientRetries, BACKOFF_CAP_MS);
       try { await res.body?.cancel(); } catch { /* no body */ }
       transientRetries++;
       gatePenalise(gate, waitMs); // back the whole pool off, not just this request
@@ -266,11 +305,21 @@ async function fetchWithRedirects(url: string, ua: string, dispatcher: Agent, ga
       timeMs: Date.now() - start,
       throttled: transientRetries > 0 || netRetries > 0,
       fetchedAs: asChrome ? 'chrome' : 'bot',
+      rateLimited: null,
+      sentAt,
+      shopify,
     };
   }
 }
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
+/** sleep() that returns early when the crawl is cancelled (a re-queued URL can wait several seconds). */
+const sleepUnlessAborted = (ms: number, signal: AbortSignal): Promise<void> => new Promise((resolve) => {
+  if (signal.aborted) return resolve();
+  const t = setTimeout(() => { signal.removeEventListener('abort', done); resolve(); }, ms);
+  const done = (): void => { clearTimeout(t); resolve(); };
+  signal.addEventListener('abort', done, { once: true });
+});
 
 /** Self-contained, stdio-safe HTTP crawler writing into a property's AuditDatabase. */
 export class Crawler {
@@ -285,9 +334,15 @@ export class Crawler {
     const maxPages = opts.maxPages ?? 4000;
     const maxDepth = opts.maxDepth ?? 10;
     // Default 8 parallel fetches (was 4) — with HTTP/2 multiplexing this is one or two
-    // connections, not 8 sockets. Adaptive throttling still ramps the delay on any 429/503,
-    // so a struggling host slows the whole pool down.
+    // connections, not 8 sockets. That is the CEILING: the AIMD limiter (#54) halves the effective
+    // concurrency on each 429 and adds one back after every 20 clean responses.
     const concurrency = Math.max(1, Math.min(opts.maxConcurrency ?? 8, 24));
+    const userSetConcurrency = opts.maxConcurrency != null;
+    const limiter = new AimdLimiter(concurrency);
+    let platform: CrawlPlatform | undefined;
+    let sniffed = 0;           // responses checked for platform headers so far
+    let retriedUrls = 0;       // distinct URLs re-queued after a rate limit
+    const unfetched: { url: string; depth: number }[] = []; // still rate limited after every retry
     const delayMs = opts.delayMs ?? 250;
     const ua = opts.userAgent ?? DEFAULT_UA;
     // Chrome fallback on bot blocks, unless the user chose a user agent explicitly.
@@ -327,7 +382,11 @@ export class Crawler {
       wipedPrior = true;
     };
 
-    const robots = await fetchRobots(origin, ua);
+    // robots.txt: the crawl's own politeness gate, and the stored bytes the audit reads for
+    // Googlebot / AI-bot verdicts (#55). Unreachable or non-2xx = no restrictions, as before.
+    const robotsTxt = await fetchRobotsTxt(origin, ua);
+    try { storeRobotsTxt(db.db, origin, robotsTxt); } catch (err) { console.error('[crawl] robots.txt not stored:', err instanceof Error ? err.message : String(err)); }
+    const robots = rulesFromText(robotsTxt.body ?? '', 'seo-audit-console');
 
     const pageInsert = db.db.prepare(
       `INSERT INTO pages (crawl_id, url, url_key, status_code, content_type, content_encoding, cache_control,
@@ -384,7 +443,9 @@ export class Crawler {
     const visited = new Set<string>();
     const emitted = new Set<string>(); // final url_keys already extracted+written
     const imageRefs = new Map<string, number>(); // distinct <img> src → pages using it
-    const frontier: { url: string; depth: number }[] = [];
+    // attempt/notBefore: set on a URL re-queued after a rate limit (#54).
+    type FrontierItem = { url: string; depth: number; attempt?: number; notBefore?: number };
+    const frontier: FrontierItem[] = [];
     let crawled = 0, failed = 0, skipped = 0, discovered = 0;
 
     const enqueue = (url: string, depth: number): void => {
@@ -448,10 +509,28 @@ export class Crawler {
       if (linkBuf.length && (final || linkBuf.length >= FLUSH_EVERY)) { flushLinks(linkBuf.splice(0)); }
       if (resourceBuf.length && (final || resourceBuf.length >= FLUSH_EVERY)) { ensureWiped(); flushResources(resourceBuf.splice(0)); }
     };
+    // Progress the client can read (#52): counts, pages/sec and an ETA for the fetch stage, then a
+    // stage name for each post-crawl phase so a long run never looks stalled.
+    const t0 = Date.now();
+    let linksSeen = 0;
+    const rateLimitReport = (): RateLimitReport => ({
+      events: limiter.events, currentConcurrency: limiter.limit, minConcurrency: limiter.min, maxConcurrency: limiter.max,
+      retried: retriedUrls, unfetched: unfetched.length,
+    });
+    // pages/sec is a FETCH rate: frozen when fetching ends, so the slower post-crawl stages (outbound
+    // link checks can take minutes) don't drag the reported crawl speed down to a misleading average.
+    let fetchPagesPerSec: number | null = null;
+    const stage = (name: CrawlStage, extra: Record<string, unknown> = {}): void => {
+      const rate = crawlRate(crawled, failed, frontier.length, maxPages, Date.now() - t0);
+      if (name === 'fetching') fetchPagesPerSec = rate.pagesPerSec;
+      update({ crawlId, stage: name, crawled, discovered, failed, skipped, maxPages, linksSeen, elapsedSeconds: rate.elapsedSeconds,
+        pagesPerSec: name === 'fetching' ? rate.pagesPerSec : fetchPagesPerSec, pagesRemaining: name === 'fetching' ? rate.pagesRemaining : 0, etaSeconds: name === 'fetching' ? rate.etaSeconds : null,
+        rateLimited: rateLimitReport(), ...(platform ? { platform } : {}), ...extra });
+    };
     const saveProgress = (): void => {
       db.db.prepare(`UPDATE crawl_metadata SET urls_discovered=?, urls_crawled=?, urls_failed=?, urls_skipped=? WHERE crawl_id=?`)
         .run(discovered, crawled, failed, skipped, crawlId);
-      update({ crawlId, crawled, discovered, failed, skipped });
+      stage('fetching');
     };
 
     // Adaptive pacing: start at the configured delay; ramp UP when the host throttles (429/503)
@@ -460,7 +539,10 @@ export class Crawler {
     let dynamicDelay = delayMs;
     // One throttle gate shared by every worker: a 429/503 anywhere pauses the whole pool.
     const gate: ThrottleGate = { until: 0 };
-    const processOne = async (item: { url: string; depth: number }): Promise<void> => {
+    const processOne = async (item: FrontierItem): Promise<void> => {
+      // A re-queued rate-limited URL waits out its spacing (usually long past by the time it is reached).
+      if (item.notBefore && item.notBefore > Date.now()) await sleepUnlessAborted(item.notBefore - Date.now(), signal);
+      if (signal.aborted) return;
       if (dynamicDelay) await sleep(dynamicDelay);
       const path = (() => { try { return new URL(item.url).pathname; } catch { return '/'; } })();
       if (!robots.isAllowed(path)) {
@@ -470,7 +552,35 @@ export class Crawler {
       }
       try {
         const r = await fetchWithRedirects(item.url, ua, dispatcher, gate, signal, 5, uaState);
-        // Self-tune the delay from the throttle signal.
+        // Platform sniff on the first responses (#54): Shopify rate-limits hard at concurrency 8, so
+        // start it at 3 unless the user chose maxConcurrency. AIMD can still climb back from there.
+        if (sniffed < PLATFORM_SNIFF_RESPONSES && !platform) {
+          sniffed++;
+          if (r.shopify) {
+            const start = userSetConcurrency ? limiter.limit : Math.min(concurrency, SHOPIFY_START_CONCURRENCY);
+            if (!userSetConcurrency) limiter.capAt(start);
+            platform = { name: 'shopify', startConcurrency: start, userSetConcurrency };
+          }
+        }
+        // Rate limited (#54): never a page status. Halve the pool, pause it once for Retry-After,
+        // and put the URL at the END of the frontier for up to RATE_LIMIT_RETRIES more attempts,
+        // spaced out. Still limited after that = stored as not fetched (status NULL), never as 429.
+        if (r.rateLimited) {
+          const lowered = limiter.onRateLimited(r.sentAt);
+          const waitMs = rateLimitWaitMs(r.rateLimited.retryAfter, limiter.consecutive);
+          gatePenalise(gate, waitMs);
+          const attempt = item.attempt ?? 0;
+          if (attempt < RATE_LIMIT_RETRIES) {
+            if (attempt === 0) retriedUrls++;
+            frontier.push({ url: item.url, depth: item.depth, attempt: attempt + 1, notBefore: Date.now() + retrySpacingMs(attempt + 1, waitMs) + Math.floor(Math.random() * 1000) }); // jitter: re-queued URLs don't all wake together
+          } else {
+            unfetched.push({ url: item.url, depth: item.depth });
+          }
+          if (lowered) stage('fetching');
+          return;
+        }
+        limiter.onSuccess();
+        // Self-tune the delay from the throttle signal (plain 503s and network errors; 429s are AIMD's).
         if (r.throttled) dynamicDelay = Math.min(Math.round(dynamicDelay * 1.5) + 200, 5000);
         else if (dynamicDelay > delayMs) dynamicDelay = Math.max(delayMs, Math.round(dynamicDelay * 0.9));
         // Redirect that leaves the internal host or lands on a skip-pattern URL (e.g. an internal
@@ -548,6 +658,7 @@ export class Crawler {
             if (res.type !== 'img') { const ref = resourceRefs.get(res.url); if (ref) ref.usedOn++; else resourceRefs.set(res.url, { type: res.type, usedOn: 1 }); }
           }
           for (const l of ex.links) {
+            linksSeen++;
             linkBuf.push({
               crawl_id: crawlId, source_url: r.finalUrl, source_key: finalKey,
               target_url: l.targetUrl, target_key: l.targetKey, anchor_text: l.anchor,
@@ -582,7 +693,9 @@ export class Crawler {
           return;
         }
         if (capHit) return; // stop starting new work; let in-flight drain via finally → pump
-        while (running < concurrency && frontier.length > 0 && crawled < maxPages && !signal.aborted) {
+        // limiter.limit, not the configured ceiling: the AIMD-adjusted effective concurrency (#54).
+        // After a decrease, in-flight requests above the new limit drain before anything new starts.
+        while (running < limiter.limit && frontier.length > 0 && crawled < maxPages && !signal.aborted) {
           const item = frontier.shift()!;
           running++;
           processOne(item).finally(() => { running--; pump(); });
@@ -591,13 +704,33 @@ export class Crawler {
       pump();
     });
 
+    stage('writing-links');
     flush(true);
+    // URLs the host never let us fetch (#54): recorded so the crawl's coverage is honest, but as
+    // fetch_state='rate_limited' with status NULL and indexable NULL (unknown), never as a 429 the
+    // audit would read as a broken page. Written after the final flush so a real row for the same
+    // url_key (reached via a redirect) wins.
+    if (unfetched.length) {
+      ensureWiped();
+      const rlInsert = db.db.prepare(
+        `INSERT INTO pages (crawl_id, url, url_key, status_code, is_internal, indexable, indexable_reason, depth, fetch_state)
+         VALUES (@crawl_id,@url,@url_key,NULL,1,NULL,'rate-limited',@depth,'rate_limited')
+         ON CONFLICT(url_key) DO NOTHING`,
+      );
+      db.db.transaction(() => {
+        for (const u of unfetched) {
+          try { rlInsert.run({ crawl_id: crawlId, url: u.url, url_key: urlKey(u.url, keyOpts), depth: u.depth }); } catch { /* unparseable URL */ }
+        }
+      })();
+    }
+    saveProgress();
 
     // Post-crawl: sample image weights. One request per distinct <img> src, most-used first,
     // reading ONLY the response headers (content-length + content-type) — the body is cancelled
     // immediately, so no image bytes are ever downloaded. Bounded so a huge site can't stall
     // the crawl; feeds the Site health image-weight report.
     if (!signal.aborted && wipedPrior) { // wipedPrior = the crawl really wrote pages; keep old sample otherwise
+      stage('image-weights');
       db.db.exec('DELETE FROM image_assets');
     }
     // Shared header-only probe for the two post-crawl passes: fetch, read headers, cancel the
@@ -609,6 +742,9 @@ export class Crawler {
         // record false conditional-304 / asset statuses seconds after storing the pages as 200.
         const res = await ufetch(url, { headers: { ...(uaState.preferChrome ? CHROME_HEADERS : { 'user-agent': ua }), ...extraHeaders }, redirect, dispatcher, signal: AbortSignal.timeout(10000) });
         try { await res.body?.cancel(); } catch { /* already closed */ }
+        // #54: a throttled probe measured nothing - treat it like a fetch error (no status stored;
+        // a conditional probe that got 429 must not read as "returned 200 instead of 304").
+        if (isRateLimited(res.status, n => res.headers.get(n))) return null;
         return { status: res.status, header: (n: string) => res.headers.get(n) };
       } catch { return null; }
     };
@@ -634,16 +770,18 @@ export class Crawler {
         })
         .sort((a, b) => b[1] - a[1]).slice(0, MAX_IMAGES);
       const imgInsert = db.db.prepare(
-        `INSERT INTO image_assets (url, bytes, status, content_type, used_on, fetched_at)
-         VALUES (?,?,?,?,?,datetime('now')) ON CONFLICT(url) DO NOTHING`,
+        `INSERT INTO image_assets (url, bytes, status, content_type, used_on, fetched_at, accept)
+         VALUES (?,?,?,?,?,datetime('now'),?) ON CONFLICT(url) DO NOTHING`,
       );
-      const rows: [string, number | null, number, string, number][] = [];
+      const rows: [string, number | null, number, string, number, string][] = [];
       await probePool(sample, async ([url, usedOn]) => {
-        const r = await headProbe(url, {}, 'follow');
+        // A browser's image Accept, so a CDN that negotiates WebP/AVIF answers with what visitors get
+        // (Shopify's CDN sends a 2.1 MB PNG without it and a 222 KB WebP with it).
+        const r = await headProbe(url, { accept: IMAGE_ACCEPT }, 'follow');
         if (r) {
           const len = Number(r.header('content-length'));
-          rows.push([url, Number.isFinite(len) && len > 0 ? len : null, r.status, (r.header('content-type') ?? '').split(';')[0].trim(), usedOn]);
-        } else rows.push([url, null, 0, '', usedOn]);
+          rows.push([url, Number.isFinite(len) && len > 0 ? len : null, r.status, (r.header('content-type') ?? '').split(';')[0].trim(), usedOn, IMAGE_ACCEPT]);
+        } else rows.push([url, null, 0, '', usedOn, IMAGE_ACCEPT]);
       });
       db.db.transaction(() => { for (const r of rows) imgInsert.run(...r); })();
     }
@@ -651,6 +789,7 @@ export class Crawler {
     // Optional (#37): header-only pass over css/js/font subresources — status, size and caching —
     // most-used first, capped, through the same paced pool. Bodies are never downloaded.
     if (opts.headResources && !signal.aborted && wipedPrior && resourceRefs.size) {
+      stage('resource-headers');
       const MAX_RESOURCES = 500;
       const sample = [...resourceRefs.entries()]
         .filter(([url]) => { try { const u = new URL(url); return !isInternalHost(u.hostname, baseHost) || robots.isAllowed(u.pathname); } catch { return false; } })
@@ -666,6 +805,7 @@ export class Crawler {
     }
 
     // Post-crawl: in-degree (orphans), internal PageRank (iPR) + body-only click depth.
+    stage('link-graph');
     finalizeLinkGraph(db.db, crawlId, urlKey(seed, keyOpts));
 
     // Post-crawl: conditional-revalidation probe. Pages that advertised validators
@@ -673,6 +813,7 @@ export class Crawler {
     // answers 304 Not Modified; a 200 means it re-serves the full body to every revalidating
     // crawler and cache, wasting crawl budget. Bounded sample, most-linked pages first.
     if (!signal.aborted) {
+      stage('revalidation-probe');
       const cands = db.db.prepare(
         `SELECT url, url_key, last_modified lm, etag FROM pages
          WHERE status_code=200 AND is_internal=1 AND (last_modified IS NOT NULL OR etag IS NOT NULL)
@@ -709,11 +850,24 @@ export class Crawler {
       // Never fail a good crawl over its history — but say so, because a silently missing
       // snapshot is the exact failure this fix exists to remove. diffLatest also reports the gap.
       try {
+        stage('snapshot');
         snapshotCrawl(db.db, crawlId, finishedAt);
       } catch (e) {
         console.error(`[crawl ${crawlId}] snapshot failed (change-detection will report this crawl as missing):`, e);
       }
     }
+    // Post-crawl (#55 group D): at most 5 requests the crawl never makes - two random non-existent URLs
+    // (soft-404 handling) and the http/https + www/apex twins of the homepage and one deep URL (host
+    // variants). Same UA (Chrome if the crawl switched), Chrome fallback and delay as the crawl; one at a
+    // time. Never fails the crawl.
+    let siteProbes: SiteProbeSummary | undefined;
+    if (opts.siteProbes !== false && !signal.aborted && wipedPrior) {
+      try {
+        stage('site-probes');
+        siteProbes = await runSiteProbes(db.db, siteUrl, { crawlId, userAgent: ua, chromeFallback: uaState.fallback, preferChrome: uaState.preferChrome, delayMs, signal });
+      } catch (e) { console.error(`[crawl ${crawlId}] site probes skipped:`, e instanceof Error ? e.message : String(e)); }
+    }
+
     // Post-crawl (#36): status of every distinct outbound link target — cached, host-throttled,
     // HEAD with a ranged-GET fallback. On by default; checkExternal:false skips it. Runs AFTER the
     // crawl is marked completed and snapshotted: it can take minutes, and dying here must not leave a
@@ -721,14 +875,17 @@ export class Crawler {
     let external: ExternalSummary | undefined;
     if (opts.checkExternal !== false && !signal.aborted && wipedPrior) {
       try {
-        external = await checkExternalLinks(db.db, { userAgent: ua, chromeFallback: uaState.fallback, dispatcher, signal, update: p => update({ crawlId, ...p }), cacheDays: opts.externalCacheDays });
+        stage('external-links');
+        external = await checkExternalLinks(db.db, { userAgent: ua, chromeFallback: uaState.fallback, dispatcher, signal, update: p => update({ crawlId, stage: 'external-links', ...p }), cacheDays: opts.externalCacheDays });
       } catch (e) { console.error(`[crawl ${crawlId}] external link check skipped:`, e instanceof Error ? e.message : String(e)); }
     }
 
     // Report blocking only when Chrome actually got past it: a 403 that Chrome also gets is a
     // forbidden URL, not bot protection.
+    stage('done');
     const blocking = uaState.okAsChrome ? { blockedAsBot: uaState.blockedAsBot, okAsChrome: uaState.okAsChrome, blockedForBoth: uaState.blockedAsChrome, switchedToChrome: uaState.preferChrome } : undefined;
-    return { crawlId, siteUrl, crawled, failed, skipped, ...(sitemaps ? { sitemaps } : {}), ...(external ? { external } : {}), ...(blocking ? { blocking } : {}) };
+    return { crawlId, siteUrl, crawled, failed, skipped, ...(sitemaps ? { sitemaps } : {}), ...(external ? { external } : {}), ...(siteProbes ? { siteProbes } : {}), ...(blocking ? { blocking } : {}),
+      rateLimited: rateLimitReport(), ...(platform ? { platform } : {}) };
     } catch (err) {
       try {
         db.db.prepare(`UPDATE crawl_metadata SET status='failed', error=?, finished_at=? WHERE crawl_id=? AND status='running'`)

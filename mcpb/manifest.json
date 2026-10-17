@@ -2,10 +2,10 @@
   "manifest_version": "0.3",
   "name": "seo-audit-console",
   "display_name": "SEO Audit Console",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "icon": "icon.png",
-  "description": "The complete technical SEO audit at conversation speed: Google Search Console history + a first-party crawl + on-demand DataForSEO, merged into one prioritised audit inside Claude - 111 checks ranked by recoverable clicks, with paste-ready fixes, keyword and content-gap research, and AI-search readiness.",
-  "long_description": "Merges Google Search Console history with a first-party site crawl (and on-demand DataForSEO) into one SQLite database per property, then runs 111 deterministic and judgement-labelled checks scored by expected recoverable clicks per hour of effort. Includes a findings dashboard, finding-to-fix generators (JSON-LD, 301 maps, internal-link suggestions), change detection, keyword and content-gap research, and an agent-readiness score. Requires a Google Cloud service account with Search Console API access; DataForSEO credentials are optional.",
+  "description": "The complete technical SEO audit at conversation speed: Google Search Console history + a first-party crawl + on-demand DataForSEO, merged into one prioritised audit inside Claude - 143 checks ranked by recoverable clicks, with paste-ready fixes, keyword and content-gap research, and AI-search readiness.",
+  "long_description": "Merges Google Search Console history with a first-party site crawl (and on-demand DataForSEO) into one SQLite database per property, then runs 143 deterministic and judgement-labelled checks scored by expected recoverable clicks per hour of effort. Includes a findings dashboard, finding-to-fix generators (JSON-LD, 301 maps, internal-link suggestions), change detection, keyword and content-gap research, and an agent-readiness score. Requires a Google Cloud service account with Search Console API access; DataForSEO credentials are optional.",
   "author": {
     "name": "Houtini",
     "email": "hello@houtini.com",
@@ -47,7 +47,8 @@
         "DATAFORSEO_PASSWORD": "${user_config.dataforseo_password}",
         "DATAFORSEO_CACHE_DAYS": "${user_config.dataforseo_cache_days}",
         "MAJESTIC_API_KEY": "${user_config.majestic_api_key}",
-        "MAJESTIC_CACHE_DAYS": "${user_config.majestic_cache_days}"
+        "MAJESTIC_CACHE_DAYS": "${user_config.majestic_cache_days}",
+        "CRUX_API_KEY": "${user_config.crux_api_key}"
       }
     }
   },
@@ -97,9 +98,16 @@
       "type": "number",
       "title": "Majestic cache days",
       "description": "How many days to cache Majestic responses locally. Cache hits cost no Majestic resource units.",
-      "default": 20,
+      "default": 30,
       "min": 1,
       "max": 90,
+      "required": false
+    },
+    "crux_api_key": {
+      "type": "string",
+      "title": "CrUX API key (optional)",
+      "description": "Chrome UX Report API key - a free Google Cloud API key with the Chrome UX Report API enabled. Optional - adds real-user Core Web Vitals (LCP, INP, CLS) for your origin and top pages.",
+      "sensitive": true,
       "required": false
     }
   },

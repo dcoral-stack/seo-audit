@@ -1,0 +1,268 @@
+{
+ "record": {
+  "key": {
+   "formFactor": "PHONE",
+   "origin": "https://www.example.test"
+  },
+  "metrics": {
+   "cumulative_layout_shift": {
+    "histogram": [
+     {
+      "start": "0.00",
+      "end": "0.10",
+      "density": 0.9373
+     },
+     {
+      "start": "0.10",
+      "end": "0.25",
+      "density": 0.0401
+     },
+     {
+      "start": "0.25",
+      "density": 0.0225
+     }
+    ],
+    "percentiles": {
+     "p75": "0.02"
+    }
+   },
+   "interaction_to_next_paint": {
+    "histogram": [
+     {
+      "start": 0,
+      "end": 200,
+      "density": 0.9181
+     },
+     {
+      "start": 200,
+      "end": 500,
+      "density": 0.0693
+     },
+     {
+      "start": 500,
+      "density": 0.0126
+     }
+    ],
+    "percentiles": {
+     "p75": 129
+    }
+   },
+   "largest_contentful_paint_image_time_to_first_byte": {
+    "percentiles": {
+     "p75": 887
+    }
+   },
+   "experimental_ad_count": {
+    "percentiles": {
+     "p75": "0.77"
+    }
+   },
+   "experimental_ad_cpu": {
+    "percentiles": {
+     "p75": 3781
+    }
+   },
+   "experimental_ad_kilobytes": {
+    "percentiles": {
+     "p75": 2915
+    }
+   },
+   "experimental_cumulative_layout_shift_with_softnavs": {
+    "histogram": [
+     {
+      "start": "0.00",
+      "end": "0.10",
+      "density": 0.9356
+     },
+     {
+      "start": "0.10",
+      "end": "0.25",
+      "density": 0.0402
+     },
+     {
+      "start": "0.25",
+      "density": 0.0241
+     }
+    ],
+    "percentiles": {
+     "p75": "0.02"
+    }
+   },
+   "first_contentful_paint": {
+    "histogram": [
+     {
+      "start": 0,
+      "end": 1800,
+      "density": 0.7681
+     },
+     {
+      "start": 1800,
+      "end": 3000,
+      "density": 0.1643
+     },
+     {
+      "start": 3000,
+      "density": 0.0677
+     }
+    ],
+    "percentiles": {
+     "p75": 1715
+    }
+   },
+   "largest_contentful_paint": {
+    "histogram": [
+     {
+      "start": 0,
+      "end": 2500,
+      "density": 0.88
+     },
+     {
+      "start": 2500,
+      "end": 4000,
+      "density": 0.0913
+     },
+     {
+      "start": 4000,
+      "density": 0.0287
+     }
+    ],
+    "percentiles": {
+     "p75": 1854
+    }
+   },
+   "largest_contentful_paint_image_element_render_delay": {
+    "percentiles": {
+     "p75": 554
+    }
+   },
+   "largest_contentful_paint_image_resource_load_duration": {
+    "percentiles": {
+     "p75": 261
+    }
+   },
+   "experimental_interaction_to_next_paint_with_softnavs": {
+    "histogram": [
+     {
+      "start": 0,
+      "end": 200,
+      "density": 0.9173
+     },
+     {
+      "start": 200,
+      "end": 500,
+      "density": 0.0703
+     },
+     {
+      "start": 500,
+      "density": 0.0123
+     }
+    ],
+    "percentiles": {
+     "p75": 129
+    }
+   },
+   "experimental_largest_contentful_paint_with_softnavs": {
+    "histogram": [
+     {
+      "start": 0,
+      "end": 2500,
+      "density": 0.8793
+     },
+     {
+      "start": 2500,
+      "end": 4000,
+      "density": 0.0924
+     },
+     {
+      "start": 4000,
+      "density": 0.0283
+     }
+    ],
+    "percentiles": {
+     "p75": 1852
+    }
+   },
+   "experimental_time_to_first_byte": {
+    "histogram": [
+     {
+      "start": 0,
+      "end": 800,
+      "density": 0.6988
+     },
+     {
+      "start": 800,
+      "end": 1800,
+      "density": 0.253
+     },
+     {
+      "start": 1800,
+      "density": 0.0482
+     }
+    ],
+    "percentiles": {
+     "p75": 900
+    }
+   },
+   "largest_contentful_paint_image_resource_load_delay": {
+    "percentiles": {
+     "p75": 170
+    }
+   },
+   "largest_contentful_paint_resource_type": {
+    "fractions": {
+     "image": 0.1088,
+     "text": 0.8912
+    }
+   },
+   "experimental_ad_density": {
+    "percentiles": {
+     "p75": 8
+    }
+   },
+   "navigation_types": {
+    "fractions": {
+     "back_forward_cache": 0.0326,
+     "prerender": 0,
+     "navigate": 0.8153,
+     "navigate_cache": 0.0633,
+     "reload": 0.0722,
+     "restore": 0,
+     "back_forward": 0.0166
+    }
+   },
+   "round_trip_time": {
+    "histogram": [
+     {
+      "start": 0,
+      "end": 75,
+      "density": 0.5803
+     },
+     {
+      "start": 75,
+      "end": 275,
+      "density": 0.384
+     },
+     {
+      "start": 275,
+      "density": 0.0357
+     }
+    ],
+    "percentiles": {
+     "p75": 99
+    }
+   }
+  },
+  "collectionPeriod": {
+   "firstDate": {
+    "year": 2026,
+    "month": 9,
+    "day": 18
+   },
+   "lastDate": {
+    "year": 2026,
+    "month": 10,
+    "day": 15
+   }
+  }
+ }
+}

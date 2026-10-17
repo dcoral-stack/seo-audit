@@ -7,12 +7,12 @@
     "source": "github"
   },
   "websiteUrl": "https://houtini.com",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@houtini/seo-audit-console",
-      "version": "0.15.0",
+      "version": "0.16.0",
       "transport": {
         "type": "stdio"
       },
@@ -65,6 +65,13 @@
           "isRequired": false,
           "format": "string",
           "isSecret": false
+        },
+        {
+          "name": "CRUX_API_KEY",
+          "description": "Chrome UX Report API key (optional, free Google Cloud key). Switches on sync_crux: real-user Core Web Vitals (LCP, INP, CLS) and the crux-field-* checks.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
         }
       ]
     }

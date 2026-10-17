@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import type { LiveJobs } from './JobManager.js';
 
 /**
  * Data freshness / job status for the dashboard, read from the property DB, never from the
@@ -11,7 +12,7 @@ import type Database from 'better-sqlite3';
  */
 export interface FreshnessSource {
   kind: 'sync' | 'crawl' | 'audit' | 'inspect' | 'ranks' | 'sitemap';
-  /** completed | running | failed | interrupted | cancelled | never */
+  /** completed | running | queued | failed | interrupted | cancelled | never */
   state: string;
   /** Timestamp of the last finish (or the start when still running / never finished). */
   at: string | null;
@@ -27,6 +28,10 @@ export interface DataFreshness {
   /** The crawl whose pages are on screen: the newest run that wrote pages (the crawler wipes the
    *  previous snapshot on its first write, so a failed run that wrote anything IS what's shown). */
   shownCrawl?: { crawlId: string; status: string; at: string | null; partial: boolean };
+  /** The latest audit vs the latest completed crawl (summary panel 0): `auditCrawlId` is the crawl the
+   *  audit read (NULL on runs before it was recorded); `predatesCrawl` = a completed crawl finished
+   *  after the audit, so the findings on screen describe an older crawl. Absent with no audit or crawl. */
+  auditVsCrawl?: { auditCrawlId: string | null; latestCrawlId: string; predatesCrawl: boolean };
 }
 
 const fmtN = (n: number): string => n.toLocaleString('en-US');
@@ -63,9 +68,16 @@ function crawlNote(rows: CrawlRow[], shown: DataFreshness['shownCrawl']): string
  * `liveJobs`: job types with a live owner in the job registry (`liveJobTypes()`), or null/omitted
  * when there is no registry to ask. With it, a crawl run still marked 'running' that no live
  * crawl/refresh job owns is reported as 'interrupted': its process exited mid-crawl (#9).
+ * `liveJobs.queued` (#56): job types waiting for the job runner; a sync or crawl that is queued
+ * reads as 'queued' (the detail still says what the stored data covers). `liveJobs.queuedNoRunner`:
+ * queued with no job runner to claim it - the stored state stands, and the detail says so.
  */
-export function getDataFreshness(db: Database.Database, liveJobs?: Set<string> | null): DataFreshness {
+export function getDataFreshness(db: Database.Database, liveJobs?: LiveJobs | null): DataFreshness {
   const sources: FreshnessSource[] = [];
+  const queuedFor = (...types: string[]): boolean => !!liveJobs?.queued && types.some(t => liveJobs.queued!.has(t));
+  const QUEUED = 'queued: waiting for the job runner';
+  const noRunnerFor = (...types: string[]): boolean => !!liveJobs?.queuedNoRunner && types.some(t => liveJobs.queuedNoRunner!.has(t));
+  const NO_RUNNER = 'queued: no job runner is running, so it will not start until one does';
 
   // GSC sync: property_meta.last_synced_at + the stored date span.
   if (tableExists(db, 'search_analytics')) {
@@ -73,11 +85,14 @@ export function getDataFreshness(db: Database.Database, liveJobs?: Set<string> |
       ? db.prepare(`SELECT last_synced_at FROM property_meta ORDER BY COALESCE(last_synced_at,'') DESC LIMIT 1`).get() as { last_synced_at: string | null } | undefined
       : undefined;
     const span = db.prepare(`SELECT MIN(date) lo, MAX(date) hi FROM search_analytics`).get() as { lo: string | null; hi: string | null };
+    const syncQueued = queuedFor('sync', 'refresh');
+    const syncNoRunner = !syncQueued && noRunnerFor('sync', 'refresh');
+    const syncDetail = span.hi ? `Search Console ${span.lo} to ${span.hi}` : 'No Search Console data yet - run sync_gsc';
     sources.push({
       kind: 'sync',
-      state: span.hi ? 'completed' : 'never',
+      state: syncQueued ? 'queued' : span.hi ? 'completed' : 'never',
       at: meta?.last_synced_at ?? null,
-      detail: span.hi ? `Search Console ${span.lo} to ${span.hi}` : 'No Search Console data yet - run sync_gsc',
+      detail: syncQueued ? `${QUEUED}; ${syncDetail}` : syncNoRunner ? `${NO_RUNNER}; ${syncDetail}` : syncDetail,
     });
   }
 
@@ -93,15 +108,20 @@ export function getDataFreshness(db: Database.Database, liveJobs?: Set<string> |
     const latest = rows[0];
     shownCrawl = shownCrawlOf(rows);
     const orphaned = latest?.status === 'running' && !!liveJobs && !liveJobs.has('crawl') && !liveJobs.has('refresh');
+    // A crawl queued for the job runner (#56) - unless one is actually running now, which wins.
+    const crawlQueued = queuedFor('crawl', 'refresh') && !(latest?.status === 'running' && !orphaned);
+    const crawlNoRunner = !crawlQueued && noRunnerFor('crawl', 'refresh') && !(latest?.status === 'running' && !orphaned);
     sources.push(latest
       ? {
         kind: 'crawl',
-        state: orphaned ? 'interrupted' : latest.status ?? 'unknown',
+        state: crawlQueued ? 'queued' : orphaned ? 'interrupted' : latest.status ?? 'unknown',
         at: latest.finished_at ?? latest.started_at,
-        detail: `${fmtN(latest.urls_crawled ?? 0)} URLs crawled${latest.urls_failed ? `, ${fmtN(latest.urls_failed)} failed` : ''}` + crawlNote(rows, shownCrawl),
-        error: orphaned ? (latest.error ?? exitedBeforeFinish('crawl')) : latest.error,
+        detail: (crawlQueued ? `${QUEUED}; last run: ` : crawlNoRunner ? `${NO_RUNNER}; last run: ` : '') + `${fmtN(latest.urls_crawled ?? 0)} URLs crawled${latest.urls_failed ? `, ${fmtN(latest.urls_failed)} failed` : ''}` + crawlNote(rows, shownCrawl),
+        error: crawlQueued ? null : orphaned ? (latest.error ?? exitedBeforeFinish('crawl')) : latest.error,
       }
-      : { kind: 'crawl', state: 'never', at: null, detail: 'No crawl yet - run start_crawl or refresh_property' });
+      : crawlQueued
+        ? { kind: 'crawl', state: 'queued', at: null, detail: `${QUEUED}; no crawl yet` }
+        : { kind: 'crawl', state: 'never', at: null, detail: crawlNoRunner ? `${NO_RUNNER}; no crawl yet` : 'No crawl yet - run start_crawl or refresh_property' });
   }
 
   // Audit: the latest run.
@@ -126,6 +146,19 @@ export function getDataFreshness(db: Database.Database, liveJobs?: Set<string> |
       : { kind: 'audit', state: 'never', at: null, detail: 'No audit yet - run run_audit' });
   }
 
+  // Does the latest audit predate the latest completed crawl? Compared by time (julianday copes with
+  // both stored formats), so it also works for legacy audit rows that never recorded their crawl.
+  let auditVsCrawl: DataFreshness['auditVsCrawl'];
+  if (tableExists(db, 'audit_runs') && tableExists(db, 'crawl_metadata')) {
+    const hasCrawlCol = (db.prepare(`PRAGMA table_info(audit_runs)`).all() as { name: string }[]).some(c => c.name === 'crawl_id');
+    const a = db.prepare(`SELECT ${hasCrawlCol ? 'crawl_id' : 'NULL crawl_id'}, COALESCE(finished_at, started_at) at FROM audit_runs ORDER BY started_at DESC LIMIT 1`).get() as { crawl_id: string | null; at: string | null } | undefined;
+    const c = db.prepare(`SELECT crawl_id, finished_at FROM crawl_metadata WHERE status='completed' AND finished_at IS NOT NULL ORDER BY julianday(finished_at) DESC LIMIT 1`).get() as { crawl_id: string; finished_at: string } | undefined;
+    if (a?.at && c) {
+      const later = (db.prepare(`SELECT julianday(?) > julianday(?) later`).get(c.finished_at, a.at) as { later: number | null }).later;
+      auditVsCrawl = { auditCrawlId: a.crawl_id, latestCrawlId: c.crawl_id, predatesCrawl: a.crawl_id ? a.crawl_id !== c.crawl_id && !!later : !!later };
+    }
+  }
+
   // URL inspection: how many URLs, when last inspected.
   if (tableExists(db, 'url_inspection')) {
     const i = db.prepare(`SELECT COUNT(*) n, MAX(inspected_at) at FROM url_inspection`).get() as { n: number; at: string | null };
@@ -144,5 +177,5 @@ export function getDataFreshness(db: Database.Database, liveJobs?: Set<string> |
     if (s.n) sources.push({ kind: 'sitemap', state: 'completed', at: s.at, detail: `${fmtN(s.n)} sitemap URLs` });
   }
 
-  return { sources, crawlRuns, ...(shownCrawl ? { shownCrawl } : {}) };
+  return { sources, crawlRuns, ...(shownCrawl ? { shownCrawl } : {}), ...(auditVsCrawl ? { auditVsCrawl } : {}) };
 }

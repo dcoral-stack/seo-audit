@@ -1,11 +1,19 @@
 import type Database from 'better-sqlite3';
+import { TITLE_MAX_CHARS, META_DESC_MAX_CHARS } from '../core/onPageLimits.js';
 import type { FindingLabel, Severity } from '../core/AuditDatabase.js';
 import { validateJsonLdColumn, type SchemaIssueKind } from './schema-validate.js';
-import { urlKey } from '../core/url-key.js';
 import { parseJsonLdNodes, nodeType } from './templates.js';
 import { expectedCtr } from '../core/ctrModel.js';
 import { latestTwoCrawls } from './drift.js';
 import { HTML_CT } from '../core/sql.js';
+import { loadBrandQueries, brandPredicate } from '../core/brand.js';
+import { SIGNAL_CHECKS } from './checks-signals.js';
+import { REDIRECT_CHECKS, redirectChainFindings } from './checks-redirects.js';
+import { ECOMMERCE_CHECKS } from './checks-ecommerce.js';
+import { HREFLANG_CHECKS, HREFLANG_EXISTING_CHECKS } from './checks-hreflang.js';
+import { ASSET_CHECKS } from './checks-assets.js';
+import { PROBE_CHECKS } from './checks-probes.js';
+import { RENDER_CHECKS } from './checks-render.js';
 
 /**
  * Check registry. Each check is a pure read over the AuditDatabase (crawl + GSC +
@@ -18,6 +26,7 @@ export interface CheckContext {
   db: Database.Database;
   gscMaxDate: string | null; // null = no GSC data; G-checks skip
   brand?: string | null;     // registrable brand label (alnum), for excluding branded queries; null = unknown
+  siteUrl?: string;          // the property: branded queries are detected from its domain stem (core/brand.ts)
 }
 export interface RawFinding {
   urlKey?: string | null;
@@ -35,6 +44,12 @@ export interface CheckDef {
   title: string;
   fix: string;
   run(ctx: CheckContext): RawFinding[];
+  /**
+   * Optional: whether the data this check reads was collected at all. null = collected (zero findings
+   * then means "passed"); a string = NOT collected, saying how to collect it, so an empty table is
+   * reported as unknown rather than passing silently. Surfaced as AuditResult.notCollected.
+   */
+  collected?(ctx: CheckContext): string | null;
 }
 
 const rows = (ctx: CheckContext, sql: string, ...args: unknown[]): any[] => ctx.db.prepare(sql).all(...args);
@@ -47,10 +62,13 @@ const iterRows = (ctx: CheckContext, sql: string, ...args: unknown[]): IterableI
 const win = (d: string): string => `date > date('${d}', '-28 days') AND date <= '${d}'`;
 // Prior 28-day window (the 28 days BEFORE the current window) — for period-over-period checks.
 const winPrev = (d: string): string => `date <= date('${d}', '-28 days') AND date > date('${d}', '-56 days')`;
-// SQL clause to drop branded queries (whole-token match). Branded multi-URL ranking is sitelinks,
-// not cannibalisation; branded top-queries aren't anchor targets. The brand is re-sanitised to
+// SQL clause to drop branded queries. Branded multi-URL ranking is sitelinks, not cannibalisation;
+// branded top-queries aren't anchor targets. With the property known, a query is branded when a run
+// of its whole words spells the domain stem ("sim racing cockpit"; core/brand.ts), the same rule as
+// the dashboard's branded split. Without it, the bare token as one whole word - re-sanitised to
 // alnum HERE (not trusting the caller) so inlining it into SQL is unconditionally injection-safe.
 const brandExcl = (c: CheckContext): string => {
+  if (c.siteUrl) return loadBrandQueries(c.db, c.siteUrl) ? `AND NOT (${brandPredicate()})` : '';
   const b = (c.brand ?? '').replace(/[^a-z0-9]/g, '');
   return b ? `AND (' ' || LOWER(query) || ' ') NOT LIKE '% ${b} %'` : '';
 };
@@ -60,7 +78,7 @@ const spanDays = (c: CheckContext): number => {
   // (gscMaxDate is trimmed ~3 days below raw MAX(date)) — measuring the raw span lets the
   // ≥56-day guard pass while the previous-28d window still reaches before MIN(date),
   // undercounting the prior period (rising-pages FPs, traffic-decay FNs).
-  const r = c.db.prepare(`SELECT julianday(?) - julianday(MIN(date)) d FROM search_analytics`).get(c.gscMaxDate ?? null) as { d: number | null };
+  const r = c.db.prepare(`SELECT julianday(?) - julianday(MIN(date)) d FROM gsc_rows`).get(c.gscMaxDate ?? null) as { d: number | null };
   return r?.d ?? 0;
 };
 // Newest dateModified/datePublished anywhere in a page's JSON-LD (recurses @graph/arrays) — the
@@ -297,22 +315,22 @@ export const CHECKS: CheckDef[] = [
   {
     id: 'noindex-with-traffic', category: 'indexation', severity: 'crit', labels: ['D', 'G'], certainty: 1, effortBase: 1, fixType: 'per-page',
     title: 'Noindex page still getting clicks', fix: 'Remove noindex if the page should rank — it earns clicks.',
-    run: (c) => c.gscMaxDate ? rows(c, `SELECT p.url_key urlKey, SUM(sa.clicks) clicks FROM pages p JOIN search_analytics sa ON sa.page_key=p.url_key WHERE p.noindex=1 AND sa.${win(c.gscMaxDate)} GROUP BY p.url_key HAVING SUM(sa.clicks)>0`).map(r => ({ urlKey: r.urlKey, evidence: { clicks: r.clicks } })) : [],
+    run: (c) => c.gscMaxDate ? rows(c, `SELECT p.url_key urlKey, SUM(sa.clicks) clicks FROM pages p JOIN gsc_rows sa ON sa.page_key=p.url_key WHERE p.noindex=1 AND sa.${win(c.gscMaxDate)} GROUP BY p.url_key HAVING SUM(sa.clicks)>0`).map(r => ({ urlKey: r.urlKey, evidence: { clicks: r.clicks } })) : [],
   },
   {
     id: 'orphan-with-impressions', category: 'merged', severity: 'high', labels: ['D', 'G'], certainty: 1, effortBase: 5, fixType: 'per-page',
     title: 'Orphan page earning impressions', fix: 'Add internal links — Google ranks it but the site barely links to it. If it drives a large traffic share, protect it BEFORE any cleanup or migration (it is load-bearing).',
     run: (c) => {
       if (!c.gscMaxDate) return [];
-      const total = (rows(c, `SELECT SUM(clicks) c FROM search_analytics WHERE ${win(c.gscMaxDate)}`)[0]?.c) || 1;
-      return rows(c, `SELECT p.url_key urlKey, SUM(sa.impressions) impressions, SUM(sa.clicks) clicks FROM pages p JOIN search_analytics sa ON sa.page_key=p.url_key WHERE p.inlink_count=0 AND p.indexable=1 AND sa.${win(c.gscMaxDate)} GROUP BY p.url_key HAVING SUM(sa.impressions)>0 ORDER BY clicks DESC, impressions DESC`)
+      const total = (rows(c, `SELECT SUM(clicks) c FROM gsc_rows WHERE ${win(c.gscMaxDate)}`)[0]?.c) || 1;
+      return rows(c, `SELECT p.url_key urlKey, SUM(sa.impressions) impressions, SUM(sa.clicks) clicks FROM pages p JOIN gsc_rows sa ON sa.page_key=p.url_key WHERE p.inlink_count=0 AND p.indexable=1 AND sa.${win(c.gscMaxDate)} GROUP BY p.url_key HAVING SUM(sa.impressions)>0 ORDER BY clicks DESC, impressions DESC`)
         .map(r => { const share = Math.round(r.clicks / total * 1000) / 10; return { urlKey: r.urlKey, evidence: { impressions: r.impressions, clicks: r.clicks, inlinks: 0, trafficShare: share + '%', ...(share >= 5 ? { note: `LOAD-BEARING orphan: drives ${share}% of site clicks with zero internal links — protect before any cleanup/migration` } : {}) } }; });
     },
   },
   {
     id: 'canonical-ignored', category: 'indexation', severity: 'high', labels: ['D', 'G'], certainty: 1, effortBase: 3, fixType: 'per-page',
     title: 'Google may be ignoring the declared canonical', fix: 'This page declares a canonical pointing elsewhere, yet Google still ranks IT (real impressions) — Google is overriding the canonical, usually because the target is weaker or internal links favour this URL. Decide which URL you actually want indexed, then align both the canonical and the internal links to it.',
-    run: (c) => c.gscMaxDate ? rows(c, `SELECT p.url_key urlKey, p.canonical_url canonical, SUM(sa.impressions) impressions, SUM(sa.clicks) clicks FROM pages p JOIN search_analytics sa ON sa.page_key=p.url_key WHERE p.canonical_key IS NOT NULL AND p.canonical_key != p.url_key AND sa.${win(c.gscMaxDate)} GROUP BY p.url_key HAVING SUM(sa.impressions) >= 50 ORDER BY impressions DESC LIMIT 40`).map(r => ({ urlKey: r.urlKey, evidence: { declaredCanonical: r.canonical, impressions: r.impressions, clicks: r.clicks, note: 'ranks despite pointing its canonical elsewhere' } })) : [],
+    run: (c) => c.gscMaxDate ? rows(c, `SELECT p.url_key urlKey, p.canonical_url canonical, SUM(sa.impressions) impressions, SUM(sa.clicks) clicks FROM pages p JOIN gsc_rows sa ON sa.page_key=p.url_key WHERE p.canonical_key IS NOT NULL AND p.canonical_key != p.url_key AND sa.${win(c.gscMaxDate)} GROUP BY p.url_key HAVING SUM(sa.impressions) >= 50 ORDER BY impressions DESC LIMIT 40`).map(r => ({ urlKey: r.urlKey, evidence: { declaredCanonical: r.canonical, impressions: r.impressions, clicks: r.clicks, note: 'ranks despite pointing its canonical elsewhere' } })) : [],
   },
   {
     id: 'indexed-junk-url', category: 'indexation', severity: 'high', labels: ['D', 'G'], certainty: 1, effortBase: 3, fixType: 'global',
@@ -320,7 +338,7 @@ export const CHECKS: CheckDef[] = [
     run: (c) => {
       if (!c.gscMaxDate) return [];
       const junk = /[?&](q|s|search|keyword|orderby|sort_by|filter|variant|pf_|dppref|replytocom)=|\/search(-results)?\//i;
-      return rows(c, `SELECT page_key urlKey, SUM(impressions) impressions, SUM(clicks) clicks FROM search_analytics WHERE page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key HAVING SUM(impressions) >= 30 ORDER BY SUM(impressions) DESC`)
+      return rows(c, `SELECT page_key urlKey, SUM(impressions) impressions, SUM(clicks) clicks FROM gsc_rows WHERE page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key HAVING SUM(impressions) >= 30 ORDER BY SUM(impressions) DESC`)
         .filter(r => junk.test(r.urlKey)).slice(0, 40)
         .map(r => ({ urlKey: r.urlKey, evidence: { impressions: r.impressions, clicks: r.clicks, note: 'URL signature = internal search / facet / param — likely accidental indexation' } }));
     },
@@ -338,18 +356,18 @@ export const CHECKS: CheckDef[] = [
   {
     id: 'striking-distance', category: 'merged', severity: 'high', labels: ['G'], certainty: 1, effortBase: 5, fixType: 'per-page',
     title: 'Striking-distance query (page 2)', fix: 'Small on-page + internal-link push could reach page 1.',
-    run: (c) => c.gscMaxDate ? rows(c, `SELECT page_key urlKey, query, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) position, SUM(impressions) impressions FROM search_analytics WHERE query IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY query, page_key HAVING SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0)>10 AND SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0)<=20 AND SUM(impressions)>=20 ORDER BY impressions DESC LIMIT 50`).map(r => ({ urlKey: r.urlKey, evidence: { query: r.query, position: Math.round(r.position * 10) / 10, impressions: r.impressions } })) : [],
+    run: (c) => c.gscMaxDate ? rows(c, `SELECT page_key urlKey, query, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) position, SUM(impressions) impressions FROM gsc_rows WHERE query IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY query, page_key HAVING SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0)>10 AND SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0)<=20 AND SUM(impressions)>=20 ORDER BY impressions DESC LIMIT 50`).map(r => ({ urlKey: r.urlKey, evidence: { query: r.query, position: Math.round(r.position * 10) / 10, impressions: r.impressions } })) : [],
   },
   // ── Additions from industry checklist review (buildable on current data) ──
   {
     id: 'title-too-long', category: 'onpage', severity: 'low', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'per-page',
     title: 'Title over ~60 chars', fix: 'Trim the title so the primary keyword sits within ~60 chars.',
-    run: (c) => rows(c, `SELECT url_key urlKey, title_length len FROM pages WHERE status_code=200 AND indexable=1 AND title_length > 60`).map(r => ({ urlKey: r.urlKey, evidence: { titleLength: r.len } })),
+    run: (c) => rows(c, `SELECT url_key urlKey, title_length len FROM pages WHERE status_code=200 AND indexable=1 AND title_length > ${TITLE_MAX_CHARS}`).map(r => ({ urlKey: r.urlKey, evidence: { titleLength: r.len } })),
   },
   {
     id: 'meta-description-length', category: 'onpage', severity: 'low', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'per-page',
     title: 'Meta description over ~160 chars', fix: 'Tighten to ~150–160 chars so it isn’t truncated.',
-    run: (c) => rows(c, `SELECT url_key urlKey, meta_description_length len FROM pages WHERE status_code=200 AND indexable=1 AND meta_description_length > 160`).map(r => ({ urlKey: r.urlKey, evidence: { length: r.len } })),
+    run: (c) => rows(c, `SELECT url_key urlKey, meta_description_length len FROM pages WHERE status_code=200 AND indexable=1 AND meta_description_length > ${META_DESC_MAX_CHARS}`).map(r => ({ urlKey: r.urlKey, evidence: { length: r.len } })),
   },
   {
     id: 'non-https', category: 'security', severity: 'high', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'global',
@@ -359,11 +377,9 @@ export const CHECKS: CheckDef[] = [
   {
     id: 'redirect-chain', category: 'crawlability', severity: 'med', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'automated',
     title: 'Redirect chain (2+ hops)', fix: 'Collapse to a single hop to the final URL.',
-    // Count hops in SQL (json_array_length, guarded by json_valid) and filter to >=2 there — so we
-    // never pull every redirect-bearing page into JS just to count + drop most of them.
-    run: (c) => rows(c, `SELECT url_key urlKey, json_array_length(redirects) hops FROM pages
-      WHERE redirects IS NOT NULL AND json_valid(redirects) AND json_array_length(redirects) >= 2`)
-      .map(r => ({ urlKey: r.urlKey, evidence: { hops: r.hops } })),
+    // #55 group B: one finding per redirecting SOURCE (redirect_sources + pages.redirects), internal
+    // chains that resolve only. Off-site/login bounces and loops are excluded (loops: redirect-loop).
+    run: redirectChainFindings,
   },
   {
     id: 'internal-links-to-redirects', category: 'crawlability', severity: 'med', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'automated',
@@ -445,7 +461,7 @@ export const CHECKS: CheckDef[] = [
         WITH per_page AS (
           SELECT query, page_key, SUM(clicks) clicks, SUM(impressions) impressions,
                  SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
-          FROM search_analytics
+          FROM gsc_rows
           WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} ${brandExcl(c)}
           GROUP BY query, page_key
           HAVING pos < 20 AND SUM(impressions) >= 10
@@ -485,7 +501,7 @@ export const CHECKS: CheckDef[] = [
     // High-confidence floor: ≥500 impressions/28d. A title/meta rewrite (HIGH, ~3h) is only
     // worth flagging where the snippet earns enough visibility for a CTR lift to pay back — a
     // 100-impression page at 1% vs 3% expected is a 2-clicks gap, not a HIGH issue.
-    run: (c) => c.gscMaxDate ? rows(c, `SELECT page_key urlKey, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) position, SUM(clicks) clicks, SUM(impressions) impressions FROM search_analytics WHERE page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key HAVING SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) <= 10 AND SUM(impressions) >= 500`)
+    run: (c) => c.gscMaxDate ? rows(c, `SELECT page_key urlKey, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) position, SUM(clicks) clicks, SUM(impressions) impressions FROM gsc_rows WHERE page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key HAVING SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) <= 10 AND SUM(impressions) >= 500`)
       .map(r => { const ctr = r.clicks / r.impressions; const exp = expectedCtr(r.position); return { urlKey: r.urlKey, ctr, exp, position: r.position, impressions: r.impressions }; })
       .filter(x => x.ctr < x.exp * 0.5)
       .map(x => {
@@ -502,8 +518,8 @@ export const CHECKS: CheckDef[] = [
     title: 'Page losing clicks (period-over-period)', fix: 'Refresh and expand the content, and check for lost rankings — this page’s Search Console clicks fell sharply against the previous 28 days.',
     run: (c) => (!c.gscMaxDate || spanDays(c) < 56) ? [] : rows(c, `
       WITH cur AS (SELECT page_key, SUM(clicks) c, SUM(impressions) i, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
-                   FROM search_analytics WHERE page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key),
-           prev AS (SELECT page_key, SUM(clicks) c FROM search_analytics WHERE page_key IS NOT NULL AND ${winPrev(c.gscMaxDate)} GROUP BY page_key)
+                   FROM gsc_rows WHERE page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key),
+           prev AS (SELECT page_key, SUM(clicks) c FROM gsc_rows WHERE page_key IS NOT NULL AND ${winPrev(c.gscMaxDate)} GROUP BY page_key)
       SELECT prev.page_key url, prev.c prevC, COALESCE(cur.c,0) curC, COALESCE(cur.i,0) curI, COALESCE(cur.pos,10) pos
       FROM prev LEFT JOIN cur ON cur.page_key=prev.page_key
       WHERE prev.c >= 30 AND COALESCE(cur.c,0) < prev.c * 0.6
@@ -515,8 +531,8 @@ export const CHECKS: CheckDef[] = [
     id: 'lost-queries', category: 'merged', severity: 'med', labels: ['G'], certainty: 1, effortBase: 5, fixType: 'per-page',
     title: 'Query dropped out of rankings', fix: 'This query drove clicks last period and drives none now — find the page that ranked, check for de-indexing or lost rankings, and win it back.',
     run: (c) => (!c.gscMaxDate || spanDays(c) < 56) ? [] : rows(c, `
-      WITH cur AS (SELECT query, SUM(clicks) c FROM search_analytics WHERE query IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY query),
-           prev AS (SELECT query, SUM(clicks) c, SUM(impressions) i FROM search_analytics WHERE query IS NOT NULL AND ${winPrev(c.gscMaxDate)} GROUP BY query)
+      WITH cur AS (SELECT query, SUM(clicks) c FROM gsc_rows WHERE query IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY query),
+           prev AS (SELECT query, SUM(clicks) c, SUM(impressions) i FROM gsc_rows WHERE query IS NOT NULL AND ${winPrev(c.gscMaxDate)} GROUP BY query)
       SELECT prev.query query, prev.c prevC, prev.i prevI FROM prev LEFT JOIN cur ON cur.query=prev.query
       WHERE prev.c >= 10 AND COALESCE(cur.c,0)=0
       ORDER BY prev.c DESC LIMIT 40`)
@@ -527,8 +543,8 @@ export const CHECKS: CheckDef[] = [
     title: 'Page-1 ranking slipping', fix: 'Average position for this query worsened by 3+ spots vs the previous 28 days while it was still on page one — investigate the ranking loss before the clicks follow it down.',
     run: (c) => (!c.gscMaxDate || spanDays(c) < 56) ? [] : rows(c, `
       WITH cur AS (SELECT query, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos, SUM(impressions) i, SUM(clicks) c
-                   FROM search_analytics WHERE query IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY query HAVING SUM(impressions) >= 100),
-           prev AS (SELECT query, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos FROM search_analytics WHERE query IS NOT NULL AND ${winPrev(c.gscMaxDate)} GROUP BY query)
+                   FROM gsc_rows WHERE query IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY query HAVING SUM(impressions) >= 100),
+           prev AS (SELECT query, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos FROM gsc_rows WHERE query IS NOT NULL AND ${winPrev(c.gscMaxDate)} GROUP BY query)
       SELECT cur.query query, prev.pos prevPos, cur.pos curPos, cur.i i, cur.c c FROM cur JOIN prev ON prev.query=cur.query
       WHERE prev.pos <= 10 AND cur.pos - prev.pos >= 3
       ORDER BY (cur.pos - prev.pos) * cur.i DESC LIMIT 40`)
@@ -537,7 +553,7 @@ export const CHECKS: CheckDef[] = [
   {
     id: 'index-bloat', category: 'indexation', severity: 'med', labels: ['D', 'G'], certainty: 1, effortBase: 5, fixType: 'per-page',
     title: 'Indexable page with no search traffic', fix: 'No impressions in 90 days despite being indexable — consolidate, improve, or noindex/prune to concentrate crawl budget and internal authority (confirm it isn’t seasonal or brand-new first).',
-    run: (c) => (!c.gscMaxDate || spanDays(c) < 90) ? [] : rows(c, `SELECT url_key urlKey, ipr FROM pages WHERE status_code=200 AND indexable=1 AND ${HTML_CT} AND COALESCE(click_depth, 999) >= 1 AND url_key NOT IN (SELECT DISTINCT page_key FROM search_analytics WHERE page_key IS NOT NULL AND date <= '${c.gscMaxDate}' AND date > date('${c.gscMaxDate}','-90 days') AND impressions > 0) ORDER BY ipr DESC LIMIT 100`).map(r => ({ urlKey: r.urlKey, evidence: { note: 'indexable but zero impressions in 90 days', ipr: Math.round(r.ipr) } })),
+    run: (c) => (!c.gscMaxDate || spanDays(c) < 90) ? [] : rows(c, `SELECT url_key urlKey, ipr FROM pages WHERE status_code=200 AND indexable=1 AND ${HTML_CT} AND COALESCE(click_depth, 999) >= 1 AND url_key NOT IN (SELECT DISTINCT page_key FROM gsc_rows WHERE page_key IS NOT NULL AND date <= '${c.gscMaxDate}' AND date > date('${c.gscMaxDate}','-90 days') AND impressions > 0) ORDER BY ipr DESC LIMIT 100`).map(r => ({ urlKey: r.urlKey, evidence: { note: 'indexable but zero impressions in 90 days', ipr: Math.round(r.ipr) } })),
   },
   // ── On-page parity (crawl-only, deterministic) ──
   {
@@ -556,8 +572,8 @@ export const CHECKS: CheckDef[] = [
     id: 'rising-pages', category: 'merged', severity: 'low', labels: ['G'], certainty: 1, effortBase: 2, fixType: 'per-page',
     title: 'Page gaining clicks fast (double down)', fix: 'Clicks jumped vs the previous 28 days — reinforce it with internal links and related content while the momentum is there.',
     run: (c) => (!c.gscMaxDate || spanDays(c) < 56) ? [] : rows(c, `
-      WITH cur AS (SELECT page_key, SUM(clicks) c, SUM(impressions) i, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos FROM search_analytics WHERE page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key),
-           prev AS (SELECT page_key, SUM(clicks) c FROM search_analytics WHERE page_key IS NOT NULL AND ${winPrev(c.gscMaxDate)} GROUP BY page_key)
+      WITH cur AS (SELECT page_key, SUM(clicks) c, SUM(impressions) i, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos FROM gsc_rows WHERE page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key),
+           prev AS (SELECT page_key, SUM(clicks) c FROM gsc_rows WHERE page_key IS NOT NULL AND ${winPrev(c.gscMaxDate)} GROUP BY page_key)
       SELECT cur.page_key url, COALESCE(prev.c,0) prevC, cur.c curC, cur.i curI, COALESCE(cur.pos,10) pos
       FROM cur LEFT JOIN prev ON prev.page_key=cur.page_key
       WHERE cur.c >= 30 AND cur.c >= COALESCE(prev.c,0) * 1.5
@@ -567,15 +583,15 @@ export const CHECKS: CheckDef[] = [
   {
     id: 'traffic-to-dead-url', category: 'merged', severity: 'high', labels: ['D', 'G'], certainty: 1, effortBase: 3, fixType: 'per-page',
     title: 'Search traffic to a dead (non-200) URL', fix: 'Google still sends clicks/impressions to this URL but the crawl returns a 4xx/5xx — recover the page or 301 it to the best live equivalent so the demand isn’t lost. (The "directive contradicts reality" join: you rank for a page that no longer works.)',
-    run: (c) => c.gscMaxDate ? rows(c, `SELECT p.url_key urlKey, p.status_code st, SUM(sa.clicks) clicks, SUM(sa.impressions) impressions FROM pages p JOIN search_analytics sa ON sa.page_key=p.url_key WHERE p.status_code >= 400 AND sa.${win(c.gscMaxDate)} GROUP BY p.url_key HAVING SUM(sa.impressions) >= 10 ORDER BY clicks DESC, impressions DESC LIMIT 40`)
+    run: (c) => c.gscMaxDate ? rows(c, `SELECT p.url_key urlKey, p.status_code st, SUM(sa.clicks) clicks, SUM(sa.impressions) impressions FROM pages p JOIN gsc_rows sa ON sa.page_key=p.url_key WHERE p.status_code >= 400 AND sa.${win(c.gscMaxDate)} GROUP BY p.url_key HAVING SUM(sa.impressions) >= 10 ORDER BY clicks DESC, impressions DESC LIMIT 40`)
       .map(r => ({ urlKey: r.urlKey, evidence: { status: r.st, clicks: r.clicks, impressions: r.impressions, note: `HTTP ${r.st} but still earning search traffic` } })) : [],
   },
   {
     id: 'impressions-rising-clicks-flat', category: 'merged', severity: 'high', labels: ['G'], certainty: 1, effortBase: 3, fixType: 'per-page',
     title: 'Impressions rising but clicks flat (CTR erosion)', fix: 'Google is showing this page MORE than it used to, yet you’re not winning more clicks — a stale title/meta, or a SERP feature (AI overview, snippet, pack) is taking them. Rewrite the snippet or target the feature.',
     run: (c) => (!c.gscMaxDate || spanDays(c) < 56) ? [] : rows(c, `
-      WITH cur AS (SELECT page_key, SUM(clicks) c, SUM(impressions) i, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos FROM search_analytics WHERE page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key),
-           prev AS (SELECT page_key, SUM(clicks) c, SUM(impressions) i FROM search_analytics WHERE page_key IS NOT NULL AND ${winPrev(c.gscMaxDate)} GROUP BY page_key)
+      WITH cur AS (SELECT page_key, SUM(clicks) c, SUM(impressions) i, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos FROM gsc_rows WHERE page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key),
+           prev AS (SELECT page_key, SUM(clicks) c, SUM(impressions) i FROM gsc_rows WHERE page_key IS NOT NULL AND ${winPrev(c.gscMaxDate)} GROUP BY page_key)
       SELECT cur.page_key url, prev.i prevImpr, cur.i curImpr, prev.c prevClicks, cur.c curClicks, cur.pos pos
       FROM cur JOIN prev ON prev.page_key=cur.page_key
       WHERE prev.i >= 200 AND cur.i >= prev.i * 1.3 AND cur.c <= prev.c
@@ -589,7 +605,7 @@ export const CHECKS: CheckDef[] = [
       if (!c.gscMaxDate) return [];
       const r = rows(c, `SELECT s.page_key urlKey, s.query query, s.impr impressions, p.h1 h1 FROM
         (SELECT page_key, query, SUM(impressions) impr, ROW_NUMBER() OVER (PARTITION BY page_key ORDER BY SUM(impressions) DESC) rn
-         FROM search_analytics WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key, query) s
+         FROM gsc_rows WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key, query) s
         JOIN pages p ON p.url_key = s.page_key
         WHERE s.rn = 1 AND p.indexable = 1 AND p.h1 IS NOT NULL AND p.h1 != '' AND s.impr >= 100`);
       return r.filter(x => { const q = terms(x.query); return q.length > 0 && !q.some(w => titleHasTerm(x.h1, w)); })
@@ -604,7 +620,7 @@ export const CHECKS: CheckDef[] = [
       if (!c.gscMaxDate) return [];
       const r = rows(c, `SELECT s.page_key urlKey, s.query query, s.impr impressions, p.title title, p.h1 h1, p.body_chunks bc FROM
         (SELECT page_key, query, SUM(impressions) impr, ROW_NUMBER() OVER (PARTITION BY page_key ORDER BY SUM(impressions) DESC) rn
-         FROM search_analytics WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key, query) s
+         FROM gsc_rows WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key, query) s
         JOIN pages p ON p.url_key = s.page_key
         WHERE s.rn = 1 AND p.indexable = 1 AND p.body_chunks IS NOT NULL AND s.impr >= 100`);
       return r.filter(x => {
@@ -634,7 +650,7 @@ export const CHECKS: CheckDef[] = [
       if (!c.gscMaxDate) return [];
       const r = rows(c, `SELECT s.page_key urlKey, s.query query, s.impr impressions, p.title title, p.body_chunks bc FROM
         (SELECT page_key, query, SUM(impressions) impr, ROW_NUMBER() OVER (PARTITION BY page_key ORDER BY SUM(impressions) DESC) rn
-         FROM search_analytics WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key, query) s
+         FROM gsc_rows WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key, query) s
         JOIN pages p ON p.url_key = s.page_key
         WHERE s.rn = 1 AND p.indexable = 1 AND p.body_chunks IS NOT NULL AND s.impr >= 200`);
       return r.filter(x => {
@@ -673,7 +689,7 @@ export const CHECKS: CheckDef[] = [
       if (!c.gscMaxDate) return [];
       const top = rows(c, `SELECT s.page_key urlKey, s.query query, s.impr impressions FROM
         (SELECT page_key, query, SUM(impressions) impr, ROW_NUMBER() OVER (PARTITION BY page_key ORDER BY SUM(impressions) DESC) rn
-         FROM search_analytics WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} ${brandExcl(c)} GROUP BY page_key, query) s
+         FROM gsc_rows WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} ${brandExcl(c)} GROUP BY page_key, query) s
         JOIN pages p ON p.url_key = s.page_key
         WHERE s.rn = 1 AND p.indexable = 1 AND s.impr >= 100`);
       // Pool only GENUINE editorial anchors. "Chrome" (nav/footer/breadcrumb/CTA) is detected
@@ -728,7 +744,7 @@ export const CHECKS: CheckDef[] = [
       const INFO = /\b(how|what|why|when|which|who|guide|tutorial|best|vs|versus|is|are|does|do|can|should|tips|ideas|examples|meaning|definition|setup|settings)\b/i;
       const r = rows(c, `SELECT s.page_key urlKey, s.query query, s.impr impressions, p.title title, p.body_chunks bc FROM
         (SELECT page_key, query, SUM(impressions) impr, ROW_NUMBER() OVER (PARTITION BY page_key ORDER BY SUM(impressions) DESC) rn
-         FROM search_analytics WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key, query) s
+         FROM gsc_rows WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key, query) s
         JOIN pages p ON p.url_key = s.page_key
         WHERE s.rn = 1 AND p.indexable = 1 AND p.body_chunks IS NOT NULL AND p.word_count >= 800 AND s.impr >= 100`);
       return r.filter(x => {
@@ -771,8 +787,8 @@ export const CHECKS: CheckDef[] = [
       const d = c.gscMaxDate;
       const out: { urlKey: string | null; evidence: Record<string, unknown> }[] = [];
       const rs = rows(c, `
-        WITH cur AS (SELECT page_key, SUM(clicks) c, SUM(impressions) i FROM search_analytics WHERE page_key IS NOT NULL AND date <= '${d}' AND date > date('${d}','-90 days') GROUP BY page_key),
-             py AS (SELECT page_key, SUM(clicks) c, SUM(impressions) i FROM search_analytics WHERE page_key IS NOT NULL AND date <= date('${d}','-365 days') AND date > date('${d}','-455 days') GROUP BY page_key)
+        WITH cur AS (SELECT page_key, SUM(clicks) c, SUM(impressions) i FROM gsc_rows WHERE page_key IS NOT NULL AND date <= '${d}' AND date > date('${d}','-90 days') GROUP BY page_key),
+             py AS (SELECT page_key, SUM(clicks) c, SUM(impressions) i FROM gsc_rows WHERE page_key IS NOT NULL AND date <= date('${d}','-365 days') AND date > date('${d}','-455 days') GROUP BY page_key)
         SELECT cur.page_key url, cur.c curC, cur.i curI, py.c pyC, py.i pyI, p.json_ld jl
         FROM cur JOIN py ON py.page_key = cur.page_key JOIN pages p ON p.url_key = cur.page_key
         WHERE p.indexable = 1 AND py.c >= 50 AND cur.c < py.c * 0.75 AND cur.i < py.i * 0.85
@@ -790,7 +806,7 @@ export const CHECKS: CheckDef[] = [
     id: 'high-ipr-no-traffic', category: 'merged', severity: 'med', labels: ['D', 'G'], certainty: 1, effortBase: 5, fixType: 'per-page',
     title: 'Internal authority wasted on a no-traffic page', fix: 'High internal link equity (iPR) and Google does rank it (it earns impressions), yet it gets zero clicks — rewrite the title/snippet or improve the page, or repoint that authority to pages that convert it. (Requires impressions, so functional pages with no search demand are excluded.)',
     run: (c) => (!c.gscMaxDate || spanDays(c) < 90) ? [] : rows(c, `SELECT p.url_key urlKey, p.ipr ipr, p.inlink_count inl, SUM(sa.impressions) impressions
-      FROM pages p JOIN search_analytics sa ON sa.page_key=p.url_key
+      FROM pages p JOIN gsc_rows sa ON sa.page_key=p.url_key
       WHERE p.indexable=1 AND p.ipr >= 50 AND COALESCE(p.click_depth, 999) >= 1 AND sa.date <= '${c.gscMaxDate}' AND sa.date > date('${c.gscMaxDate}','-90 days')
       GROUP BY p.url_key HAVING SUM(sa.clicks)=0 AND SUM(sa.impressions) >= 100
       ORDER BY p.ipr DESC LIMIT 50`).map(r => ({ urlKey: r.urlKey, evidence: { ipr: Math.round(r.ipr), inlinks: r.inl, impressions: r.impressions, clicks: 0, note: 'high internal authority + impressions, zero clicks in 90 days' } })),
@@ -834,7 +850,7 @@ export const CHECKS: CheckDef[] = [
       // max_pages is nullable (NULL = no cap = complete crawl) — `c >= null` coerces to
       // `c >= 0`, which would silently disable the check forever on capless crawls.
       if (!m || m.c === 0 || (m.m != null && m.c >= m.m)) return [];
-      return rows(c, `SELECT page_key urlKey, SUM(clicks) clicks, SUM(impressions) impressions FROM search_analytics
+      return rows(c, `SELECT page_key urlKey, SUM(clicks) clicks, SUM(impressions) impressions FROM gsc_rows
         WHERE page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key
         HAVING SUM(impressions) >= 50 AND page_key NOT IN (SELECT url_key FROM pages)
         ORDER BY impressions DESC`).map(r => ({ urlKey: r.urlKey, evidence: { clicks: r.clicks, impressions: r.impressions, note: 'earns GSC traffic but absent from the crawl' } }));
@@ -847,7 +863,7 @@ export const CHECKS: CheckDef[] = [
       if (!c.gscMaxDate) return [];
       const r = rows(c, `SELECT s.page_key urlKey, s.query query, s.impr impressions, p.title title FROM
         (SELECT page_key, query, SUM(impressions) impr, ROW_NUMBER() OVER (PARTITION BY page_key ORDER BY SUM(impressions) DESC) rn
-         FROM search_analytics WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key, query) s
+         FROM gsc_rows WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key, query) s
         JOIN pages p ON p.url_key = s.page_key
         WHERE s.rn = 1 AND p.indexable = 1 AND p.title IS NOT NULL AND p.title != '' AND s.impr >= 100`);
       return r
@@ -864,7 +880,7 @@ export const CHECKS: CheckDef[] = [
   {
     id: 'underlinked-high-demand', category: 'merged', severity: 'high', labels: ['D', 'G'], certainty: 1, effortBase: 5, fixType: 'per-page',
     title: 'High search demand, low internal authority', fix: 'Add internal links from high-authority (high-iPR) pages — this earns impressions but the site gives it little internal link equity.',
-    run: (c) => c.gscMaxDate ? rows(c, `SELECT p.url_key urlKey, p.ipr ipr, p.inlink_count inl, SUM(sa.impressions) impressions FROM pages p JOIN search_analytics sa ON sa.page_key=p.url_key WHERE p.indexable=1 AND p.ipr < 30 AND p.inlink_count BETWEEN 1 AND 3 AND sa.${win(c.gscMaxDate)} GROUP BY p.url_key HAVING SUM(sa.impressions) >= 300 ORDER BY impressions DESC`).map(r => ({ urlKey: r.urlKey, evidence: { impressions: r.impressions, ipr: Math.round(r.ipr), inlinks: r.inl } })) : [],
+    run: (c) => c.gscMaxDate ? rows(c, `SELECT p.url_key urlKey, p.ipr ipr, p.inlink_count inl, SUM(sa.impressions) impressions FROM pages p JOIN gsc_rows sa ON sa.page_key=p.url_key WHERE p.indexable=1 AND p.ipr < 30 AND p.inlink_count BETWEEN 1 AND 3 AND sa.${win(c.gscMaxDate)} GROUP BY p.url_key HAVING SUM(sa.impressions) >= 300 ORDER BY impressions DESC`).map(r => ({ urlKey: r.urlKey, evidence: { impressions: r.impressions, ipr: Math.round(r.ipr), inlinks: r.inl } })) : [],
   },
   {
     // The tier BETWEEN "orphan" (0 inlinks) and "fine": pages reached almost only via nav/footer.
@@ -876,7 +892,7 @@ export const CHECKS: CheckDef[] = [
     run: (c) => c.gscMaxDate ? rows(c, `
       SELECT p.url_key urlKey, SUM(sa.impressions) impressions,
              (SELECT COUNT(DISTINCT l.source_key) FROM links l WHERE l.target_key = p.url_key AND l.is_internal = 1 AND l.placement = 'body' AND l.source_key <> p.url_key) bodyLinks
-      FROM pages p JOIN search_analytics sa ON sa.page_key = p.url_key
+      FROM pages p JOIN gsc_rows sa ON sa.page_key = p.url_key
       WHERE p.indexable = 1 AND sa.${win(c.gscMaxDate)}
       GROUP BY p.url_key
       HAVING SUM(sa.impressions) >= 300 AND bodyLinks <= 2
@@ -981,7 +997,7 @@ export const CHECKS: CheckDef[] = [
       if (!c.gscMaxDate) return [];
       return rows(c, `SELECT url_key urlKey, url FROM pages
         WHERE status_code = 200 AND indexable = 1 AND url LIKE '%?%' AND url LIKE '%&%'
-          AND url_key NOT IN (SELECT page_key FROM search_analytics WHERE page_key IS NOT NULL AND ${win(c.gscMaxDate)} AND impressions > 0)
+          AND url_key NOT IN (SELECT page_key FROM gsc_rows WHERE page_key IS NOT NULL AND ${win(c.gscMaxDate)} AND impressions > 0)
         ORDER BY url`).map(r => ({ urlKey: r.urlKey, evidence: { url: r.url, params: (r.url.split('?')[1] ?? '').split('&').map((kv: string) => kv.split('=')[0]).join(', '), note: 'indexable, multi-parameter, zero GSC impressions' } }));
     },
   },
@@ -1024,16 +1040,8 @@ export const CHECKS: CheckDef[] = [
       return out;
     },
   },
-  {
-    id: 'broken-hreflang-target', category: 'indexation', severity: 'high', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'per-page',
-    title: 'hreflang points to a broken/non-indexable URL', fix: 'Point each hreflang alternate at a live, indexable URL — Google drops the whole cluster if an alternate is 4xx/5xx/redirect/noindex.',
-    run: (c) => hreflangFindings(c).broken,
-  },
-  {
-    id: 'hreflang-no-return-tag', category: 'indexation', severity: 'high', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'per-page',
-    title: 'hreflang missing return tag (not reciprocated)', fix: 'Add the reciprocal hreflang on the target page — Google ignores one-way hreflang annotations that don’t link back.',
-    run: (c) => hreflangFindings(c).noReturn,
-  },
+  // hreflang target health + reciprocation: existing ids, now in checks-hreflang.ts (extended, #55 group C).
+  ...HREFLANG_EXISTING_CHECKS,
 
   // ── 6a finishers — consume persisted DataForSEO enrichments (gated; need the data pulled) ──
   {
@@ -1046,7 +1054,7 @@ export const CHECKS: CheckDef[] = [
       if (((c.db.prepare('SELECT COUNT(*) n FROM keyword_intent').get() as { n: number }).n) === 0) return []; // intents not pulled
       const r = rows(c, `SELECT s.page_key urlKey, s.query query, ki.intent intent, p.json_ld jsonLd FROM
         (SELECT page_key, query, ROW_NUMBER() OVER (PARTITION BY page_key ORDER BY SUM(impressions) DESC) rn
-         FROM search_analytics WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key, query) s
+         FROM gsc_rows WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win(c.gscMaxDate)} GROUP BY page_key, query) s
         JOIN pages p ON p.url_key = s.page_key
         JOIN keyword_intent ki ON ki.keyword = LOWER(s.query)
         WHERE s.rn = 1 AND p.status_code = 200 AND p.json_ld IS NOT NULL AND p.json_ld != ''`);
@@ -1071,7 +1079,7 @@ export const CHECKS: CheckDef[] = [
       if (!c.gscMaxDate) return [];
       if (((c.db.prepare('SELECT COUNT(*) n FROM page_cwv').get() as { n: number }).n) === 0) return []; // CWV not pulled
       return rows(c, `SELECT cw.url_key urlKey, cw.lcp_ms lcp, cw.cls cls, cw.performance perf,
-          (SELECT COALESCE(SUM(clicks),0) FROM search_analytics sa WHERE sa.page_key = cw.url_key AND ${win(c.gscMaxDate)}) clicks
+          (SELECT COALESCE(SUM(clicks),0) FROM gsc_rows sa WHERE sa.page_key = cw.url_key AND ${win(c.gscMaxDate)}) clicks
         FROM page_cwv cw
         WHERE (cw.lcp_ms > 2500 OR cw.cls > 0.1 OR cw.performance < 0.5)`)
         .filter(r => r.clicks > 0)
@@ -1182,7 +1190,7 @@ export const CHECKS: CheckDef[] = [
     id: 'robots-blocked-with-traffic', category: 'crawlability', severity: 'high', labels: ['D', 'G'], certainty: 1, effortBase: 1, fixType: 'per-page',
     title: 'Robots-blocked page still earning search traffic', fix: 'This URL is disallowed in robots.txt yet Google still shows it (usually as a bare "no information" result) and users still land on it. Either unblock it so it can be crawled and ranked properly, or — if it genuinely shouldn\'t be found — unblock it AND add noindex (a robots-blocked page can never see the noindex).',
     run: (c) => !c.gscMaxDate ? [] : rows(c, `SELECT p.url_key urlKey, SUM(sa.clicks) clicks, SUM(sa.impressions) impressions
-      FROM pages p JOIN search_analytics sa ON sa.page_key = p.url_key
+      FROM pages p JOIN gsc_rows sa ON sa.page_key = p.url_key
       WHERE p.indexable_reason='robots-disallowed' AND ${win(c.gscMaxDate)}
       GROUP BY p.url_key HAVING SUM(sa.impressions) >= 10
       ORDER BY SUM(sa.impressions) DESC LIMIT 50`)
@@ -1527,6 +1535,20 @@ export const CHECKS: CheckDef[] = [
   // check (title + first two body chunks, capped) — a dedicated discover-intro check duplicated it,
   // tested chunks[0] (which is the byline/author block on most themes) and triple-flagged one symptom.
   // Deliberately not added here; see plan/google-discover.md.
+  // #55 group A: site-wide indexing alarm, AI-search controls, CrUX field data, non-brand decline.
+  ...SIGNAL_CHECKS,
+  // #55 group B: redirect hygiene (item 3).
+  ...REDIRECT_CHECKS,
+  // #55 group B: ecommerce (item 10).
+  ...ECOMMERCE_CHECKS,
+  // #55 group C: cross-host canonicals + hreflang validation (item 6).
+  ...HREFLANG_CHECKS,
+  // #55 group C: asset checks (item 7).
+  ...ASSET_CHECKS,
+  // #55 group D: soft-404 handling + host variants, from the crawl's site probes (item 8).
+  ...PROBE_CHECKS,
+  // #55 group E: JS-render divergence from render_audit (item 9).
+  ...RENDER_CHECKS,
 ];
 
 // ── Google Discover helpers (article-eligibility + directive/schema parsing) ──
@@ -1617,59 +1639,3 @@ function hasSchemaImage(node: unknown): boolean {
 
 const sitemapHasRows = (c: CheckContext): boolean =>
   ((c.db.prepare('SELECT COUNT(*) n FROM sitemap_urls').get() as { n: number }).n) > 0;
-
-// hreflang checks share parsing/normalisation: stored hrefs may be absolute or raw (existing crawl
-// databases), so resolve each against the page URL (a no-op for absolute hrefs), then urlKey()
-// with the property's host_form so they match pages.url_key. Computed once.
-type HreflangOut = { broken: RawFinding[]; noReturn: RawFinding[] };
-let _hreflangCache: { db: Database.Database; out: HreflangOut } | null = null;
-function hreflangFindings(ctx: CheckContext): HreflangOut {
-  if (_hreflangCache && _hreflangCache.db === ctx.db) return _hreflangCache.out;
-  const hostForm = (ctx.db.prepare(`SELECT host_form h FROM property_meta LIMIT 1`).get() as { h: string } | undefined)?.h as
-    | 'apex' | 'www' | 'asis' | undefined;
-  const opts = { hostForm: hostForm ?? 'asis' };
-  const pageRows = ctx.db.prepare(`SELECT url_key, url, status_code, noindex, hreflang FROM pages WHERE hreflang IS NOT NULL AND hreflang != ''`).all() as
-    { url_key: string; url: string; status_code: number | null; noindex: number | null; hreflang: string }[];
-  const status = new Map<string, { status: number | null; noindex: number | null }>();
-  for (const p of ctx.db.prepare(`SELECT url_key, status_code, noindex FROM pages`).all() as { url_key: string; status_code: number | null; noindex: number | null }[])
-    status.set(p.url_key, { status: p.status_code, noindex: p.noindex });
-
-  // declared[sourceKey] = set of internal alternate targetKeys (excluding self)
-  const declared = new Map<string, Set<string>>();
-  const parsed: { srcKey: string; targets: { key: string; lang: string }[] }[] = [];
-  for (const p of pageRows) {
-    let arr: { lang: string; href: string }[];
-    try { arr = JSON.parse(p.hreflang); } catch { continue; }
-    const targets: { key: string; lang: string }[] = [];
-    for (const { lang, href } of arr) {
-      if (!href) continue;
-      let key: string;
-      try { key = urlKey(new URL(href, p.url).toString(), opts); } catch { continue; }
-      if (key === p.url_key) continue; // self-reference
-      targets.push({ key, lang: (lang || '').toLowerCase() });
-    }
-    parsed.push({ srcKey: p.url_key, targets });
-    // A return link via x-default is a VALID return tag (common when x-default is the
-    // homepage) — include all targets here; x-default is only excluded as a reciprocation
-    // *requirement* in the loop below, never as a way of satisfying one.
-    declared.set(p.url_key, new Set(targets.map(t => t.key)));
-  }
-
-  const broken: RawFinding[] = [];
-  const noReturn: RawFinding[] = [];
-  for (const { srcKey, targets } of parsed) {
-    const brokenTargets: string[] = [];
-    const missingReturn: string[] = [];
-    for (const t of targets) {
-      const st = status.get(t.key);
-      if (st && (st.status !== 200 || st.noindex === 1)) brokenTargets.push(t.key);
-      // reciprocation only for internal, live (200) targets we crawled, excluding x-default
-      // (a broken target is already reported by broken-hreflang-target — don't double-flag)
-      if (t.lang !== 'x-default' && st && st.status === 200 && st.noindex !== 1 && !(declared.get(t.key)?.has(srcKey))) missingReturn.push(t.key);
-    }
-    if (brokenTargets.length) broken.push({ urlKey: srcKey, evidence: { brokenAlternates: brokenTargets.slice(0, 10), count: brokenTargets.length } });
-    if (missingReturn.length) noReturn.push({ urlKey: srcKey, evidence: { missingReturnFrom: missingReturn.slice(0, 10), count: missingReturn.length } });
-  }
-  _hreflangCache = { db: ctx.db, out: { broken, noReturn } };
-  return { broken, noReturn };
-}

@@ -18,7 +18,7 @@ export interface GscFreshness {
  */
 export function gscFreshness(db: Database.Database): GscFreshness {
   const rows = db
-    .prepare(`SELECT date, SUM(impressions) i FROM search_analytics WHERE date IS NOT NULL GROUP BY date ORDER BY date`)
+    .prepare(`SELECT date, SUM(impressions) i FROM gsc_rows WHERE date IS NOT NULL GROUP BY date ORDER BY date`)
     .all() as { date: string; i: number }[];
   if (rows.length === 0) return { rawMax: null, effectiveMax: null, trimmedDays: 0 };
   const rawMax = rows[rows.length - 1].date;

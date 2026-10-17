@@ -14,7 +14,11 @@ import { detectTemplates } from '../dist/audit/templates.js';
 import { suggestPages } from '../dist/audit/opportunities.js';
 import { getDashboardData } from '../dist/core/dashboardData.js';
 import { dbPathFor } from '../dist/core/paths.js';
+import { crawlRate, fmtDuration } from '../dist/core/crawlProgress.js';
+import { brandTokens, classifyAnchor, monthlyFromHistory } from '../dist/core/backlinkProfile.js';
+import { buildBacklinkProfile } from '../dist/core/dashboardData.js';
 import { urlKey } from '../dist/core/url-key.js';
+import { optionalSecret, placeholderReason, dataForSeoCredentials, cruxApiKey } from '../dist/core/secrets.js';
 
 const k = (u) => urlKey(u, { hostForm: 'apex' });
 const dataDir = path.join(tmpdir(), `sac-smoke-${Date.now()}`);
@@ -91,7 +95,7 @@ page('https://smoke.test/deep', { click_depth: 6 });                            
 page('https://smoke.test/dead', { status_code: 404, indexable: 0 });            // 404 target
 link('https://smoke.test/', 'https://smoke.test/dead');                         // ipr-bleed (home ipr 100 -> dead)
 page('https://smoke.test/bad-canon', { canonical_url: 'https://smoke.test/dead', canonical_key: k('https://smoke.test/dead'), canonical_count: 1 }); // broken-canonical-target
-page('https://smoke.test/redir', { redirects: '["https://smoke.test/a","https://smoke.test/b"]' }); // redirect-chain
+page('https://smoke.test/redir', { redirects: JSON.stringify([{ from: 'https://smoke.test/a', to: 'https://smoke.test/b', status: 301 }, { from: 'https://smoke.test/b', to: 'https://smoke.test/redir', status: 301 }]) }); // redirect-chain (the crawler's {from,to,status} hop shape)
 link('https://smoke.test/', 'https://smoke.test/redir');                        // internal-links-to-redirects
 page('https://smoke.test/list?cat=1&sort=asc', { url_key: k('https://smoke.test/list?cat=1&sort=asc') }); // faceted-spider-trap (no GSC)
 page('https://smoke.test/shop/page/2', { canonical_url: 'https://smoke.test/shop', canonical_key: k('https://smoke.test/shop'), canonical_count: 1, rel_prev: 1 }); // pagination-canonical
@@ -266,6 +270,192 @@ ok(Array.isArray(dash2?.freshness?.sources) && dash2.freshness.sources.length ==
   ok(emptyDash.empty === true && Array.isArray(emptyDash.freshness?.sources) && emptyDash.freshness.sources.some(s => s.kind === 'crawl' && s.state === 'completed'), 'empty (no GSC) payload still carries freshness');
   adb5.close();
   adb4.close();
+}
+
+// ── Audit history (summary page, slice 2): migration, per-run health, backfill, deltas ──────────
+{
+  const Database = (await import('better-sqlite3')).default;
+  const { auditHistory, backfillAuditHealth, computeHealth } = await import('../dist/audit/history.js');
+
+  // a) Migration on an OLD-shape DB: audit_runs without status/health/check_ids upgrades in place.
+  const oldPath = dbPathFor(dataDir, 'sc-domain:oldshape.test');
+  const raw = new Database(oldPath);
+  raw.exec(`CREATE TABLE audit_runs (run_id TEXT PRIMARY KEY, crawl_id TEXT, scope TEXT, gsc_window_start TEXT, gsc_window_end TEXT,
+            integrity_ok INTEGER, started_at TEXT, finished_at TEXT, finding_count INTEGER DEFAULT 0);
+            INSERT INTO audit_runs (run_id, scope, started_at, finished_at, finding_count) VALUES ('legacy','core','2026-01-01 00:00:00','2026-01-01 00:00:05',3);`);
+  raw.close();
+  const NEW_COLS = ['health_score', 'health_error_pages', 'health_total_pages', 'health_basis', 'check_ids', 'server_version'];
+  let a1 = new AuditDatabase(oldPath);
+  const colsNow = new Set(a1.db.prepare(`PRAGMA table_info(audit_runs)`).all().map(c => c.name));
+  a1.close();
+  let threwAgain = null;
+  try { a1 = new AuditDatabase(oldPath); a1.close(); } catch (e) { threwAgain = e.message; }
+  const legacyRaw = new Database(oldPath, { readonly: true });
+  const legacy = legacyRaw.prepare(`SELECT finding_count, health_score FROM audit_runs WHERE run_id='legacy'`).get();
+  legacyRaw.close();
+  ok(NEW_COLS.every(c => colsNow.has(c)) && !threwAgain && legacy?.finding_count === 3 && legacy.health_score === null,
+    `old-shape audit_runs upgrades in place, idempotently, keeping its rows (missing: ${NEW_COLS.filter(c => !colsNow.has(c)).join(',') || 'none'}${threwAgain ? `; reopen threw ${threwAgain}` : ''})`);
+
+  // b) Health written on a new audit: the dashboard's formula, plus crawl + check set + version.
+  //    (Section 5 added a page since the first audit, so re-audit and compare on the fresh run.)
+  const r1 = runAudit(dataDir, site, { scope: 'full', includeJudgement: true });
+  const h1 = new AuditDatabase(dbPath);
+  const row = h1.db.prepare(`SELECT * FROM audit_runs WHERE run_id=?`).get(r1.runId);
+  const live = computeHealth(h1.db, r1.runId);
+  h1.close();
+  const ids = row?.check_ids ? JSON.parse(row.check_ids) : [];
+  ok(row?.health_basis === 'audit' && row.health_score === live?.score && row.health_total_pages === live?.totalPages && row.crawl_id === 'c1'
+    && Array.isArray(ids) && ids.includes('missing-title') && typeof row.server_version === 'string',
+    `runAudit stores health ${row?.health_score} (${row?.health_error_pages}/${row?.health_total_pages}), crawl ${row?.crawl_id}, ${ids.length} check ids, v${row?.server_version}`);
+  const dashNow = getDashboardData(dataDir, site);
+  ok(dashNow.healthScore?.score === row?.health_score, `dashboard tile and stored run share one formula (${dashNow.healthScore?.score} = ${row?.health_score})`);
+
+  // c) Deltas between real runs: an identical re-run is comparable (nothing opened or resolved);
+  //    a run with a different check set, and one with a different scope, are skipped with reasons.
+  const r2 = runAudit(dataDir, site, { scope: 'full', includeJudgement: true });
+  const r3 = runAudit(dataDir, site, { scope: 'full', includeJudgement: false });
+  const r4 = runAudit(dataDir, site, { scope: 'core', includeJudgement: false });
+  const d = getDashboardData(dataDir, site).auditDeltas ?? [];
+  const at = (id) => d.find(x => x.runId === id);
+  ok(at(r2.runId) && !at(r2.runId).skipped && at(r2.runId).opened === 0 && at(r2.runId).resolved === 0 && at(r2.runId).carried > 0 && at(r2.runId).prevRunId === r1.runId,
+    `identical re-run is a comparable pair (${JSON.stringify(at(r2.runId))})`);
+  ok(at(r3.runId)?.skipped === 'check-set-changed' && at(r3.runId).opened === null, `changed check set is skipped (${at(r3.runId)?.skipped})`);
+  ok(at(r4.runId)?.skipped === 'different-scope', `different scope is skipped (${at(r4.runId)?.skipped})`);
+
+  // d) Arithmetic over synthetic runs + the backfill rules, on a crawl-only property (no GSC).
+  const hs = 'sc-domain:history.test';
+  const ha = new AuditDatabase(dbPathFor(dataDir, hs));
+  const hd = ha.db;
+  const crawl = (id, s, f) => hd.prepare(`INSERT INTO crawl_metadata (crawl_id,base_url,base_domain,status,started_at,finished_at) VALUES (?,?,?,'completed',?,?)`).run(id, 'https://history.test', 'history.test', s, f);
+  const snap = (cid, urls) => urls.forEach(u => hd.prepare(`INSERT INTO page_snapshots (crawl_id,url_key,captured_at,status_code) VALUES (?,?,?,200)`).run(cid, u, '2026-05-01 00:00:00'));
+  const CK = JSON.stringify(['a', 'b']);
+  const run = (id, started, o = {}) => hd.prepare(`INSERT INTO audit_runs (run_id,scope,started_at,finished_at,status,check_ids) VALUES (?,?,?,?,?,?)`)
+    .run(id, 'core', started, started, o.status === undefined ? 'completed' : o.status, o.checks === undefined ? CK : o.checks);
+  const fnd = (rid, check, url, sev = 'high') => hd.prepare(`INSERT INTO findings (run_id,check_id,severity,url_key) VALUES (?,?,?,?)`).run(rid, check, sev, url);
+  // Crawl k1 (snapshotted, 4 pages), then k2 (never snapshotted). Legacy runs: no status, no check set.
+  crawl('k1', '2026-05-01T09:00:00.000Z', '2026-05-01T09:05:00.000Z'); snap('k1', ['u1', 'u2', 'u3', 'u4']);
+  crawl('k2', '2026-05-03T09:00:00.000Z', '2026-05-03T09:05:00.000Z');
+  run('L1', '2026-05-02 10:00:00', { status: null, checks: null }); fnd('L1', 'a', 'u1'); fnd('L1', 'b', 'u2', 'low');
+  run('L2', '2026-05-04 10:00:00', { status: null, checks: null });
+  // Comparable runs (same scope + check set), with a failed run between two of them.
+  run('S1', '2026-05-05 10:00:00'); fnd('S1', 'a', 'u1'); fnd('S1', 'a', 'u2'); fnd('S1', 'b', null);
+  run('S2', '2026-05-06 10:00:00'); fnd('S2', 'a', 'u2'); fnd('S2', 'a', 'u3'); fnd('S2', 'b', null); fnd('S2', 'b', null);
+  run('F1', '2026-05-07 10:00:00', { status: 'failed' });
+  run('S3', '2026-05-08 10:00:00'); fnd('S3', 'a', 'u3');
+  run('S4', '2026-05-09 10:00:00', { checks: JSON.stringify(['a', 'b', 'c']) });
+  ha.close();
+
+  const emptyH = getDashboardData(dataDir, hs); // no GSC → the empty payload, but the history still ships
+  const hh = new Map((emptyH.healthHistory ?? []).map(p => [p.runId, p]));
+  ok(hh.get('L1')?.score === 75 && hh.get('L1').errorPages === 1 && hh.get('L1').totalPages === 4 && hh.get('L1').basis === 'snapshot:k1',
+    `backfill rebuilds a past run from its crawl's snapshots (${JSON.stringify(hh.get('L1'))})`);
+  ok(hh.get('L2')?.score === null && hh.get('L2').basis === 'none:no-snapshot', `backfill leaves NULL when the crawl has no snapshots (${JSON.stringify(hh.get('L2'))})`);
+  ok(!hh.has('F1'), 'failed runs are not in the health history');
+  const hdl = emptyH.auditDeltas ?? [];
+  const dx = (id) => hdl.find(x => x.runId === id);
+  ok(dx('L2')?.skipped === 'check-set-unknown' && dx('S1')?.skipped === 'check-set-unknown', `runs without a recorded check set are skipped (${dx('L2')?.skipped}, ${dx('S1')?.skipped})`);
+  // S1 {a|u1, a|u2, b|site} → S2 {a|u2, a|u3, b|site}: opened 1 (a|u3), resolved 1 (a|u1), carried 2.
+  ok(dx('S2')?.opened === 1 && dx('S2').resolved === 1 && dx('S2').carried === 2, `S1→S2 opened/resolved/carried 1/1/2 (${JSON.stringify(dx('S2'))})`);
+  ok(dx('F1')?.skipped === 'run-failed', `failed run carries a skipped reason (${dx('F1')?.skipped})`);
+  ok(dx('S3')?.prevRunId === 'S2' && dx('S3').opened === 0 && dx('S3').resolved === 2 && dx('S3').carried === 1, `S2→S3 steps over the failed run: 0/2/1 (${JSON.stringify(dx('S3'))})`);
+  ok(dx('S4')?.skipped === 'check-set-changed', `S3→S4 check set changed (${dx('S4')?.skipped})`);
+  const ha2 = new AuditDatabase(dbPathFor(dataDir, hs));
+  const again = backfillAuditHealth(ha2.db);
+  const hist2 = auditHistory(ha2.db);
+  ha2.close();
+  ok(again.visited === 0 && hist2.healthHistory.length === 6, `backfill runs once (second pass visited ${again.visited}, ${hist2.healthHistory.length} points)`);
+
+  // e) Two crawls overlapping before a run: the page set is ambiguous → NULL, never a guess.
+  const aa = new AuditDatabase(dbPathFor(dataDir, 'sc-domain:ambig.test'));
+  aa.db.prepare(`INSERT INTO crawl_metadata (crawl_id,base_url,base_domain,status,started_at,finished_at) VALUES ('x1','https://a.test','a.test','completed','2026-05-01T09:00:00.000Z','2026-05-01T09:05:00.000Z'),('x2','https://a.test','a.test','completed','2026-05-01T09:00:00.005Z','2026-05-01T09:04:59.000Z')`).run();
+  aa.db.prepare(`INSERT INTO page_snapshots (crawl_id,url_key,captured_at) VALUES ('x1','u1','2026-05-01'),('x2','u1','2026-05-01')`).run();
+  aa.db.prepare(`INSERT INTO audit_runs (run_id,scope,started_at,finished_at) VALUES ('A1','core','2026-05-01 09:06:00','2026-05-01 09:06:01')`).run();
+  backfillAuditHealth(aa.db);
+  const amb = aa.db.prepare(`SELECT health_score, health_basis FROM audit_runs WHERE run_id='A1'`).get();
+  aa.close();
+  ok(amb.health_score === null && amb.health_basis === 'none:ambiguous-crawl', `overlapping crawls leave the run NULL (${amb.health_basis})`);
+}
+
+// #47: backlink profile — anchor classification, monthly trend, and the payload builder.
+{
+  const tk = brandTokens('simracingcockpit.gg');
+  ok(tk.join() === 'simracingcockpit' && brandTokens('sc-domain:ehi.com.au').join() === 'ehi', `brandTokens strips TLD and public suffix (${tk}, ${brandTokens('sc-domain:ehi.com.au')})`);
+  const kinds = ['Sim Racing Cockpit', 'https://simracingcockpit.gg/guide', 'click here', '', 'best sim racing wheel', 'simracingcockpit.gg'].map(a => classifyAnchor(a, tk, 'simracingcockpit.gg'));
+  ok(kinds.join() === 'branded,url,generic,empty,keyword,url', `classifyAnchor: ${kinds.join()}`);
+  const months = monthlyFromHistory([
+    { date: '2026-08-30', backlinks: 100, referring_domains: 50, new_referring_domains: 2, lost_referring_domains: 1 },
+    { date: '2026-08-31', backlinks: 101, referring_domains: 51, new_referring_domains: 1, lost_referring_domains: 0 },
+    { date: '2026-09-01', backlinks: 99, referring_domains: 49, new_referring_domains: 0, lost_referring_domains: 2 },
+  ]);
+  ok(months.length === 2 && months[0].month === '2026-08' && months[0].newDomains === 3 && months[0].lostDomains === 1 && months[0].referringDomains === 51 && months[1].lostDomains === 2, `monthlyFromHistory sums new/lost and keeps the month-end stock (${JSON.stringify(months)})`);
+
+  const adb6 = new AuditDatabase(dbPathFor(dataDir, site));
+  const d6 = adb6.db;
+  const before = buildBacklinkProfile(d6, site);
+  ok(before && before.summary === null && before.pagesTotal === 2 && before.referringDomains === null, 'page rows without a summary: summary null, pages counted (fixture has 2)');
+  {
+    const freshSite = 'sc-domain:nopull.test';
+    const adbF = new AuditDatabase(dbPathFor(dataDir, freshSite));
+    adbF.upsertProperty(freshSite, 'asis');
+    ok(buildBacklinkProfile(adbF.db, freshSite) === null, 'backlinkProfile is null before any pull');
+    adbF.close();
+  }
+  d6.prepare(`UPDATE property_meta SET total_backlinks=1200, referring_domains=80, backlinks_rank=312, broken_backlinks=7, broken_pages=2, backlinks_nofollow_pct=0.25, backlinks_fetched_at=datetime('now') WHERE site_url=?`).run(site);
+  d6.prepare(`INSERT OR REPLACE INTO page_backlinks (url_key,url,backlinks,referring_domains,dofollow,status_code) VALUES ('smoke.test/','https://smoke.test/',900,60,800,200),('smoke.test/gone','https://smoke.test/gone',40,9,40,404),('smoke.test/unknown','https://smoke.test/unknown',3,1,3,NULL)`).run();
+  const p1 = buildBacklinkProfile(d6, site);
+  ok(p1 && p1.summary.domainRank === 312 && p1.pagesTotal === 5 && p1.pagesUnchecked === 1 && p1.brokenPages.length === 2 && p1.brokenPages.some(b => b.url.endsWith('/gone')) && p1.topPages[0].url === 'https://smoke.test/', `profile summary + pages from stored rows (${JSON.stringify({ s: p1?.summary, n: p1?.pagesTotal, broken: p1?.brokenPages.length })})`);
+  ok(p1.referringDomains === null && p1.anchors === null && p1.history === null, 'sections never collected are null, not zero');
+  d6.prepare(`INSERT INTO referring_domains (snapshot_at,domain,rank,backlinks,referring_pages,nofollow_pages,spam_score,first_seen,lost_date) VALUES ('2026-10-01T00:00:00Z','old.example',100,5,5,0,0,'2024-01-01',NULL),('2026-10-17T00:00:00Z','big.example',500,30,20,20,5,'2025-02-02',NULL),('2026-10-17T00:00:00Z','gone.example',200,1,1,0,0,'2023-01-01','2026-09-30')`).run();
+  d6.prepare(`INSERT INTO backlink_anchors (snapshot_at,anchor,kind,backlinks,referring_domains,nofollow_pages) VALUES ('2026-10-17T00:00:00Z','Smoke Test','branded',70,30,0),('2026-10-17T00:00:00Z','click here','generic',30,10,0),('2026-10-17T00:00:00Z','','empty',10,5,0)`).run();
+  d6.prepare(`INSERT INTO backlink_history (date,backlinks,referring_domains,new_referring_domains,lost_referring_domains,fetched_at) VALUES ('2026-09-15',100,50,3,1,'2026-10-17'),('2026-10-01',103,52,2,0,'2026-10-17')`).run();
+  const p2 = buildBacklinkProfile(d6, site);
+  ok(p2.referringDomains.snapshotAt === '2026-10-17T00:00:00Z' && p2.referringDomains.live === 1 && p2.referringDomains.lost === 1 && p2.referringDomains.top.length === 1 && p2.referringDomains.top[0].domain === 'big.example', `latest snapshot only; lost domains counted, not listed (${JSON.stringify(p2.referringDomains)})`);
+  ok(p2.anchors.mix.length === 3 && p2.anchors.mix[0].kind === 'branded' && p2.anchors.mix[0].backlinks === 70, `anchor mix grouped by kind (${JSON.stringify(p2.anchors.mix)})`);
+  ok(p2.history.months.length === 2 && p2.history.months[0].newDomains === 3 && p2.history.fetchedAt === '2026-10-17', 'history is monthly from the stored days');
+  const dashBp = getDashboardData(dataDir, site).backlinkProfile;
+  ok(dashBp && dashBp.summary?.backlinks === 1200, 'dashboard payload carries backlinkProfile (cache key sees the new tables)');
+  adb6.close();
+}
+
+// #52: crawl progress arithmetic.
+{
+  const r0 = crawlRate(0, 0, 5, 10000, 0);
+  ok(r0.pagesPerSec === null && r0.etaSeconds === null && r0.pagesRemaining === 5, 'crawlRate: no rate or ETA before the first page');
+  const r1 = crawlRate(600, 0, 9400, 10000, 300_000);
+  ok(r1.pagesPerSec === 2 && r1.etaSeconds === 4700 && r1.pagesRemaining === 9400, `crawlRate: 600 pages in 5 min = 2 pages/s, ETA 4700 s (${JSON.stringify(r1)})`);
+  const r2 = crawlRate(3900, 100, 5000, 4000, 60_000);
+  ok(r2.pagesRemaining === 100 && r2.pagesPerSec === 66.7, `crawlRate: the queue is capped by maxPages and failures count toward the rate (${JSON.stringify(r2)})`);
+  ok(fmtDuration(4700) === '1h 18m' && fmtDuration(252) === '4m 12s' && fmtDuration(9) === '9s' && fmtDuration(null) === 'unknown', 'fmtDuration formats s / m s / h m');
+}
+
+// #58: optional API keys are read placeholder-safe.
+{
+  const placeholders = ['your-majestic-key-here', 'YOUR_API_KEY', 'your key', '<your key>', '${user_config.majestic_api_key}', 'key-here', 'keyhere', 'changeme', 'xxx', 'XXXXXXXX', 'placeholder', 'you@example.com', 'Example'];
+  const bad = placeholders.filter(v => placeholderReason(v) == null);
+  ok(bad.length === 0, `optionalSecret: placeholders are rejected${bad.length ? ` — ACCEPTED ${JSON.stringify(bad)}` : ''}`);
+  const real = ['d41d8cd98f00b204e9800998ecf8427e', 'richard@houtini.com', 'Tr0ub4dor&3', 'xx', 'axxxb'];
+  const wrong = real.filter(v => placeholderReason(v) != null);
+  ok(wrong.length === 0, `optionalSecret: real-looking values pass${wrong.length ? ` — REJECTED ${JSON.stringify(wrong)}` : ''}`);
+  ok(placeholderReason('') === 'empty' && placeholderReason('   ') === 'empty' && placeholderReason(undefined) === 'unset', 'optionalSecret: blank / whitespace / missing are unset');
+  ok(optionalSecret('MAJESTIC_API_KEY', { MAJESTIC_API_KEY: '  abc123  ' }) === 'abc123', 'optionalSecret: values are trimmed');
+  // Exactly one stderr line per rejected name, naming the tier; blank stays silent.
+  const lines = [];
+  const orig = console.error;
+  console.error = (...a) => lines.push(a.join(' '));
+  let a, c, d, good;
+  try {
+    a = optionalSecret('MAJESTIC_API_KEY', { MAJESTIC_API_KEY: 'your-majestic-key-here' });
+    optionalSecret('MAJESTIC_API_KEY', { MAJESTIC_API_KEY: '<your key>' });
+    optionalSecret('CRUX_API_KEY', { CRUX_API_KEY: '' });
+    c = cruxApiKey({ CRUX_API_KEY: '${user_config.crux_api_key}' });
+    d = dataForSeoCredentials({ DATAFORSEO_USERNAME: 'me@houtini.com', DATAFORSEO_PASSWORD: 'your-dataforseo-password' });
+    good = dataForSeoCredentials({ DATAFORSEO_USERNAME: ' me@houtini.com ', DATAFORSEO_PASSWORD: 's3cret' });
+  } finally { console.error = orig; }
+  ok(a === undefined && c === undefined && d === null && good?.user === 'me@houtini.com' && good.pass === 's3cret', 'optionalSecret: placeholders read as unset (Majestic, CrUX, the DataForSEO pair)');
+  ok(lines.length === 3
+    && lines[0] === 'MAJESTIC_API_KEY looks like a placeholder; Majestic tier disabled.'
+    && lines.includes('CRUX_API_KEY looks like a placeholder; CrUX tier disabled.')
+    && lines.includes('DATAFORSEO_PASSWORD looks like a placeholder; DataForSEO tier disabled.'), `optionalSecret: one stderr line per rejected key (${JSON.stringify(lines)})`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

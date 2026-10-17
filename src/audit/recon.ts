@@ -31,7 +31,7 @@ export function selectReconTargets(
     WITH cur AS (
       SELECT page_key, query, SUM(impressions) imp, SUM(clicks) clk,
              SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
-      FROM search_analytics
+      FROM gsc_rows
       WHERE page_key IS NOT NULL AND query IS NOT NULL
         AND date > date(?, '-28 days') AND date <= ?
       GROUP BY page_key, query
@@ -39,7 +39,7 @@ export function selectReconTargets(
     ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY page_key ORDER BY imp DESC) rn FROM cur),
     prior AS (
       SELECT page_key, query, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
-      FROM search_analytics
+      FROM gsc_rows
       WHERE page_key IS NOT NULL AND query IS NOT NULL
         AND date > date(?, '-56 days') AND date <= date(?, '-28 days')
       GROUP BY page_key, query
@@ -54,7 +54,7 @@ export function selectReconTargets(
 
   const cannStmt = db.prepare(`
     SELECT COUNT(*) n FROM (
-      SELECT page_key FROM search_analytics
+      SELECT page_key FROM gsc_rows
       WHERE query = ? AND page_key IS NOT NULL AND date > date(?, '-28 days') AND date <= ?
       GROUP BY page_key HAVING SUM(impressions) >= 10
     )`);
@@ -206,7 +206,7 @@ export function clusterCannibalisation(
     `WITH q AS (
        SELECT query, page_key, SUM(impressions) impr,
               SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
-       FROM search_analytics
+       FROM gsc_rows
        WHERE page_key IS NOT NULL AND query IS NOT NULL AND ${win} AND ${like}
        GROUP BY query, page_key
      ),
@@ -228,7 +228,7 @@ export function clusterCannibalisation(
     `${cte} SELECT COUNT(*) colliding FROM (SELECT query FROM comp GROUP BY query HAVING COUNT(DISTINCT page_key) >= 2)`,
   ).get(...args) as { colliding: number };
   const { n } = db.prepare(
-    `SELECT COUNT(DISTINCT query) n FROM search_analytics WHERE query IS NOT NULL AND ${win} AND ${like}`,
+    `SELECT COUNT(DISTINCT query) n FROM gsc_rows WHERE query IS NOT NULL AND ${win} AND ${like}`,
   ).get(maxDate, maxDate, ...terms) as { n: number };
 
   return {

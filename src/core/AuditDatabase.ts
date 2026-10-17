@@ -11,6 +11,9 @@
  */
 import { ensureFtsSchema } from './fts.js';
 import { ensureExternalSchema } from './externalLinks.js';
+import { ensureGscRows } from './gscRows.js';
+import { ensureCruxSchema } from './cruxSchema.js';
+import { ensureRobotsTxtSchema } from './robotsStore.js';
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -135,7 +138,7 @@ export class AuditDatabase {
         depth INTEGER,
         is_internal INTEGER,
         indexable INTEGER,               -- derived: 200 + HTML + not noindex + self-canonical
-        indexable_reason TEXT,           -- why NOT indexable: http-404/http-500/noindex-meta/noindex-header/canonicalised/non-html/robots-disallowed/redirect
+        indexable_reason TEXT,           -- why NOT indexable: http-404/http-500/noindex-meta/noindex-header/canonicalised/non-html/robots-disallowed/redirect (rate-limited: not fetched, indexable NULL)
         noindex INTEGER,
         title TEXT,
         title_length INTEGER,
@@ -228,6 +231,7 @@ export class AuditDatabase {
         level TEXT,
         checks TEXT,        -- JSON [{id,category,label,present,detail,fix}]
         by_category TEXT,   -- JSON [{category,passed,total}]
+        bots TEXT,          -- JSON per-AI-bot robots verdicts (aiBots.ts)
         checked_at TEXT
       );
     `);
@@ -351,6 +355,49 @@ export class AuditDatabase {
         fetched_at TEXT DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_pbl_backlinks ON page_backlinks(backlinks DESC);
+    `);
+
+    // ── Backlink profile (#47): referring domains + anchors per pull (snapshot_at = the pull), and
+    // DataForSEO's daily history for the new/lost trend. Filled by pull_backlinks; a panel reads
+    // "not collected" when a table is empty, never zero.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS referring_domains (
+        snapshot_at TEXT NOT NULL,         -- the pull this row belongs to (ISO date-time)
+        domain TEXT NOT NULL,
+        rank INTEGER,                      -- DataForSEO domain rank (0-1000)
+        backlinks INTEGER,
+        referring_pages INTEGER,
+        nofollow_pages INTEGER,            -- referring pages whose link is nofollow
+        spam_score INTEGER,
+        broken_backlinks INTEGER,
+        first_seen TEXT,
+        lost_date TEXT,                    -- set when every link from the domain is gone
+        PRIMARY KEY (snapshot_at, domain)
+      );
+      CREATE INDEX IF NOT EXISTS idx_refdom_snapshot ON referring_domains(snapshot_at, rank DESC);
+      CREATE TABLE IF NOT EXISTS backlink_anchors (
+        snapshot_at TEXT NOT NULL,
+        anchor TEXT NOT NULL,              -- '' for an empty / image anchor
+        kind TEXT,                         -- branded | keyword | url | generic | empty
+        backlinks INTEGER,
+        referring_domains INTEGER,
+        nofollow_pages INTEGER,
+        first_seen TEXT,
+        lost_date TEXT,
+        PRIMARY KEY (snapshot_at, anchor)
+      );
+      CREATE INDEX IF NOT EXISTS idx_anchor_snapshot ON backlink_anchors(snapshot_at, backlinks DESC);
+      CREATE TABLE IF NOT EXISTS backlink_history (
+        date TEXT PRIMARY KEY,             -- one row per day as DataForSEO reports it
+        rank INTEGER,
+        backlinks INTEGER,
+        new_backlinks INTEGER,
+        lost_backlinks INTEGER,
+        referring_domains INTEGER,
+        new_referring_domains INTEGER,
+        lost_referring_domains INTEGER,
+        fetched_at TEXT
+      );
     `);
 
     // ── Page subresources (latest crawl) — recorded from the HTML parse, never downloaded (#37) ──
@@ -591,6 +638,11 @@ export class AuditDatabase {
     if (!(this.db.prepare(`PRAGMA table_info(redirect_sources)`).all() as { name: string }[]).some(c => c.name === 'chain')) this.db.exec('ALTER TABLE redirect_sources ADD COLUMN chain TEXT');
     ensureFtsSchema(this.db); // after migrate: triggers reference columns migrate may add
     ensureExternalSchema(this.db);
+    // gsc_rows / gsc_country_rows / gsc_device_rows: every GSC total reads these, so a day stored in
+    // two row shapes is counted once (#61). Recomputes the per-day choice only when the data moved.
+    ensureGscRows(this.db);
+    ensureCruxSchema(this.db);      // CrUX field data (#55): crux_metrics / crux_fractions / crux_targets
+    ensureRobotsTxtSchema(this.db); // robots.txt bytes per origin, written by the crawl (#55)
   }
 
   /** Idempotent column additions for DBs created before a column existed. */
@@ -608,6 +660,16 @@ export class AuditDatabase {
     ensure('pages', 'fetched_as', 'fetched_as TEXT'); // bot | chrome (Chrome fallback after a bot block)
     ensure('audit_runs', 'status', 'status TEXT');   // running | completed | failed (NULL on old rows: infer from finished_at)
     ensure('audit_runs', 'error', 'error TEXT');
+    // Audit history (summary page): health per run, the check set it ran, and the code version.
+    // NULL on runs before this migration; backfillAuditHealth (src/audit/history.ts) rebuilds health
+    // only where page_snapshots hold that run's crawl, and records why not in health_basis.
+    ensure('audit_runs', 'health_score', 'health_score INTEGER');
+    ensure('audit_runs', 'health_error_pages', 'health_error_pages INTEGER');
+    ensure('audit_runs', 'health_total_pages', 'health_total_pages INTEGER');
+    ensure('audit_runs', 'health_basis', 'health_basis TEXT');   // audit | snapshot:<crawlId> | none:<reason>
+    ensure('audit_runs', 'check_ids', 'check_ids TEXT');         // JSON array of the check ids that ran (sorted)
+    ensure('audit_runs', 'server_version', 'server_version TEXT');
+    ensure('agent_readiness', 'bots', 'bots TEXT');           // JSON [{bot,operator,group,verdict,inherits}] (aiBots.ts); NULL before it existed
     ensure('pages', 'images_missing_dimensions', 'images_missing_dimensions INTEGER DEFAULT 0');
     ensure('pages', 'canonical_count', 'canonical_count INTEGER DEFAULT 0');
     ensure('pages', 'canonical_relative', 'canonical_relative INTEGER DEFAULT 0');
@@ -632,12 +694,37 @@ export class AuditDatabase {
     ensure('pages', 'a11y_positive_tabindex', 'a11y_positive_tabindex INTEGER');
     ensure('pages', 'a11y_duplicate_ids', 'a11y_duplicate_ids INTEGER');
     ensure('sitemap_urls', 'lastmod', 'lastmod TEXT');
+    // #55 group C: the Accept header the image-weight probe sent. NULL = probed without one (crawls before
+    // this column), so a CDN that negotiates WebP/AVIF for browsers (Shopify, Cloudflare Polish) was measured
+    // at its JPEG/PNG size; the image-weight checks read only rows probed with a browser Accept.
+    ensure('image_assets', 'accept', 'accept TEXT');
+    // #55 group D: the crawl's own site probes (soft-404 handling, host variants) share the probes table
+    // with probe_urls persist:true. source = 'site-probe' marks them (NULL = a probe_urls row); crawl_id
+    // ties them to the crawl that ran them.
+    ensure('probes', 'source', 'source TEXT');
+    ensure('probes', 'crawl_id', 'crawl_id TEXT');
+    // #55 group E: what JS changed besides links/words/title. NULL on rows rendered before 0.16.0, which
+    // the render-divergence checks report as not collected (re-run render_pages).
+    ensure('render_audit', 'raw_canonical', 'raw_canonical TEXT');          // absolute canonical in the raw HTML
+    ensure('render_audit', 'rendered_canonical', 'rendered_canonical TEXT');
+    ensure('render_audit', 'raw_robots', 'raw_robots TEXT');                // <meta name="robots"> content
+    ensure('render_audit', 'rendered_robots', 'rendered_robots TEXT');
+    ensure('render_audit', 'x_robots_tag', 'x_robots_tag TEXT');            // response header (JS can't change it)
+    ensure('render_audit', 'raw_noindex', 'raw_noindex INTEGER');           // meta or header noindex, before JS
+    ensure('render_audit', 'rendered_noindex', 'rendered_noindex INTEGER'); // meta or header noindex, after JS
+    ensure('render_audit', 'robots_changed', 'robots_changed INTEGER');     // effective noindex differs raw vs rendered
+    ensure('render_audit', 'raw_main_words', 'raw_main_words INTEGER');     // words in the main content (mainWordCount)
+    ensure('render_audit', 'rendered_main_words', 'rendered_main_words INTEGER');
+    ensure('render_audit', 'raw_status', 'raw_status INTEGER');             // HTTP status of the raw fetch
     ensure('pages', 'max_passage_score', 'max_passage_score REAL');
     ensure('pages', 'max_passage_query', 'max_passage_query TEXT');
     ensure('pages', 'max_passage_impr', 'max_passage_impr INTEGER');
     ensure('pages', 'max_passage_at', 'max_passage_at TEXT');
     ensure('pages', 'click_depth', 'click_depth INTEGER');
     ensure('pages', 'indexable_reason', 'indexable_reason TEXT');
+    // #54: NULL = fetched normally (or robots-disallowed, see indexable_reason); 'rate_limited' = the
+    // host still answered 429 after every retry, so status_code and indexable are NULL (unknown), not an error.
+    ensure('pages', 'fetch_state', 'fetch_state TEXT');
     // Majestic per-URL authority on backlinked pages (trapped-authority v2) — filled by
     // pull_backlinks when MAJESTIC_API_KEY is set. topical_trust_flow is JSON [{topic,value}].
     ensure('page_backlinks', 'trust_flow', 'trust_flow INTEGER');

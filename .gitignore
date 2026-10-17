@@ -58,6 +58,7 @@ docs/
 # one-off diagnostics and property-specific QA harnesses stay local
 scripts/*
 !scripts/smoke.mjs
+!scripts/probe-dashboard-rules.mjs
 !scripts/demo-property.mjs
 !scripts/demo-screenshots.mjs
 !scripts/qa-crawl.mjs
@@ -89,6 +90,7 @@ scripts/*
 !scripts/probe-majestic.mjs
 !scripts/build-mcpb.mjs
 !scripts/probe-jobs.mjs
+!scripts/probe-runner.mjs
 !scripts/probe-crawl-local.mjs
 !scripts/probe-checks-v2.mjs
 !scripts/probe-integrity.mjs
@@ -98,6 +100,10 @@ scripts/*
 !scripts/probe-review-0-15.mjs
 !scripts/probe-external.mjs
 !scripts/probe-blocking.mjs
+!scripts/probe-redirects.mjs
+!scripts/probe-ecommerce.mjs
+!scripts/probe-hreflang.mjs
+!scripts/probe-assets.mjs
 
 # --- secrets hardening (never commit) ---
 *.pem
