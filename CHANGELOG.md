@@ -10,6 +10,17 @@ Each release is tagged `vX.Y.Z` on the release commit (tagging lapsed between 0.
 
 ## [Unreleased]
 
+### Added
+- **An external job runner, so Docker MCP gateway workers are disposable (#56, follow-up to #9).** A new bin, `seo-audit-runner`, is one long-running process that runs the async jobs (crawl, sync, refresh, inspect, rank history, backlinks, entities, render, duplicates, integrity/repair, the FTS build, content recon). With `SAC_JOB_RUNNER=external` the MCP server only queues each job in `_jobs.db` (its kind, JSON arguments and property) and reads its status; the runner claims queued jobs atomically, runs them with the same heartbeat and progress writes as before, and writes the result. Under the gateway, a worker can now be recreated mid-crawl and the crawl carries on in the runner, so `longLived: true` can come off the catalog entry. The default is unchanged: without the variable, jobs run in the server process exactly as they did.
+  - One job at a time by default; `SAC_RUNNER_CONCURRENCY` raises it, and two jobs for the same property never run at once.
+  - `queued` is a real state: status reads `queued: waiting for the job runner`, the dashboard's freshness panel and the refresh progress widget show it, and a job queued for over a minute with no runner heartbeat says no runner seems to be running and gives the `docker run` line. Queued jobs also block `data_storage` prunes, like running ones.
+  - Cancelling sets a flag the runner checks every 2 seconds; a queued job is cancelled at once. On SIGTERM the runner stops claiming, aborts its jobs and records them as `interrupted` with the reason. A runner killed outright leaves its job to read `interrupted` once the heartbeat goes stale, as in #9.
+  - The job bodies now live in one registry of named kinds (`src/core/jobKinds.ts`; content recon's moved to `src/core/reconJob.ts` unchanged), and the in-process path runs the same functions from the same JSON arguments.
+- `npm test` runs `scripts/probe-runner.mjs`: queue → a runner process completes it, two claimers never take the same job, a SIGKILLed runner's job reads interrupted, cancel, graceful stop, the no-runner advice, and in-process mode unchanged.
+
+### Docs
+- README "Docker and the Docker MCP gateway" and getting-started describe the runner container and the catalog change (`SAC_JOB_RUNNER=external`, remove `longLived`), with the Windows Git Bash `MSYS_NO_PATHCONV=1` note.
+
 ## [0.15.0] — 2026-10-17
 
 ### Removed

@@ -242,6 +242,30 @@ They're off by default because a wrong finding is worse than no finding. See [ch
 
 Refresh weekly, run *"detect changes"* right after (it diffs your two most recent crawls and flags regressions), run the full audit monthly, and re-run it after any fix ships to watch the finding drop off the list. That last part is oddly satisfying.
 
+## Running under the Docker MCP gateway
+
+Skip this unless you run the server through the Docker MCP gateway. With npx or Claude Desktop the server is one long-lived process, and it runs its own background jobs.
+
+The gateway runs the server in worker containers that it replaces whenever it likes (a disconnect, a router recreate, an idle reap), and a crawl running inside a worker dies with it. So under the gateway the jobs run somewhere else: in one long-running **job runner** container, `seo-audit-runner`, which ships in the same npm package. The server only queues each job in `_jobs.db` in the data directory, and the runner picks it up from there.
+
+Start the runner once, on the same data volume and credentials the gateway uses:
+
+```bash
+docker run -d --init --name seo-audit-runner --restart unless-stopped \
+  -v mcp-sac-data:/data -v mcp-sac-creds:/creds:ro \
+  -e SAC_DATA_DIR=/data -e GOOGLE_APPLICATION_CREDENTIALS=/creds/gsc.json \
+  -e DATAFORSEO_USERNAME -e DATAFORSEO_PASSWORD -e MAJESTIC_API_KEY \
+  node:22-slim npx -y -p @houtini/seo-audit-console seo-audit-runner
+```
+
+- The `-e NAME` flags with no value copy those keys from your shell; drop any you don't use. The runner needs the same keys as the server, because it is the one that calls the APIs.
+- Windows, Git Bash: put `MSYS_NO_PATHCONV=1` in front, or MSYS turns `/data` and `/creds` into Windows paths. PowerShell doesn't need it.
+- `docker logs seo-audit-runner` shows the runner start and every job it claims. The first start takes about a minute while npx installs the package.
+
+Then add `SAC_JOB_RUNNER=external` to the env of the server's gateway catalog entry, and take `longLived: true` off it.
+
+A job now reads `queued: waiting for the job runner` until the runner claims it. If it stays queued for over a minute with no runner checking in, the status tells you no runner seems to be running, with the command above. The runner does one job at a time; `SAC_RUNNER_CONCURRENCY=2` (or more) on the runner lets jobs for different properties run side by side. To update, remove the runner container and run the command again, so npx fetches the new release; a job that was running at that moment reads `interrupted`, so start it again.
+
 ## Troubleshooting
 
 - **`list_properties` is empty or errors.** Either the client isn't connected to the server yet, or the service account hasn't been added to your property (step 2.3 above - the classic). Fix the config, then fully restart Claude Desktop from the tray.
