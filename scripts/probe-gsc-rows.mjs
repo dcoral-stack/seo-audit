@@ -16,6 +16,8 @@ import { runSingleCheck } from '../dist/audit/engine.js';
 import { runQueryData } from '../dist/core/queryData.js';
 import { dbPathFor } from '../dist/core/paths.js';
 import { migrateGscStorage } from '../dist/core/gscMigrate.js';
+import { cruxOrigin, topClickedUrls } from '../dist/core/CruxSync.js';
+import { loadBrandQueries } from '../dist/core/brand.js';
 
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; console.log(`  ok  ${msg}`); } else { fail++; console.log(`  FAIL ${msg}`); } };
@@ -194,6 +196,41 @@ function day(ins, d, q, url, clicks, impr, shapes) {
   const sql = v.prepare(`SELECT sql FROM sqlite_master WHERE name = 'gsc_rows'`).get().sql;
   v.close();
   ok(!/WHERE/.test(sql), 'gsc_rows is a straight pass-through after the migration');
+}
+
+// ── 5. Top-page pickers read de-duplicated totals (code review, 0.16.0) ─────────────────────────
+// A pending-layout property: /x is stored as lite AND per-country rows (10 clicks a day, 20 if a
+// reader sums raw search_analytics), /y as lite only (15 a day). Every "top page by clicks" picker
+// must choose /y: CrUX's origin and its top URLs, the asset checks' page ordering, and the brand
+// query totals.
+{
+  const { site, adb, db, file } = property('dedupe');
+  const X = 'https://www.dedupe.test/x', Y = 'https://dedupe.test/y';
+  const ins = insert(db);
+  db.transaction(() => {
+    for (const d of days('2026-09-01', '2026-09-28')) {
+      day(ins, d, 'x widgets', X, 10, 100, ['lite', 'country']);
+      day(ins, d, 'y widgets', Y, 15, 150, ['lite']);
+      day(ins, d, 'dedupe shop', X, 4, 40, ['lite', 'country']);
+    }
+    db.prepare(`INSERT INTO page_resources (page_key, resource_url, type, party, position) VALUES (?, 'https://dedupe.test/app.js', 'js', 'first', 'head')`).run(X);
+    db.prepare(`INSERT INTO page_resources (page_key, resource_url, type, party, position) VALUES (?, 'https://dedupe.test/app.js', 'js', 'first', 'head')`).run(Y);
+    db.prepare(`INSERT INTO resource_assets (url, type, status, used_on, checked_at) VALUES ('https://dedupe.test/app.js', 'js', 404, 2, '2026-09-29')`).run();
+  })();
+  adb.close();
+  const w = new AuditDatabase(file); // pending layout detected, #64's views built
+  try {
+    const raw = w.db.prepare(`SELECT page, SUM(clicks) c FROM search_analytics WHERE page IN (?, ?) GROUP BY page ORDER BY c DESC`).all(X, Y);
+    ok(raw[0]?.page === X, `fixture: raw search_analytics would rank /x first (${JSON.stringify(raw)})`);
+    ok(cruxOrigin(w.db, site) === 'https://dedupe.test', `CrUX origin follows the de-duplicated top page (${cruxOrigin(w.db, site)})`);
+    const top = topClickedUrls(w.db, 2, { hostForm: 'apex' });
+    ok(top[0] === Y, `CrUX top URLs read de-duplicated totals (${JSON.stringify(top)})`);
+    const brand = loadBrandQueries(w.db, site);
+    const shop = w.db.prepare(`SELECT COUNT(*) n FROM temp.brand_query`).get().n;
+    ok(brand && shop === 1, 'brand queries load on the pending layout');
+  } finally { w.close(); }
+  const f = runSingleCheck(dataDir, site, 'broken-subresource');
+  ok(f.total === 1 && f.findings[0].urlKey === Y, `broken-subresource is keyed to the page with the most de-duplicated clicks (${f.findings[0]?.urlKey})`);
 }
 
 rmSync(dataDir, { recursive: true, force: true });

@@ -145,8 +145,15 @@ try {
         && s4[1].evidence.kind === 'not-found-text' && s4[1].urlKey.endsWith('/missing-thing') && !!s4[1].evidence.equity && !!s4[1].evidence.rule,
         JSON.stringify(s4.map(f => [f.urlKey, f.evidence.kind])));
       const hv = runCheck(bad.adb.db, 'host-variant-split');
-      check('host-variant-split (bad): 3 findings; the deep chain keyed to its page; equity attached', same(hv.map(f => f.evidence.verdict).sort(), ['redirect-chain', 'serves-200', 'temporary-redirect'])
-        && hv.find(f => f.evidence.verdict === 'redirect-chain').urlKey.endsWith('/blog/post-1') && hv.every(f => f.evidence.equity), JSON.stringify(hv.map(f => [f.urlKey, f.evidence.verdict])));
+      const hvHome = hv.find(f => f.evidence.canonicalUrl === 'https://www.bad.test/');
+      const hvDeep = hv.find(f => f.evidence.verdicts === 'redirect-chain');
+      check('host-variant-split (bad): one finding per page (home + deep), not one per twin; equity attached', hv.length === 2 && new Set(hv.map(f => f.urlKey)).size === 2
+        && !!hvHome && !!hvDeep && hvDeep.urlKey.endsWith('/blog/post-1') && hv.every(f => f.evidence.equity), JSON.stringify(hv.map(f => [f.urlKey, f.evidence.verdicts])));
+      check('host-variant-split (bad): the homepage finding lists both failing twins in its evidence and summary',
+        hvHome?.evidence.failing === 2 && hvHome.evidence.probed === 2 && same(hvHome.evidence.twins.map(t => t.verdict).sort(), ['serves-200', 'temporary-redirect'])
+        && /^2 of 2 variants not redirected in one 301: http:\/\/www\.bad\.test\/ \(temporary redirect\), https:\/\/bad\.test\/ \(answers 200\)$/.test(hvHome.evidence.summary),
+        JSON.stringify(hvHome?.evidence));
+      check('host-variant-split (bad): the deep finding reads "1 of 1"', /^1 of 1 variant not redirected in one 301: .*\(redirect chain\)$/.test(hvDeep?.evidence.summary ?? ''), hvDeep?.evidence.summary);
       check('collected() is null once probed', noteOf(bad.adb.db, 'soft-404-handling') === null && noteOf(bad.adb.db, 'host-variant-split') === null);
       // A second run replaces the site-probe rows, and never the probe_urls row.
       await runSiteProbes(bad.adb.db, 'sc-domain:bad.test', { crawlId: 'c2', userAgent: BOT_UA, preferChrome: true, delayMs: 0, fetchImpl });

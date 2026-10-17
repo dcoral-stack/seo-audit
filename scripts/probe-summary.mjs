@@ -256,6 +256,10 @@ function audit(db, runId, at, crawlId, findings, checkIds = CHECKS) {
   const text = (v) => v.segments.map(x => x.text).join('');
   const full = buildVerdict({ clicks: { current: 880, prior: 1000 }, nonBrand: { current: 410, prior: 500, brand: 'acme' }, criticalOpen: 3, resolvedSinceLastAudit: 14, pagesChanged: 27 });
   ok(text(full) === 'Organic clicks are down 12% on the prior 28 days (non-brand down 18%); 3 critical issues are open, 14 resolved since the last audit; 27 pages changed since the last crawl.', `verdict: the full sentence (${text(full)})`);
+  const nbFromNone = buildVerdict({ clicks: { current: 880, prior: 1000 }, nonBrand: { current: 40, prior: 0, brand: 'acme' } });
+  ok(text(nbFromNone) === 'Organic clicks are down 12% on the prior 28 days (non-brand up from none).', `verdict: non-brand from zero says "up from none", not nothing (${text(nbFromNone)})`);
+  const nbNone = buildVerdict({ clicks: { current: 880, prior: 1000 }, nonBrand: { current: 0, prior: 0, brand: 'acme' } });
+  ok(text(nbNone) === 'Organic clicks are down 12% on the prior 28 days (non-brand flat).', `verdict: non-brand zero in both windows reads flat (${text(nbNone)})`);
   ok(full.chips.map(c => c.direction).join() === 'down,neutral,neutral', 'verdict: chips coloured by direction only');
   ok(text(buildVerdict({ clicks: { current: 1030, prior: 1000 } })) === 'Organic clicks are flat on the prior 28 days.', 'verdict: inside the ±5% dead band reads flat');
   const noGsc = buildVerdict({ criticalOpen: 1, pagesChanged: 0 });

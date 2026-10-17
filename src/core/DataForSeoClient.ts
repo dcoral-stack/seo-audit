@@ -23,7 +23,7 @@ import { dirname } from 'node:path';
  * would pay to refetch what the other still serves from cache.
  */
 export const DEFAULT_DFS_CACHE_DAYS = 20;
-export const dfsCacheDaysFromEnv = (): number => Number(process.env.DATAFORSEO_CACHE_DAYS) || DEFAULT_DFS_CACHE_DAYS;
+export const dfsCacheDaysFromEnv = (env: NodeJS.ProcessEnv = process.env): number => Number(env.DATAFORSEO_CACHE_DAYS) || DEFAULT_DFS_CACHE_DAYS;
 
 export interface DfsResponse {
   tasks: any[];

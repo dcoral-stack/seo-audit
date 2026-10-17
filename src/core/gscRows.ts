@@ -227,6 +227,54 @@ export interface ShapeStat { shape: number; clicks: number; impressions: number;
 export const pickShape = (stats: ShapeStat[]): number =>
   [...stats].sort((a, b) => b.impressions - a.impressions || b.clicks - a.clicks || a.shape - b.shape)[0].shape;
 
+/** Per-shape figures of one day's rows in search_analytics (the #64 layout holds every shape there). */
+const LEGACY_DAY_STATS_SQL = `SELECT ${shapeSql()} shape, COALESCE(SUM(clicks),0) clicks, COALESCE(SUM(impressions),0) impressions, COUNT(*) rows
+                             FROM search_analytics WHERE date = ? GROUP BY shape ORDER BY shape`;
+interface DayChoice { total: number; country: number | null; device: number | null; shapes: string }
+/** #64's choice for a day holding several shapes: the totals shape, and (when two segment shapes
+ *  both carry a country / a device) the one the segment views read. */
+function dayChoice(stats: ShapeStat[]): DayChoice {
+  const withCountry = stats.filter(s => s.shape === 1 || s.shape === 3);
+  const withDevice = stats.filter(s => s.shape === 2 || s.shape === 3);
+  return {
+    total: pickShape(stats),
+    country: withCountry.length > 1 ? pickShape(withCountry) : null,
+    device: withDevice.length > 1 ? pickShape(withDevice) : null,
+    shapes: JSON.stringify(stats),
+  };
+}
+
+/**
+ * A NOT-yet-migrated layout (pending, or migrating with the migration deferred, e.g. for lack of
+ * disk): after a sync wrote rows into search_analytics the #64 way, bring `gsc_day_shape` in line
+ * for the days in [from, to], so the views never sum two shapes of one day. A day holding more than
+ * one shape gets #64's choice (and, if it had been migrated, is handed back to the migration with
+ * that choice); a pre-migration entry for a day no longer mixed is dropped; a migrated day's
+ * evidence entry is kept. Then the views, in the same transaction. Returns the mixed days.
+ */
+export function refreshLegacyDayShapes(db: Database.Database, from: string, to: string): number {
+  const stat = db.prepare(LEGACY_DAY_STATS_SQL);
+  const dates = (db.prepare(`SELECT DISTINCT date FROM search_analytics WHERE date >= ? AND date <= ?
+                             UNION SELECT date FROM gsc_day_shape WHERE date >= ? AND date <= ?`).all(from, to, from, to) as { date: string }[]).map(r => r.date);
+  const upsert = db.prepare(`INSERT INTO gsc_day_shape (date, total_shape, country_shape, device_shape, shapes, totals_from) VALUES (?, ?, ?, ?, ?, NULL)
+    ON CONFLICT(date) DO UPDATE SET total_shape = excluded.total_shape, country_shape = excluded.country_shape,
+      device_shape = excluded.device_shape, shapes = excluded.shapes, totals_from = NULL`);
+  const drop = db.prepare(`DELETE FROM gsc_day_shape WHERE date = ? AND totals_from IS NULL`);
+  let mixed = 0;
+  db.transaction(() => {
+    for (const date of dates) {
+      const stats = stat.all(date) as ShapeStat[];
+      if (stats.length > 1) {
+        const c = dayChoice(stats);
+        upsert.run(date, c.total, c.country, c.device, c.shapes);
+        mixed++;
+      } else drop.run(date);
+    }
+    syncViews(db);
+  })();
+  return mixed;
+}
+
 /**
  * PENDING layout only: recompute #64's per-day choice from search_analytics. Returns the number of
  * days stored in more than one shape. Once the migration has started, `gsc_day_shape` is frozen
@@ -238,22 +286,10 @@ export function refreshGscDayShapes(db: Database.Database): number {
   const fp = fingerprint(db);
   const S = shapeSql();
   const mixed = (db.prepare(`SELECT date FROM search_analytics GROUP BY date HAVING MIN(${S}) <> MAX(${S}) ORDER BY date`).all() as { date: string }[]).map(r => r.date);
-  const rows: { date: string; total: number; country: number | null; device: number | null; shapes: string }[] = [];
+  const rows: ({ date: string } & DayChoice)[] = [];
   if (mixed.length) {
-    const stat = db.prepare(`SELECT ${S} shape, COALESCE(SUM(clicks),0) clicks, COALESCE(SUM(impressions),0) impressions, COUNT(*) rows
-                             FROM search_analytics WHERE date = ? GROUP BY shape ORDER BY shape`);
-    for (const date of mixed) {
-      const stats = stat.all(date) as ShapeStat[];
-      const withCountry = stats.filter(s => s.shape === 1 || s.shape === 3);
-      const withDevice = stats.filter(s => s.shape === 2 || s.shape === 3);
-      rows.push({
-        date,
-        total: pickShape(stats),
-        country: withCountry.length > 1 ? pickShape(withCountry) : null,
-        device: withDevice.length > 1 ? pickShape(withDevice) : null,
-        shapes: JSON.stringify(stats),
-      });
-    }
+    const stat = db.prepare(LEGACY_DAY_STATS_SQL);
+    for (const date of mixed) rows.push({ date, ...dayChoice(stat.all(date) as ShapeStat[]) });
   }
   const ins = db.prepare(`INSERT INTO gsc_day_shape (date, total_shape, country_shape, device_shape, shapes) VALUES (?, ?, ?, ?, ?)`);
   db.transaction(() => {
@@ -283,6 +319,12 @@ export function ensureGscRows(db: Database.Database): void {
 export function hasGscRows(db: Database.Database): boolean {
   return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = ?`).get(GSC_ROWS);
 }
+
+/**
+ * Where a TOTAL reads from: the `gsc_rows` view, or raw search_analytics on a read-only handle to a
+ * database this version never opened (no views; days stored in two shapes then count twice).
+ */
+export const gscTotalsSource = (db: Database.Database): string => (hasGscRows(db) ? GSC_ROWS : 'search_analytics');
 
 /** Insert one day's segment rows of one shape into search_analytics, aggregated to the totals grain
  *  (date × query × page): clicks and impressions summed, position impression-weighted. */

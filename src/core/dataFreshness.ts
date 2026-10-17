@@ -69,12 +69,15 @@ function crawlNote(rows: CrawlRow[], shown: DataFreshness['shownCrawl']): string
  * when there is no registry to ask. With it, a crawl run still marked 'running' that no live
  * crawl/refresh job owns is reported as 'interrupted': its process exited mid-crawl (#9).
  * `liveJobs.queued` (#56): job types waiting for the job runner; a sync or crawl that is queued
- * reads as 'queued' (the detail still says what the stored data covers).
+ * reads as 'queued' (the detail still says what the stored data covers). `liveJobs.queuedNoRunner`:
+ * queued with no job runner to claim it - the stored state stands, and the detail says so.
  */
 export function getDataFreshness(db: Database.Database, liveJobs?: LiveJobs | null): DataFreshness {
   const sources: FreshnessSource[] = [];
   const queuedFor = (...types: string[]): boolean => !!liveJobs?.queued && types.some(t => liveJobs.queued!.has(t));
   const QUEUED = 'queued: waiting for the job runner';
+  const noRunnerFor = (...types: string[]): boolean => !!liveJobs?.queuedNoRunner && types.some(t => liveJobs.queuedNoRunner!.has(t));
+  const NO_RUNNER = 'queued: no job runner is running, so it will not start until one does';
 
   // GSC sync: property_meta.last_synced_at + the stored date span.
   if (tableExists(db, 'search_analytics')) {
@@ -83,12 +86,13 @@ export function getDataFreshness(db: Database.Database, liveJobs?: LiveJobs | nu
       : undefined;
     const span = db.prepare(`SELECT MIN(date) lo, MAX(date) hi FROM search_analytics`).get() as { lo: string | null; hi: string | null };
     const syncQueued = queuedFor('sync', 'refresh');
+    const syncNoRunner = !syncQueued && noRunnerFor('sync', 'refresh');
     const syncDetail = span.hi ? `Search Console ${span.lo} to ${span.hi}` : 'No Search Console data yet - run sync_gsc';
     sources.push({
       kind: 'sync',
       state: syncQueued ? 'queued' : span.hi ? 'completed' : 'never',
       at: meta?.last_synced_at ?? null,
-      detail: syncQueued ? `${QUEUED}; ${syncDetail}` : syncDetail,
+      detail: syncQueued ? `${QUEUED}; ${syncDetail}` : syncNoRunner ? `${NO_RUNNER}; ${syncDetail}` : syncDetail,
     });
   }
 
@@ -106,17 +110,18 @@ export function getDataFreshness(db: Database.Database, liveJobs?: LiveJobs | nu
     const orphaned = latest?.status === 'running' && !!liveJobs && !liveJobs.has('crawl') && !liveJobs.has('refresh');
     // A crawl queued for the job runner (#56) - unless one is actually running now, which wins.
     const crawlQueued = queuedFor('crawl', 'refresh') && !(latest?.status === 'running' && !orphaned);
+    const crawlNoRunner = !crawlQueued && noRunnerFor('crawl', 'refresh') && !(latest?.status === 'running' && !orphaned);
     sources.push(latest
       ? {
         kind: 'crawl',
         state: crawlQueued ? 'queued' : orphaned ? 'interrupted' : latest.status ?? 'unknown',
         at: latest.finished_at ?? latest.started_at,
-        detail: (crawlQueued ? `${QUEUED}; last run: ` : '') + `${fmtN(latest.urls_crawled ?? 0)} URLs crawled${latest.urls_failed ? `, ${fmtN(latest.urls_failed)} failed` : ''}` + crawlNote(rows, shownCrawl),
+        detail: (crawlQueued ? `${QUEUED}; last run: ` : crawlNoRunner ? `${NO_RUNNER}; last run: ` : '') + `${fmtN(latest.urls_crawled ?? 0)} URLs crawled${latest.urls_failed ? `, ${fmtN(latest.urls_failed)} failed` : ''}` + crawlNote(rows, shownCrawl),
         error: crawlQueued ? null : orphaned ? (latest.error ?? exitedBeforeFinish('crawl')) : latest.error,
       }
       : crawlQueued
         ? { kind: 'crawl', state: 'queued', at: null, detail: `${QUEUED}; no crawl yet` }
-        : { kind: 'crawl', state: 'never', at: null, detail: 'No crawl yet - run start_crawl or refresh_property' });
+        : { kind: 'crawl', state: 'never', at: null, detail: crawlNoRunner ? `${NO_RUNNER}; no crawl yet` : 'No crawl yet - run start_crawl or refresh_property' });
   }
 
   // Audit: the latest run.

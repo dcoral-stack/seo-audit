@@ -15,7 +15,7 @@ import { robotsVerdict, rulesFromText } from '../core/robots.js';
 import { AI_BOTS } from '../core/aiBots.js';
 import { BAND_RANK, CWV_THRESHOLDS, cwvBand, type CwvBand, type CwvMetric } from '../core/CruxSync.js';
 import { loadBrandQueries, brandPredicate } from '../core/brand.js';
-import { GSC_ROWS, hasGscRows } from '../core/gscRows.js';
+import { GSC_ROWS, gscTotalsSource, hasGscRows } from '../core/gscRows.js';
 
 const rows = (c: CheckContext, sql: string, ...args: unknown[]): any[] => c.db.prepare(sql).all(...args);
 const one = (c: CheckContext, sql: string, ...args: unknown[]): any => c.db.prepare(sql).get(...args);
@@ -111,7 +111,7 @@ function aiSearchBotFindings(c: CheckContext): RawFinding[] {
   if (!rb) return [];
   // Top pages by clicks (28 finalised days) - a block on these costs the most citations.
   const top: string[] = c.gscMaxDate
-    ? rows(c, `SELECT page_key FROM search_analytics WHERE page_key IS NOT NULL AND date > date(?, '-28 days') AND date <= ? GROUP BY page_key HAVING SUM(clicks) > 0 ORDER BY SUM(clicks) DESC LIMIT ?`, c.gscMaxDate, c.gscMaxDate, AI_BOT_TOP_PAGES).map(r => r.page_key)
+    ? rows(c, `SELECT page_key FROM ${gscTotalsSource(c.db)} WHERE page_key IS NOT NULL AND date > date(?, '-28 days') AND date <= ? GROUP BY page_key HAVING SUM(clicks) > 0 ORDER BY SUM(clicks) DESC LIMIT ?`, c.gscMaxDate, c.gscMaxDate, AI_BOT_TOP_PAGES).map(r => r.page_key)
     : [];
   const pathOf = (u: string): string | null => { try { const x = new URL(u); return x.pathname + x.search; } catch { return null; } };
   const blocked: Record<string, unknown>[] = [];

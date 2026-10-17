@@ -15,6 +15,7 @@
  * and each check's collected() says "not collected" (with how to collect it) instead of passing on an
  * empty table. A status of 0 (fetch failed, or the probe was rate-limited) or a 429/503 is unknown.
  */
+import { gscTotalsSource } from '../core/gscRows.js';
 import type { CheckContext, CheckDef, RawFinding } from './checks.js';
 import { HTML_CT } from '../core/sql.js';
 
@@ -66,7 +67,7 @@ function usersLookup(c: CheckContext): (url: string) => Users {
   const has = count(c, 'page_resources') > 0;
   const clicks = new Map<string, number>();
   if (has && c.gscMaxDate) {
-    for (const r of rows(c, `SELECT page_key k, SUM(clicks) n FROM search_analytics
+    for (const r of rows(c, `SELECT page_key k, SUM(clicks) n FROM ${gscTotalsSource(c.db)}
         WHERE page_key IN (SELECT DISTINCT page_key FROM page_resources) AND date <= ? AND date > date(?, '-28 days') GROUP BY page_key`, c.gscMaxDate, c.gscMaxDate))
       clicks.set(r.k, r.n ?? 0);
   }
@@ -219,7 +220,7 @@ function renderBlockingHeadResources(c: CheckContext): RawFinding[] {
     (r.kind === 'js' ? e.scripts : e.css).push(r.u);
   }
   const clicks = new Map<string, number>();
-  if (c.gscMaxDate) for (const r of rows(c, `SELECT page_key k, SUM(clicks) n FROM search_analytics WHERE date <= ? AND date > date(?, '-28 days') AND page_key IS NOT NULL GROUP BY page_key`, c.gscMaxDate, c.gscMaxDate)) clicks.set(r.k, r.n ?? 0);
+  if (c.gscMaxDate) for (const r of rows(c, `SELECT page_key k, SUM(clicks) n FROM ${gscTotalsSource(c.db)} WHERE date <= ? AND date > date(?, '-28 days') AND page_key IS NOT NULL GROUP BY page_key`, c.gscMaxDate, c.gscMaxDate)) clicks.set(r.k, r.n ?? 0);
   const groups = new Map<string, { scripts: string[]; css: string[]; pages: string[] }>();
   for (const [k, e] of per) {
     if (e.scripts.length < SYNC_HEAD_SCRIPTS_MIN && e.css.length < BLOCKING_STYLESHEETS_MIN) continue;

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { rmSync } from 'node:fs';
 import { AuditDatabase } from '../dist/core/AuditDatabase.js';
 import { getDashboardData } from '../dist/core/dashboardData.js';
-import { brandRun, loadBrandQueries } from '../dist/core/brand.js';
+import { brandRun, brandPredicate, loadBrandQueries } from '../dist/core/brand.js';
 import { dbPathFor } from '../dist/core/paths.js';
 
 let pass = 0, fail = 0;
@@ -59,6 +59,30 @@ ok(brandRun('my brand shoes', 'mybrand') === 'my brand', 'a hyphenated domain (m
   // 28 days x (3 + 1 + 1) branded, 28 x (2 + 4) non-branded.
   ok(b.branded.clicks === 28 * 5 && b.nonBranded.clicks === 28 * 6, `branded split: ${b.branded.clicks} branded / ${b.nonBranded.clicks} non-branded (want 140 / 168)`);
   ok(b.variants.includes('sim racing cockpit'), 'payload carries the matched spellings');
+}
+
+// ── 3. Non-ASCII case: SQLite LOWER() is ASCII-only, JS toLowerCase() is not ───────────────────
+{
+  const site = 'sc-domain:simracingcockpit.de';
+  const adb = new AuditDatabase(dbPathFor(dataDir, site));
+  adb.upsertProperty(site, 'apex');
+  const ins = adb.db.prepare(`INSERT INTO search_analytics (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,?,?,?,'','',?,?,0.1,3)`);
+  const u = 'https://simracingcockpit.de/';
+  adb.db.transaction(() => {
+    for (let t = Date.parse('2026-09-01'); t <= Date.parse('2026-09-30'); t += 86_400_000) {
+      const d = new Date(t).toISOString().slice(0, 10);
+      ins.run(d, 'Simracingcockpit ÜBERSICHT', u, u, 2, 20);
+      ins.run(d, 'simracingcockpit übersicht', u, u, 1, 10);
+      ins.run(d, 'lenkrad test', u, u, 4, 80);
+    }
+  })();
+  const m = loadBrandQueries(adb.db, site);
+  const n = (q) => adb.db.prepare(`SELECT COUNT(*) n FROM search_analytics WHERE query = ? AND ${brandPredicate()}`).get(q).n;
+  ok(m.queries === 1 && n('Simracingcockpit ÜBERSICHT') === 30 && n('simracingcockpit übersicht') === 30, `"Simracingcockpit ÜBERSICHT" and its lower-case form both read as branded (${n('Simracingcockpit ÜBERSICHT')} / ${n('simracingcockpit übersicht')} rows)`);
+  ok(n('lenkrad test') === 0, 'a non-brand query stays non-brand');
+  adb.close();
+  const b = getDashboardData(dataDir, site).brandedSplit;
+  ok(b.branded.clicks === 28 * 3 && b.nonBranded.clicks === 28 * 4, `branded split counts both case forms (${b.branded.clicks} branded / ${b.nonBranded.clicks} non-branded, want 84 / 112)`);
 }
 
 rmSync(dataDir, { recursive: true, force: true });

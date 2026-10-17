@@ -38,6 +38,9 @@ export interface GscMigrationResult {
   state: GscStorageState;
   /** Set when the migration refused to start (e.g. not enough free disk); nothing was changed. */
   refused?: string;
+  /** With a disk refusal: the free bytes it needed, and what the volume had. */
+  needBytes?: number;
+  freeBytes?: number;
   backup: string | null;
   /** Days that held segment rows in search_analytics. */
   days: number;
@@ -71,7 +74,7 @@ const headroomFor = (dbBytes: number): number => Math.ceil(dbBytes * 0.5) + 256 
 
 export const diskFree = (dir: string): number => { const s = statfsSync(dir); return Number(s.bavail) * Number(s.bsize); };
 const fileBytes = (f: string): number => ['', '-wal'].reduce((n, s) => { try { return n + statSync(f + s).size; } catch { return n; } }, 0);
-const gb = (n: number): string => `${(n / 1024 ** 3).toFixed(2)} GB`;
+export const gb = (n: number): string => `${(n / 1024 ** 3).toFixed(2)} GB`;
 const tick = (): Promise<void> => new Promise(r => setImmediate(r));
 const count = (db: Database.Database, table: string): number => (db.prepare(`SELECT COUNT(*) n FROM ${table}`).get() as { n: number }).n;
 
@@ -97,6 +100,8 @@ export async function migrateGscStorage(db: Database.Database, dbFile: string, o
   if (free < need) {
     return {
       ...result,
+      needBytes: need,
+      freeBytes: free,
       refused: `GSC storage migration (#65) not started: it needs ${gb(need)} free next to ${dbFile} ` +
         `(${needBackup ? `a ${gb(bytesBefore)} backup plus ` : ''}${gb(headroomFor(bytesBefore))} working room) and the volume has ${gb(free)}. ` +
         `Nothing was changed; the dashboard and audit keep reading correct figures, only slower. Free some space ` +

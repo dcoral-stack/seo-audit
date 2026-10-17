@@ -622,7 +622,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         if (big.length) {
           // One build per database: a running fts-index job for ANOTHER property must not be handed back.
           const running = jobs.list().find(j => j.type === 'fts-index' && (j.state === 'running' || j.state === 'queued') && j.scope === jobScope(siteUrl)); // scope is in the registry from the job's first write; progress.dbFile wasn't until the first heartbeat
-          const jobId = running?.id ?? startFor(siteUrl, 'fts-index', { siteUrl, dbFile, indexes: pending.map(p => p.index) });
+          const jobId = running?.id ?? startFor(siteUrl, 'fts-index', { siteUrl, dbName: path.basename(dbFile), indexes: pending.map(p => p.index) });
           return jobStarted({ jobId, status: 'running', siteUrl, building: pending.map(p => p.index) },
             `Building the full-text index for ${pending.map(p => p.index).join(', ')} (one-time, ~${big.reduce((a, p) => a + p.rows, 0).toLocaleString('en-US')} rows, in the background). Poll check_sync_status, then re-run this query. Meanwhile op "like" works, just slower.`);
         }
@@ -659,10 +659,11 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   );
 
   // sync_gsc's start reply: the range the job will actually fetch (#33), or that there's nothing to.
-  const syncReply = (siteUrl: string, jobId: string, planned: { startDate: string; endDate: string; incremental: boolean; noop?: boolean }, requestedStart: string, full: boolean): string => {
+  const syncReply = (siteUrl: string, jobId: string, planned: { startDate: string; endDate: string; incremental: boolean; noop?: boolean; segmentsKept?: boolean }, requestedStart: string, full: boolean): string => {
     if (planned.noop) return `Sync started for ${siteUrl} (job ${jobId}): nothing to fetch, the stored data already covers ${requestedStart} → ${planned.endDate}. Poll check_sync_status.`;
     const how = planned.incremental ? ` (incremental: the last stored days are re-pulled and replaced; requested window started ${requestedStart})` : full ? ' (full re-pull)' : '';
-    return `Sync started for ${siteUrl} (job ${jobId}): fetching ${planned.startDate} → ${planned.endDate}${how}. Poll check_sync_status.`;
+    const segs = planned.segmentsKept ? ', with device and country segments (this property\'s breakdowns are kept current)' : '';
+    return `Sync started for ${siteUrl} (job ${jobId}): fetching ${planned.startDate} → ${planned.endDate}${how}${segs}. Poll check_sync_status.`;
   };
   // ── Async-job helpers ─────────────────────────────────────────────────────
   // A job-starting tool returns the same JSON in the text reply as in structuredContent, so a
@@ -701,7 +702,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   };
   const oneLineJob = (job: Job, detail = false): string => {
     const head = `Job ${job.id} (${job.type}): ${job.state}`;
-    if (job.state === 'queued') return `${head}: ${job.note ?? 'waiting for the job runner'}`; // #56
+    if (job.state === 'queued') return `${head}${job.noRunner ? ' (no runner)' : ''}: ${job.note ?? 'waiting for the job runner'}`; // #56
     if (job.state === 'failed') return `${head}: ${job.error ?? 'unknown error'}${corruptionHint(job.error)}`;
     if (job.state === 'interrupted') return `${head}: ${job.error ?? 'the process running it exited before it finished.'}`;
     const prog = Object.keys(job.progress).length ? ` ${crawlProgressLine(job.progress) ?? JSON.stringify(job.progress).slice(0, 300)}` : '';
@@ -718,7 +719,11 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     const rlLine = (rlNotes && !prog.includes(rlNotes) ? `\n\n⏱ Crawl${rlNotes.replace(/^; /, ': ')}.` : '')
       + (unfetchedN > 0 ? `\n\n⏱ ${unfetchedN} URL(s) were still rate limited after every retry. They are stored with fetch_state "rate_limited" and no status: the audit treats them as unknown, not broken. Re-crawl with maxConcurrency 2-3 to fill them in.` : '');
     const blockLine = blk ? `\n\n🛡 ${blk.blockedAsBot} request(s) were bot-blocked for the crawler's user agent; ${blk.okAsChrome} got through as Chrome${blk.switchedToChrome ? ' and the rest of the crawl ran as Chrome' : ''}. The site's bot protection is challenging non-browser clients: check it isn't also blocking crawlers you want (pages.fetched_as shows which pages).` : '';
-    return head + prog + blockLine + rlLine + (link
+    // #65: the storage migration was deferred for lack of disk; the sync still ran (old layout).
+    const migDeferred = (res as { storageMigrationDeferred?: string; gsc?: { storageMigrationDeferred?: string } } | undefined);
+    const deferredMsg = migDeferred?.storageMigrationDeferred ?? migDeferred?.gsc?.storageMigrationDeferred;
+    const deferredLine = deferredMsg ? `\n\n⚠ GSC ${deferredMsg}` : '';
+    return head + prog + blockLine + rlLine + deferredLine + (link
       ? `\n\n📊 The dashboard is updated with this data: ${link} (open it in your browser).`
       : `\n\n📊 The data is in. See it with get_dashboard${siteUrl ? ` for ${siteUrl}` : ''} (in chat), open_dashboard (browser tab) or export_report.`);
   };

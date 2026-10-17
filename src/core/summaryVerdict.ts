@@ -48,7 +48,8 @@ export function buildVerdict(v: VerdictInput): Verdict {
     if (v.nonBrand) {
       const nb = direction(v.nonBrand.current, v.nonBrand.prior);
       if (nb.dir === 'flat') seg.push({ text: ' (non-brand flat)' });
-      else if (nb.pct != null) seg.push({ text: ` (non-brand ${nb.dir} ` }, { text: `${Math.abs(Math.round(nb.pct))}%`, n: true }, { text: ')' });
+      else if (nb.pct == null) seg.push({ text: ' (non-brand up from none)' }); // prior 0, current > 0: no percentage to give
+      else seg.push({ text: ` (non-brand ${nb.dir} ` }, { text: `${Math.abs(Math.round(nb.pct))}%`, n: true }, { text: ')' });
       tips.push(`Non-brand = queries that don't spell the brand "${v.nonBrand.brand}" in whole words (spaced spellings count), detected from the domain (a heuristic).`);
     }
     clauses.push(seg);

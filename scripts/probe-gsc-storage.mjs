@@ -220,6 +220,61 @@ async function migrate(file, opts = {}) {
   ok(r5.migration?.state === 'done' && stateOf(lfile).state === 'done' && segmentRowsIn(lfile, 'search_analytics') === 0, 'a sync on a pending database runs the migration first');
   const june = (v) => JSON.parse(v.totals).filter(x => x.date < '2026-07').map(x => `${x.date}:${x.c}:${x.i}`).join();
   ok(june(readerView(lfile)) === june(before), 'June totals untouched by the migrate-then-sync');
+
+  // (e) plannedRange takes run()'s dimension decision: a lite request on a property whose segments
+  // are current fetches segments from the SEGMENT table's resume date, and the start reply says so.
+  {
+    const psite = 'sc-domain:plan.test';
+    const pfile = dbPathFor(dataDir, psite);
+    await new GscSync(stub(rowsFor('full')), dataDir).run(psite, { startDate: '2026-06-01', endDate: '2026-06-10' }, noop, sig);
+    await new GscSync(stub(rowsFor('full')), dataDir).run(psite, { startDate: '2026-06-01', endDate: '2026-06-10', dimensions: ['date', 'query', 'page', 'country'] }, noop, sig);
+    const w = new AuditDatabase(pfile); // totals run two days past the segments (still within the lag)
+    for (const d of ['2026-06-11', '2026-06-12']) w.db.prepare(`INSERT INTO search_analytics (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,'acme widgets','https://x.test/a','https://x.test/a','','',10,100,0,3)`).run(d);
+    w.close();
+    const ps = stub(rowsFor('full'));
+    const syncer = new GscSync(ps, dataDir);
+    const plan = syncer.plannedRange(psite, { startDate: '2026-06-01', endDate: '2026-06-14' });
+    await syncer.run(psite, { startDate: '2026-06-01', endDate: '2026-06-14' }, noop, sig);
+    ok(plan.segmentsKept === true && plan.dimensions.join() === ps.calls[0].dimensions.join(), `plannedRange announces the segment re-aim run() makes (${plan.dimensions.join(',')} / ${ps.calls[0].dimensions.join(',')})`);
+    ok(plan.startDate === ps.calls[0].startDate && plan.startDate === '2026-06-06', `plannedRange states the range run() fetches (${plan.startDate} / ${ps.calls[0].startDate})`);
+  }
+
+  // (f) Not enough disk for the migration: the sync still runs, in the old layout, and says so.
+  {
+    const { site: dsite, file: dfile } = legacyProperty('deferred', srcLike);
+    const before = readerView(dfile);
+    const lowDisk = { freeBytes: () => 1024 };
+    const progress = [];
+    const ds = stub(rowsFor('full'));
+    const r = await new GscSync(ds, dataDir, lowDisk).run(dsite, { startDate: '2026-07-01', endDate: '2026-07-12' }, (p) => progress.push(p), sig);
+    ok(/^storage migration deferred: needs [\d.]+ GB free .*sync ran in the old layout, totals stay correct via the views/.test(r.storageMigrationDeferred ?? ''), `the result says the migration was deferred (${(r.storageMigrationDeferred ?? '').slice(0, 90)}...)`);
+    ok(r.migration?.refused && r.rowsFetched > 0 && ds.calls.length === 1, `...and the sync still ran (${r.rowsFetched} rows)`);
+    ok(progress.some(p => p.storageMigration?.phase === 'deferred'), 'the deferral is in the job progress');
+    ok(stateOf(dfile).state === 'pending' && backups(dfile).length === 0 && r.table === 'search_analytics', 'nothing migrated, no backup: the old layout, all rows in search_analytics');
+    const after = readerView(dfile);
+    const tot = (v, d) => JSON.parse(v.totals).find(x => x.date === d);
+    const june = (v) => JSON.parse(v.totals).filter(x => x.date < '2026-07').map(x => `${x.date}:${x.c}:${x.i}`).join();
+    ok(june(after) === june(before), 'June totals untouched by the deferred sync');
+    ok(['2026-07-06', '2026-07-10', '2026-07-12'].every(d => tot(after, d)?.c === 10 && tot(after, d)?.i === 150) && tot(after, '2026-07-05')?.c === 9, 'the re-pulled lag days and the new days hold the fresh totals; older days stay as stored');
+    // A segment sync in the old layout: the lag days' segment rows are replaced (one segment shape per
+    // day), and the views pick one shape per day, so nothing is summed twice.
+    const r2 = await new GscSync(stub(rowsFor('full')), dataDir, lowDisk).run(dsite, { startDate: '2026-06-20', endDate: '2026-06-30', dimensions: ['date', 'query', 'page', 'country'] }, noop, sig);
+    ok(r2.storageMigrationDeferred && r2.startDate === '2026-06-26' && r2.rowsFetched === 20, `a deferred segment sync resumes from the stored segment rows (${r2.startDate}, ${r2.rowsFetched} rows)`);
+    ok(segmentRowsIn(dfile, 'search_analytics_segments') === 0, 'old layout: no segment row went to the segment table');
+    const twoSegShapes = one(dfile, `SELECT COUNT(*) n FROM (SELECT date FROM search_analytics WHERE (device <> '' OR country <> '') AND date >= '2026-06-25' GROUP BY date HAVING MIN(device <> '') <> MAX(device <> ''))`).n;
+    ok(twoSegShapes === 0, 'the re-pulled segment days hold one segment shape each');
+    const v2 = readerView(dfile);
+    ok(tot(v2, '2026-06-26')?.c === 14 && tot(v2, '2026-06-26')?.i === 360, `a mixed day reads the fuller all-country totals once, not summed with the segments (${JSON.stringify(tot(v2, '2026-06-26'))})`);
+    ok(tot(v2, '2026-06-28')?.c === 10 && tot(v2, '2026-06-28')?.i === 150, `a day held only in segment rows reads them as its totals (${JSON.stringify(tot(v2, '2026-06-28'))})`);
+    const c29 = JSON.parse(v2.country).filter(x => x.date === '2026-06-29').reduce((a, x) => ({ c: a.c + x.c, i: a.i + x.i }), { c: 0, i: 0 });
+    ok(c29.c === 10 && c29.i === 150, `the country breakdown reads one segment shape per day (${JSON.stringify(c29)})`);
+    // Once there is room, the next migration moves it and every figure stays the same.
+    const m = await migrate(dfile);
+    ok(m.state === 'done' && segmentRowsIn(dfile, 'search_analytics') === 0, 'with room again, the deferred database migrates');
+    const v3 = readerView(dfile);
+    ok(v3.totals === v2.totals && v3.country === v2.country, 'totals and breakdowns are the same after the migration');
+    for (const b of backups(dfile)) rmSync(path.join(path.dirname(dfile), b), { force: true });
+  }
 }
 
 rmSync(dataDir, { recursive: true, force: true });

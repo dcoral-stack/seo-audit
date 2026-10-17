@@ -22,6 +22,12 @@ export interface Job {
   note?: string;
   /** Set when a cancel was requested for a job another process (the job runner) owns (#56). */
   cancelRequested?: boolean;
+  /**
+   * A queued job nothing can claim: no runner has heartbeated recently and it was queued over
+   * QUEUED_FRESH_MS ago. Decided on read (the row is never rewritten or deleted for it); such a job
+   * does not count as live for destructive guards, and status text shows it as "queued (no runner)".
+   */
+  noRunner?: boolean;
 }
 
 /**
@@ -37,7 +43,9 @@ export const jobRunnerModeFromEnv = (env: NodeJS.ProcessEnv = process.env): JobR
 /** The documented runner container, quoted wherever a queued job has no runner to claim it. */
 export const RUNNER_DOCKER_RUN =
   'docker run -d --init --name seo-audit-runner --restart unless-stopped -v mcp-sac-data:/data -v mcp-sac-creds:/creds:ro ' +
-  '-e SAC_DATA_DIR=/data -e GOOGLE_APPLICATION_CREDENTIALS=/creds/gsc.json node:22-slim npx -y -p @houtini/seo-audit-console seo-audit-runner';
+  '-e SAC_DATA_DIR=/data -e GOOGLE_APPLICATION_CREDENTIALS=/creds/gsc.json ' +
+  '-e DATAFORSEO_USERNAME -e DATAFORSEO_PASSWORD -e MAJESTIC_API_KEY -e CRUX_API_KEY ' +
+  'node:22-slim npx -y -p @houtini/seo-audit-console seo-audit-runner';
 export const QUEUED_NOTE = 'waiting for the job runner';
 
 /**
@@ -83,6 +91,12 @@ const SAFETY_STALE_MS = 30 * 60_000;
 const PROGRESS_THROTTLE_MS = 2_000;
 /** A runner that has not heartbeated for this long is presumed gone (it beats every ~10 s). */
 const RUNNER_STALE_MS = 60_000;
+/**
+ * A queued job counts as live (it may start writing at any moment) while a runner is heartbeating,
+ * or for this long after it was queued - long enough for a runner that is starting up to claim it.
+ * Past that, with no runner, nothing can claim it, so it no longer blocks prune / repair.
+ */
+const QUEUED_FRESH_MS = 2 * 60_000;
 const DAY_MS = 86_400_000;
 /** Results above this are not persisted (the in-process copy is kept); a crawl result is a few KB. */
 const MAX_RESULT_BYTES = 2_000_000;
@@ -101,6 +115,7 @@ export interface JobManagerOptions {
   /** `external`: start()-by-kind (submit) queues jobs for the job runner instead of running them (#56). */
   runner?: JobRunnerMode;
   runnerStaleMs?: number;
+  queuedFreshMs?: number;
 }
 
 /** A queued job a runner has claimed: the row (now `running`, owned by the runner) and its arguments. */
@@ -155,6 +170,7 @@ export class JobManager {
   private readonly staleMs: number;
   private readonly throttleMs: number;
   private readonly runnerStaleMs: number;
+  private readonly queuedFreshMs: number;
   private readonly mode: JobRunnerMode;
   readonly instanceId = randomUUID();
   private db: Database.Database | null = null;
@@ -167,6 +183,7 @@ export class JobManager {
     this.staleMs = o.staleMs ?? STALE_MS;
     this.throttleMs = o.progressThrottleMs ?? PROGRESS_THROTTLE_MS;
     this.runnerStaleMs = o.runnerStaleMs ?? RUNNER_STALE_MS;
+    this.queuedFreshMs = o.queuedFreshMs ?? QUEUED_FRESH_MS;
     this.mode = o.runner ?? 'in-process';
     if (o.dbPath) this.openDb(o.dbPath);
   }
@@ -498,6 +515,18 @@ export class JobManager {
   }
 
   /**
+   * Whether a queued job may still be claimed: a runner heartbeated within ~60 s (it will claim the
+   * job, whichever process queued it - so this does not depend on this process's own mode), or the
+   * job was queued under QUEUED_FRESH_MS ago (a runner may be starting). `alive` lets a caller
+   * checking many rows read the runners table once.
+   */
+  queuedIsLive(queuedAt: string, alive: boolean = this.runnerAlive()): boolean {
+    if (alive) return true;
+    const waited = Date.now() - Date.parse(queuedAt);
+    return Number.isFinite(waited) && waited < this.queuedFreshMs;
+  }
+
+  /**
    * The status line for a queued job. "waiting for the job runner" - unless it has waited over
    * ~60 s and no runner has heartbeated in that time, when it says no runner seems to be running
    * and how to start one.
@@ -514,7 +543,7 @@ export class JobManager {
     const last = this.lastRunnerBeat();
     return `${QUEUED_NOTE}, but no job runner seems to be running (${last ? `the last runner heartbeat was at ${last}` : 'no runner has ever checked in to this data directory'}). ` +
       `This server is set to SAC_JOB_RUNNER=external, so jobs only run when a runner claims them. Start one on the same data volume: ${RUNNER_DOCKER_RUN} ` +
-      '(add the same DATAFORSEO_* / MAJESTIC_API_KEY env vars the MCP server has; on Windows Git Bash prefix MSYS_NO_PATHCONV=1). The job stays queued until a runner picks it up.';
+      '(the bare -e DATAFORSEO_* / MAJESTIC_API_KEY / CRUX_API_KEY flags copy those keys from your shell: the runner needs the same keys as the MCP server, so drop only the ones you do not use; on Windows Git Bash prefix MSYS_NO_PATHCONV=1). The job stays queued until a runner picks it up.';
   }
 
   /** What to say when a job has just been queued: the waiting line, plus the advice if no runner is alive. */
@@ -539,7 +568,11 @@ export class JobManager {
         error = r.args != null ? RUNNER_INTERRUPTED_ERROR : INTERRUPTED_ERROR;
       }
     }
-    if (state === 'queued') note = this.queuedNote(r.started_at);
+    let noRunner = false;
+    if (state === 'queued') {
+      note = this.queuedNote(r.started_at);
+      noRunner = !this.queuedIsLive(r.started_at);
+    }
     const job: Job = {
       id: r.id, type: r.type, state, startedAt: r.started_at, updatedAt: r.updated_at,
       progress: (parseJson(r.progress) as Record<string, unknown> | undefined) ?? {},
@@ -549,6 +582,7 @@ export class JobManager {
     if (error !== undefined) job.error = error;
     if (note !== undefined) job.note = note;
     if (r.cancel_requested && state === 'running') job.cancelRequested = true;
+    if (noRunner) job.noRunner = true;
     const result = parseJson(r.result);
     if (result !== undefined) job.result = result;
     return job;
@@ -587,7 +621,9 @@ export class JobManager {
    * registry row stored as `running` whose heartbeat is within SAFETY_STALE_MS. Deliberately not
    * list()'s derived state, which reads a job `interrupted` once its heartbeat is 90 s stale - an
    * owner that is merely busy (event loop blocked by a long synchronous step) looks dead for a while.
-   * Queued jobs (#56) count too, reported as `queued`: a runner will start writing them at any moment.
+   * Queued jobs (#56) count too, reported as `queued`, while something can claim them (queuedIsLive:
+   * a runner heartbeated recently, or the job was queued in the last ~2 min). A queued row nothing can
+   * claim is stale and does not block prune / repair; it stays in the registry, marked noRunner.
    */
   possiblyRunning(windowMs = SAFETY_STALE_MS): Job[] {
     const out = new Map<string, Job>();
@@ -602,7 +638,8 @@ export class JobManager {
           out.set(r.id, { ...j, state: 'running' }); // a guard treats it as live, whatever list() would show
         }
         const queued = this.db.prepare(`SELECT * FROM jobs WHERE state = 'queued' AND started_at >= ?`).all(new Date(Date.now() - DAY_MS).toISOString()) as JobRow[];
-        for (const r of queued) if (!out.has(r.id)) out.set(r.id, this.fromRow(r));
+        const alive = queued.length ? this.runnerAlive() : false;
+        for (const r of queued) if (!out.has(r.id) && this.queuedIsLive(r.started_at, alive)) out.set(r.id, this.fromRow(r));
       } catch (err) {
         this.warn(`reading the job registry failed (${errText(err)}).`);
       }
@@ -663,7 +700,10 @@ export class JobManager {
 
 /** liveJobTypes()'s answer: the live job types, plus (#56) the types queued for a job runner. */
 export interface LiveJobs extends Set<string> {
+  /** Types queued with something able to claim them (a fresh runner heartbeat, or queued in the last ~2 min). */
   queued?: Set<string>;
+  /** Types queued (under a day ago) that nothing can claim: no runner is heartbeating. Shown, never live. */
+  queuedNoRunner?: Set<string>;
 }
 
 /**
@@ -675,8 +715,10 @@ export interface LiveJobs extends Set<string> {
  * property A no longer vouches for property B's dead one. Rows with no scope (written before it
  * existed) still count for every property: unknown is treated as possibly ours, never as dead.
  *
- * `.queued` (#56) carries the types waiting in the queue for a job runner (under a day old), so
- * the dashboard can say "queued" instead of showing the last finished run as current.
+ * `.queued` (#56) carries the types waiting in the queue for a job runner (under a day old) that a
+ * runner can still claim (a runner heartbeat within ~60 s, or queued in the last ~2 min), so the
+ * dashboard can say "queued" instead of showing the last finished run as current. Queued rows past
+ * that with no live runner go in `.queuedNoRunner` instead: shown as "queued: no job runner", not live.
  */
 export function liveJobTypes(dataDir: string, scope?: string | null, staleMs = STALE_MS): LiveJobs | null {
   let db: Database.Database | null = null;
@@ -691,9 +733,21 @@ export function liveJobTypes(dataDir: string, scope?: string | null, staleMs = S
     const out: LiveJobs = new Set(rows.map(r => r.type));
     const dayAgo = new Date(Date.now() - DAY_MS).toISOString();
     const queued = (byScope
-      ? db.prepare(`SELECT DISTINCT type FROM jobs WHERE state = 'queued' AND started_at >= ? AND (scope = ? OR scope IS NULL)`).all(dayAgo, scope)
-      : db.prepare(`SELECT DISTINCT type FROM jobs WHERE state = 'queued' AND started_at >= ?`).all(dayAgo)) as { type: string }[];
-    out.queued = new Set(queued.map(r => r.type));
+      ? db.prepare(`SELECT type, started_at FROM jobs WHERE state = 'queued' AND started_at >= ? AND (scope = ? OR scope IS NULL)`).all(dayAgo, scope)
+      : db.prepare(`SELECT type, started_at FROM jobs WHERE state = 'queued' AND started_at >= ?`).all(dayAgo)) as { type: string; started_at: string }[];
+    const hasRunners = !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runners'`).get();
+    const beat = hasRunners ? (db.prepare(`SELECT MAX(heartbeat_at) at FROM runners`).get() as { at: string | null } | undefined)?.at ?? null : null;
+    const beatMs = beat ? Date.parse(beat) : NaN;
+    const runnerAlive = Number.isFinite(beatMs) && Date.now() - beatMs <= RUNNER_STALE_MS;
+    const freshSince = Date.now() - QUEUED_FRESH_MS;
+    out.queued = new Set();
+    out.queuedNoRunner = new Set();
+    for (const r of queued) {
+      const t = Date.parse(r.started_at);
+      if (runnerAlive || (Number.isFinite(t) && t > freshSince)) out.queued.add(r.type);
+      else out.queuedNoRunner.add(r.type);
+    }
+    for (const t of out.queued) out.queuedNoRunner.delete(t);
     return out;
   } catch {
     return null;

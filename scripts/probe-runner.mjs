@@ -11,7 +11,7 @@ import Database from 'better-sqlite3';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { JobManager, jobsDbPath, liveJobTypes, RUNNER_INTERRUPTED_ERROR, RUNNER_STOPPED_ERROR, QUEUED_NOTE } from '../dist/core/JobManager.js';
-import { submitJob } from '../dist/core/jobKinds.js';
+import { submitJob, runJobKind, ftsDbFile } from '../dist/core/jobKinds.js';
 import { JobRunner } from '../dist/core/jobRunner.js';
 import { Crawler } from '../dist/core/Crawler.js';
 import { AuditDatabase } from '../dist/core/AuditDatabase.js';
@@ -93,6 +93,7 @@ try {
     const stale = mcp.get(id);
     check('queued past the (scaled) 60 s with no runner: says no runner seems to be running', stale?.state === 'queued' && /no job runner seems to be running/.test(stale.note ?? ''), stale?.note);
     check('...and gives the docker run line', (stale?.note ?? '').includes('docker run -d --init --name seo-audit-runner') && (stale?.note ?? '').includes('npx -y -p @houtini/seo-audit-console seo-audit-runner'), stale?.note);
+    check('...whose env flags include every optional key the runner needs, CRUX_API_KEY too', ['DATAFORSEO_USERNAME', 'DATAFORSEO_PASSWORD', 'MAJESTIC_API_KEY', 'CRUX_API_KEY'].every(k => (stale?.note ?? '').includes(`-e ${k} `)), stale?.note);
     const live = liveJobTypes(dir, jobScopeFor(dir, site));
     check('liveJobTypes reports the queued type separately from live ones', !!live && live.queued?.has('crawl') && !live.has('crawl'), JSON.stringify({ live: live && [...live], queued: live?.queued && [...live.queued] }));
     check('a queued job counts for destructive guards (possiblyRunning)', mcp.possiblyRunning().some(j => j.id === id && j.state === 'queued'), JSON.stringify(mcp.possiblyRunning()));
@@ -108,6 +109,38 @@ try {
     check('freshness: a queued crawl reads "queued: waiting for the job runner"', crawl?.state === 'queued' && /^queued: waiting for the job runner/.test(crawl.detail), JSON.stringify(crawl));
     const none = getDataFreshness(fdb.db, new Set()).sources.find(s => s.kind === 'crawl');
     check('freshness: nothing queued leaves the crawl as stored', none?.state === 'completed', JSON.stringify(none));
+    fdb.close();
+  }
+
+  // ── A queued job nothing can claim is stale: shown, never live, never deleted ───────────────
+  {
+    const dir = path.join(root, 'stale-queue');
+    const mcp = JM({ dbPath: jobsDbPath(dir), runner: 'external', runnerStaleMs: 300, queuedFreshMs: 300 });
+    const id = submitJob(mcp, 'crawl', { siteUrl: site, maxPages: 2 }, noDeps, jobScopeFor(dir, site));
+    check('a just-queued job is live for destructive guards (a runner may be starting)', mcp.possiblyRunning().some(j => j.id === id) && !mcp.get(id)?.noRunner, JSON.stringify(mcp.get(id)));
+    await sleep(400);
+    const stale = mcp.get(id);
+    check('queued past the fresh window with no runner: no longer blocks prune / repair', !mcp.possiblyRunning().some(j => j.id === id), JSON.stringify(mcp.possiblyRunning()));
+    check('...is still in the registry, still queued, marked noRunner', stale?.state === 'queued' && stale.noRunner === true, JSON.stringify(stale));
+    mcp.beatRunner({ pid: 1, host: 'h', version: 'v', concurrency: 1, running: 0 });
+    check('a fresh runner heartbeat makes the old queued job live again', mcp.possiblyRunning().some(j => j.id === id) && !mcp.get(id)?.noRunner, JSON.stringify(mcp.get(id)));
+    mcp.removeRunner();
+    // liveJobTypes (the dashboard's read, real 2 min window): an old queued row with no runner.
+    const raw = new Database(jobsDbPath(dir));
+    const old = new Date(Date.now() - 5 * 60_000).toISOString();
+    raw.prepare(`UPDATE jobs SET started_at = ?, updated_at = ? WHERE id = ?`).run(old, old, id);
+    raw.close();
+    const scope = jobScopeFor(dir, site);
+    const lt = liveJobTypes(dir, scope);
+    check('liveJobTypes: an old queued crawl with no runner is queuedNoRunner, not queued', !!lt && !lt.queued?.has('crawl') && lt.queuedNoRunner?.has('crawl'), JSON.stringify({ q: lt && [...lt.queued], nr: lt && [...lt.queuedNoRunner] }));
+    mcp.beatRunner({ pid: 1, host: 'h', version: 'v', concurrency: 1, running: 0 });
+    const lt2 = liveJobTypes(dir, scope);
+    check('liveJobTypes: with a fresh runner heartbeat it is queued again', !!lt2 && lt2.queued?.has('crawl') && !lt2.queuedNoRunner?.has('crawl'), JSON.stringify({ q: lt2 && [...lt2.queued], nr: lt2 && [...lt2.queuedNoRunner] }));
+    mcp.removeRunner();
+    const fdb = new AuditDatabase(path.join(root, 'fresh-norunner.db'));
+    fdb.db.prepare("INSERT INTO crawl_metadata (crawl_id, base_url, base_domain, status, started_at, finished_at, urls_crawled) VALUES ('c1', ?, 'x', 'completed', '2026-10-01T00:00:00Z', '2026-10-01T01:00:00Z', 10)").run(site);
+    const crawl = getDataFreshness(fdb.db, Object.assign(new Set(), { queued: new Set(), queuedNoRunner: new Set(['crawl']) })).sources.find(s => s.kind === 'crawl');
+    check('freshness: a crawl queued with no runner keeps its stored state and says "queued: no job runner"', crawl?.state === 'completed' && /^queued: no job runner/.test(crawl.detail), JSON.stringify(crawl));
     fdb.close();
   }
 
@@ -279,6 +312,53 @@ try {
     } finally {
       await client.close();
     }
+  }
+
+  // ── A cancelled job that is slow to wind down is aborted and logged once, not every poll ─────
+  {
+    const dir = path.join(root, 'cancel-once');
+    const logs = [];
+    // A crux job whose body ignores its abort signal for a while, so it is still running (with its
+    // cancel flag set) across many cancel polls.
+    const slowDeps = { dataDir: () => dir, cruxSync: { run: () => sleep(1_200).then(() => ({ ok: true })) } };
+    const runner = new JobRunner({ dataDir: dir, deps: slowDeps, pollMs: 50, cancelPollMs: 50, heartbeatMs: 100, log: m => logs.push(m) });
+    runner.start();
+    const mcp = JM({ dbPath: jobsDbPath(dir), runner: 'external' });
+    const id = submitJob(mcp, 'crux', { siteUrl: site }, noDeps, jobScopeFor(dir, site));
+    await waitFor(() => mcp.get(id)?.state === 'running', 5_000);
+    mcp.cancel(id);
+    const done = await waitFor(() => settled(mcp, id), 10_000);
+    const aborts = logs.filter(l => l.startsWith(`cancel requested for ${id}`)).length;
+    check('a slow-to-stop cancelled job is aborted and logged once across many polls', !!done && aborts === 1, `${aborts} cancel log lines; ${JSON.stringify(done)}`);
+    await runner.stop();
+  }
+
+  // ── fts-index stores the DB's bare file name; the process that runs it resolves its own path ──
+  {
+    const s = 'https://fts.example/';
+    const mcpDir = path.join(root, 'fts-mcp');
+    const runnerDir = path.join(root, 'fts-runner-mount'); // the same volume, mounted at another path
+    new AuditDatabase(dbPathFor(mcpDir, s)).close();
+    new AuditDatabase(dbPathFor(runnerDir, s)).close();
+    const dbName = path.basename(dbPathFor(mcpDir, s));
+    const mcp = JM({ dbPath: jobsDbPath(mcpDir), runner: 'external' });
+    const id = submitJob(mcp, 'fts-index', { siteUrl: s, dbName, indexes: ['links_fts'] }, noDeps, jobScopeFor(mcpDir, s));
+    const ro = new Database(jobsDbPath(mcpDir), { readonly: true });
+    const stored = JSON.parse(ro.prepare('SELECT args FROM jobs WHERE id = ?').get(id).args);
+    ro.close();
+    check('a queued fts-index job stores no path from the MCP process', stored.dbName === dbName && !JSON.stringify(stored).includes('fts-mcp') && !/[\\/]/.test(stored.dbName) && !('dbFile' in stored), JSON.stringify(stored));
+    const progress = {};
+    const res = await runJobKind('fts-index', stored, { dataDir: () => runnerDir }, p => Object.assign(progress, p), new AbortController().signal);
+    check('the runner builds the index in ITS data dir', progress.dbFile === path.join(runnerDir, dbName) && res?.indexes?.includes('links_fts'), JSON.stringify({ progress, res }));
+    mcp.cancel(id);
+    let threw = 0;
+    for (const bad of ['../x.db', path.join(mcpDir, dbName), 'notadb.txt', '']) { try { ftsDbFile(runnerDir, bad); } catch { threw++; } }
+    check('fts-index refuses anything but a bare .db file name', threw === 4, `${threw}/4 refused`);
+    // In-process: same file as before (dataDir + the property's DB file name).
+    const m = JM({ dbPath: jobsDbPath(path.join(root, 'fts-inproc')) });
+    const ipId = submitJob(m, 'fts-index', { siteUrl: s, dbName, indexes: ['links_fts'] }, { dataDir: () => mcpDir }, jobScopeFor(mcpDir, s));
+    const ip = await waitFor(() => settled(m, ipId), 15_000);
+    check('in-process fts-index builds the same DB the MCP resolved', ip?.state === 'completed' && ip.progress?.dbFile === dbPathFor(mcpDir, s), JSON.stringify(ip));
   }
 
   // ── In-process mode is unchanged: submit() runs the kind here, no queued row ────────────────
