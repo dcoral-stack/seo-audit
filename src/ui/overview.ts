@@ -4,7 +4,11 @@
 import { esc, fmtNum, sparkline, delta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
 
 const fmt = fmtNum;
-type Dash = any; // the dashboard payload (typed loosely, as in dashboard.ts)
+import type { DashboardData } from './dashboard.js';
+// The payload type lives in dashboard.ts (local view types, so core's node-only deps stay out of
+// the bundle). Fields this module reads that the view type doesn't declare are accessed via `x`.
+type Dash = DashboardData;
+const x = (d: unknown): any => d;
 
 export interface OverviewCtx {
   wrap: (id: string, group?: string) => EChartWrapper;
@@ -14,14 +18,19 @@ export interface OverviewCtx {
   redacted: boolean;
 }
 
+// One severity vocabulary for the whole UI (dashboard.ts imports these too).
+export const SEV_ORDER = ['crit', 'high', 'med', 'low', 'info'] as const;
+export const SEV_LABEL: Record<string, string> = { crit: 'Critical', high: 'High', med: 'Medium', low: 'Low', info: 'Info' };
 const SEV = [
-  { key: 'crit', label: 'Critical', dot: 'dot-crit', bar: 'var(--intent-danger)' },
-  { key: 'high', label: 'High', dot: 'dot-high', bar: 'var(--intent-warning)' },
-  { key: 'med', label: 'Medium', dot: 'dot-med', bar: 'var(--intent-info)' },
-  { key: 'low', label: 'Low', dot: 'dot-low', bar: 'var(--text-faint)' },
+  { key: 'crit', label: SEV_LABEL.crit, dot: 'dot-crit', bar: 'var(--intent-danger)' },
+  { key: 'high', label: SEV_LABEL.high, dot: 'dot-high', bar: 'var(--intent-warning)' },
+  { key: 'med', label: SEV_LABEL.med, dot: 'dot-med', bar: 'var(--intent-info)' },
+  { key: 'low', label: SEV_LABEL.low, dot: 'dot-low', bar: 'var(--text-faint)' },
 ] as const;
 
-const pct = (a: number, b: number): number => (b ? ((a - b) / b) * 100 : 0);
+/** Percentage change from baseline b to a (0 when there is no baseline). Shared with dashboard.ts. */
+export const pctChg = (a: number, b: number): number => (b ? ((a - b) / b) * 100 : 0);
+const pct = pctChg;
 
 /** "3h ago" / "2d ago" from a SQLite datetime ('YYYY-MM-DD HH:MM:SS', UTC) or ISO string. */
 export function ago(at: string | null | undefined, now = Date.now()): string {
@@ -262,7 +271,10 @@ export function renderHealthTop(d: Dash, ctx: OverviewCtx): void {
     return;
   }
   const rc: any[] = ch.responseCodes ?? [];
-  const non200 = rc.filter(r => !/^200/.test(r.label)).reduce((s, r) => s + r.count, 0);
+  // HTTP statuses only: 'Blocked by robots' is an indexability reason and 'Fetch failed' comes from
+  // the errors table, neither is a crawled page's status (they'd inflate the share past 100%).
+  const non200 = rc.filter(r => /^[345]xx/.test(r.label)).reduce((s, r) => s + r.count, 0);
+  const notFetched = rc.filter(r => /^(Blocked by robots|Fetch failed)/.test(r.label)).reduce((s, r) => s + r.count, 0);
   const redirects = rc.filter(r => /^3xx/.test(r.label)).reduce((s, r) => s + r.count, 0);
   const idx = (ch.indexability ?? []).find((r: any) => r.label === 'Indexable')?.count ?? 0;
   const depthRows: any[] = ch.depth ?? [];
@@ -272,7 +284,7 @@ export function renderHealthTop(d: Dash, ctx: OverviewCtx): void {
   if (k) k.innerHTML = ([
     { label: 'Pages crawled', value: fmt(ch.totalPages), sub: 'internal URLs, latest crawl' },
     { label: 'Indexable', value: fmt(idx), sub: share(idx), color: 'var(--intent-success)' },
-    { label: 'Non-200', value: fmt(non200), sub: share(non200), color: non200 ? 'var(--intent-danger)' : '' },
+    { label: 'Non-200', value: fmt(non200), sub: `${share(non200)}${notFetched ? ` · ${fmt(notFetched)} not fetched` : ''}`, color: non200 ? 'var(--intent-danger)' : '' },
     { label: 'Redirects', value: fmt(redirects), sub: share(redirects) },
     { label: 'Avg crawl depth', value: depthAvg ? depthAvg.toFixed(1) : '–', sub: 'from the start URL (6+ as 6)' },
   ] as Tile[]).map(tile).join('');
@@ -291,9 +303,11 @@ export function renderOverview(d: Dash, ctx: OverviewCtx): void {
   trendMultiples(d, ctx);
   set('ovFindings', findingsCard(d, ctx));
   set('ovCrawl', crawlCard(d));
+  // Stamp the crawl whose pages the card shows, not merely the newest run (a failed run that wrote
+  // nothing leaves the previous crawl's pages on screen).
   const cs = document.getElementById('ovCrawlSrc');
-  const crawlSrc = (d.freshness?.sources ?? []).find((s: any) => s.kind === 'crawl');
-  if (cs) cs.textContent = crawlSrc?.at ? `Crawl · ${ago(crawlSrc.at)}` : 'Crawl';
+  const shown = x(d).freshness?.shownCrawl;
+  if (cs) cs.textContent = shown?.at ? `Crawl · ${ago(shown.at)}${shown.partial ? ' (partial)' : ''}` : 'Crawl';
   const drawn = drawNetwork(d, ctx, 'ovNetChart', { compact: true });
   const ns = document.getElementById('ovNetSummary');
   if (ns) ns.textContent = drawn ? `Preview of the internal link network: the top ${Math.min(90, d.structureGraph.nodes.length)} pages by internal PageRank.` : 'No crawl network yet.';

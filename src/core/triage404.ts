@@ -26,7 +26,7 @@ export interface Triage404Row {
   bucket: 'redirect' | 'review' | 'ignore' | 'already-redirected' | 'live-now';
   reason: string;
   /** From verifyLive(): what the URL does right now. */
-  live?: { status: number | null; finalUrl: string | null; chain: number[] };
+  live?: { status: number | null; finalUrl: string | null; chain: number[]; catchAll?: boolean; matchesSuggestion?: boolean };
 }
 
 export interface TriageOptions { minImpressions?: number; minScore?: number; limit?: number }
@@ -151,9 +151,9 @@ export function triage404s(db: Database.Database, opts: TriageOptions = {}): Tri
  * right redirect), and one that now answers 200 moves to `live-now`. Capped and time-boxed; URLs
  * not reached keep their stored bucket.
  */
-export async function verifyLive(rows: Triage404Row[], baseHost: string, opts: { max?: number; budgetMs?: number; probe?: typeof probeUrls } = {}): Promise<{ rows: Triage404Row[]; probed: number }> {
+export async function verifyLive(rows: Triage404Row[], baseHost: string, opts: { max?: number; budgetMs?: number; probe?: typeof probeUrls } = {}): Promise<{ rows: Triage404Row[]; probed: number; candidates: number }> {
   const candidates = rows.filter(r => r.bucket === 'redirect' || r.bucket === 'review').slice(0, opts.max ?? 50);
-  if (!candidates.length) return { rows, probed: 0 };
+  if (!candidates.length) return { rows, probed: 0, candidates: 0 };
   const results = await (opts.probe ?? probeUrls)(candidates.map(c => ({ url: c.url })), baseHost, { followRedirects: true, concurrency: 4, budgetMs: opts.budgetMs ?? 30000 });
   const byUrl = new Map<string, ProbeResult>(results.map(r => [r.url, r]));
   let probed = 0;
@@ -163,12 +163,26 @@ export async function verifyLive(rows: Triage404Row[], baseHost: string, opts: {
     probed++;
     const live = { status: p.status, finalUrl: p.finalUrl, chain: p.redirectChain.map(h => h.status) };
     if (p.redirectChain.length && p.finalStatus < 400) {
-      return { ...r, live, bucket: 'already-redirected' as const, reason: `already redirects live (${live.chain.join('→')}) to ${p.finalUrl}; the crawl predates it. Nothing to do unless that destination is wrong.` };
+      // Where did it land? A redirect to the site root is almost always a blanket 404→homepage
+      // rule, not a considered redirect: the specific target is still worth setting, so the row
+      // keeps its bucket and the live fact is attached. A redirect to the suggested target (or
+      // any other real page) is a redirect somebody already made.
+      const landedPath = pathOf(p.finalUrl ?? '').replace(/\/+$/, '');
+      const sourcePath = pathOf(r.url).replace(/\/+$/, '');
+      const catchAll = landedPath === '' && sourcePath !== '';
+      const matchesSuggestion = !!r.bestMatch && pathOf(p.finalUrl ?? '').replace(/\/+$/, '') === pathOf(r.bestMatch).replace(/\/+$/, '');
+      if (catchAll) {
+        return { ...r, live: { ...live, catchAll: true }, reason: `${r.reason}. Live it ${live.chain.join('→')}s to the homepage (a catch-all rule, not a specific redirect): a specific 301${r.bestMatch ? ` to ${r.bestMatch}` : ''} still helps.` };
+      }
+      return { ...r, live: { ...live, matchesSuggestion }, bucket: 'already-redirected' as const,
+        reason: matchesSuggestion
+          ? `already redirects live (${live.chain.join('→')}) to the suggested target; the crawl predates it. Nothing to do.`
+          : `already redirects live (${live.chain.join('→')}) to ${p.finalUrl}; the crawl predates it. Nothing to do unless that destination is wrong${r.bestMatch && r.bucket === 'redirect' ? ` (slug match suggested ${r.bestMatch} instead)` : ''}.` };
     }
     if (!p.redirectChain.length && p.finalStatus < 400) {
       return { ...r, live, bucket: 'live-now' as const, reason: `answers ${p.finalStatus} live now; the crawl is stale. Re-crawl to clear it.` };
     }
     return { ...r, live };
   });
-  return { rows: out, probed };
+  return { rows: out, probed, candidates: candidates.length };
 }

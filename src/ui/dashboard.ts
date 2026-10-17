@@ -4,13 +4,13 @@ import {
   attachSort, formatTrend, accordionItem, accordionSection, accordionControls,
   EChartWrapper, chartPalette, axisDefaults, tooltipDefaults, emptyState,
 } from './lib/index.js';
-import { renderOverview, renderHealthTop, renderSideFreshness, drawNetwork, type OverviewCtx } from './overview.js';
+import { renderOverview, renderHealthTop, renderSideFreshness, drawNetwork, pctChg, SEV_ORDER, SEV_LABEL, type OverviewCtx } from './overview.js';
 
 // Local view types (avoid importing core, which pulls node-only deps into the bundle).
 interface Totals { clicks: number; impressions: number; ctr: number; position: number }
-interface DashboardData {
+export interface DashboardData {
   siteUrl: string;
-  freshness?: { sources: { kind: string; state: string; at: string | null; detail: string; error?: string | null }[]; crawlRuns: unknown[] };
+  freshness?: { sources: { kind: string; state: string; at: string | null; detail: string; error?: string | null }[]; crawlRuns: unknown[]; shownCrawl?: { crawlId: string; status: string; at: string | null; partial: boolean } };
   empty?: boolean;
   linkProspects?: { domain: string; intersections: number; linkedTargets: string[]; domainTrust: number | null; spamScore: number | null; dofollow: boolean; trustFlow: number | null; citationFlow: number | null; topTopic: string | null; competitors: string[]; fetchedAt: string | null }[];
   apiKeys?: { dataforseo: boolean; majestic: boolean; firecrawl: boolean; supadata: boolean };
@@ -154,6 +154,9 @@ async function downloadCsv(filename: string, rows: unknown[][]): Promise<void> {
 }
 
 let currentData: DashboardData | null = null;
+// The full Network force layout is expensive; when its tab is hidden at render time the draw is
+// deferred until the tab is first shown (the Overview preview still draws its 90-node subset).
+let pendingNetworkDraw: (() => void) | null = null;
 const ARIA = { aria: { enabled: true } }; // ECharts-generated screen-reader description
 
 const app = new App({ name: 'SEO Audit Console', version: '0.1.0' });
@@ -222,8 +225,6 @@ app.ontoolresult = (result) => {
 
 // Window/container resizes are handled per-chart by the wrapper's ResizeObserver.
 
-const SEV_ORDER = ['crit', 'high', 'med', 'low', 'info'] as const;
-const SEV_LABEL: Record<string, string> = { crit: 'Critical', high: 'High', med: 'Medium', low: 'Low', info: 'Info' };
 const CAT_LABEL: Record<string, string> = {
   integrity: 'Integrity', crawlability: 'Crawlability', indexation: 'Indexation', onpage: 'On-page',
   content: 'Content', schema: 'Structured data', security: 'Security', performance: 'Performance',
@@ -541,6 +542,7 @@ function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof p
 
 function render(data: DashboardData): void {
   $('loading').style.display = 'none';
+  renderSideFreshness(data); // the sidebar lives outside #content: show job status even with no GSC data
   if (data.empty || !data.summary) { $('empty').style.display = 'flex'; return; }
   $('content').style.display = 'block';
   $('site').textContent = data.siteUrl;
@@ -553,7 +555,6 @@ function render(data: DashboardData): void {
   }
 
   const c = data.summary.current, p = data.summary.prior;
-  const pctChg = (a: number, b: number): number => (b ? ((a - b) / b) * 100 : 0);
   // 28-day daily series for the KPI sparklines (tail of the 90-day rankTrend).
   const spark = (data.rankTrend ?? []).slice(-28);
   const sClicks = spark.map(d => d.clicks);
@@ -577,7 +578,6 @@ function render(data: DashboardData): void {
   const octx: OverviewCtx = { wrap, col, shortPath, safeJson, redacted: document.documentElement.classList.contains('redacted') };
   renderOverview(data, octx);
   renderHealthTop(data, octx);
-  renderSideFreshness(data);
 
   // Executive summary - plain-language read of performance + the prioritised "start here" list
   renderExecSummary(data);
@@ -670,13 +670,19 @@ function render(data: DashboardData): void {
   const sg = data.structureGraph;
   const sgCard = document.getElementById('structureCard');
   if (sgCard) sgCard.style.display = sg?.nodes?.length ? '' : 'none';
-  if (drawNetwork(data, octx, 'structureChart', { compact: false })) {
+  const drawFullNetwork = (): void => {
+    if (!drawNetwork(data, octx, 'structureChart', { compact: false })) return;
     wrap('structureChart').on('click', (p: any) => {
       if (p?.dataType !== 'edge' && p?.data?.id) window.open(p.data.id, '_blank', 'noopener');
     });
+  };
+  if (sg?.nodes?.length) {
     const broken = sg.nodes.filter((n: any) => n.status == null || n.status >= 300).length;
     $('structureSummary').textContent = `Internal link skeleton of the top ${sg.nodes.length} pages by internal PageRank (of ${fmt(sg.totalPages)} crawled); node size = iPR, ${broken} broken or redirected. Scroll to zoom, drag to pan, click a node to open the page.`;
+    const networkVisible = !!document.querySelector('.tab-panel.active[data-panel="architecture"]');
+    if (networkVisible) { pendingNetworkDraw = null; drawFullNetwork(); } else pendingNetworkDraw = drawFullNetwork;
   } else {
+    pendingNetworkDraw = null;
     $('structureSummary').textContent = 'Run a crawl (refresh_property) to map your internal link structure.';
   }
 
@@ -1257,13 +1263,16 @@ function render(data: DashboardData): void {
 function setupTabs(): void {
   const resizeVisible = (): void => { for (const w of chartsReg.values()) w.resizeIfVisible(); };
   document.querySelectorAll<HTMLButtonElement>('.tab-btn').forEach(btn => {
-    btn.onclick = (): void => {
+    btn.onclick = (ev: MouseEvent): void => {
       const panel = btn.dataset.panel;
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
       document.querySelectorAll<HTMLElement>('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === panel));
       const title = document.getElementById('pageTitle');
       if (title) title.textContent = btn.textContent?.trim() || 'Overview';
-      window.scrollTo({ top: 0 });
+      // Scroll to the top only for a real click: programmatic .click() (deep-link restore on every
+      // re-render, [data-goto] cross-links) must not lose the reader's place.
+      if (ev.isTrusted) window.scrollTo({ top: 0 });
+      if (panel === 'architecture' && pendingNetworkDraw) { const draw = pendingNetworkDraw; pendingNetworkDraw = null; draw(); }
       resizeVisible();
     };
   });

@@ -606,6 +606,8 @@ export class AuditDatabase {
     ensure('pages', 'images_empty_alt_content', 'images_empty_alt_content INTEGER');
     ensure('links', 'href_form', 'href_form TEXT');
     ensure('pages', 'fetched_as', 'fetched_as TEXT'); // bot | chrome (Chrome fallback after a bot block)
+    ensure('audit_runs', 'status', 'status TEXT');   // running | completed | failed (NULL on old rows: infer from finished_at)
+    ensure('audit_runs', 'error', 'error TEXT');
     ensure('pages', 'images_missing_dimensions', 'images_missing_dimensions INTEGER DEFAULT 0');
     ensure('pages', 'canonical_count', 'canonical_count INTEGER DEFAULT 0');
     ensure('pages', 'canonical_relative', 'canonical_relative INTEGER DEFAULT 0');

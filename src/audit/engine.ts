@@ -65,6 +65,7 @@ function effortScale(fixType: CheckDef['fixType'], n: number): number {
 export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = {}): AuditResult {
   const t0 = Date.now();
   const db = new AuditDatabase(dbPathFor(dataDir, siteUrl));
+  let startedRunId: string | null = null; // set once the audit_runs row exists, cleared on completion
   try {
     // Finalised GSC date (trailing partial days trimmed) — keeps the audit's 28d windows and the
     // per-page traffic map consistent with the dashboard, and free of unfinalised-data distortion.
@@ -112,8 +113,9 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
        VALUES (@run_id,@check_id,@category,@severity,@labels,@certainty,@url_key,@evidence,@traffic_at_risk,@effort,@priority,@recommendation)`,
     );
 
-    db.db.prepare(`INSERT INTO audit_runs (run_id, scope, gsc_window_end, integrity_ok, started_at) VALUES (?,?,?,?,datetime('now'))`)
+    db.db.prepare(`INSERT INTO audit_runs (run_id, scope, gsc_window_end, integrity_ok, started_at, status) VALUES (?,?,?,?,datetime('now'),'running')`)
       .run(runId, opts.scope ?? 'core', maxDate, pageCount > 0 ? 1 : 0);
+    startedRunId = runId;
 
     let total = 0;
     const bySeverity: Record<string, number> = {};
@@ -189,7 +191,8 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
     });
     tx();
 
-    db.db.prepare(`UPDATE audit_runs SET finished_at=datetime('now'), finding_count=? WHERE run_id=?`).run(total, runId);
+    db.db.prepare(`UPDATE audit_runs SET finished_at=datetime('now'), finding_count=?, status='completed' WHERE run_id=?`).run(total, runId);
+    startedRunId = null;
 
     // Stored counts, annotated with the true total wherever the per-check cap bit — a bare
     // "count: 500" reads as "that's all there was" when it may be 5,000.
@@ -216,6 +219,12 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
       ...(truncatedChecks.length ? { truncatedChecks } : {}),
       elapsedMs: Date.now() - t0, indexability,
     };
+  } catch (err) {
+    // A run that threw must not read as 'running' forever on the dashboard: mark it failed.
+    if (startedRunId) {
+      try { db.db.prepare(`UPDATE audit_runs SET status='failed', error=?, finished_at=datetime('now') WHERE run_id=?`).run(err instanceof Error ? err.message : String(err), startedRunId); } catch { /* best-effort */ }
+    }
+    throw err;
   } finally {
     db.close();
   }

@@ -24,6 +24,9 @@ export interface DataFreshness {
   sources: FreshnessSource[];
   /** The last few crawl runs, newest first. */
   crawlRuns: { crawlId: string; status: string; startedAt: string | null; finishedAt: string | null; crawled: number; failed: number; durationMs: number | null }[];
+  /** The crawl whose pages are on screen: the newest run that wrote pages (the crawler wipes the
+   *  previous snapshot on its first write, so a failed run that wrote anything IS what's shown). */
+  shownCrawl?: { crawlId: string; status: string; at: string | null; partial: boolean };
 }
 
 const fmtN = (n: number): string => n.toLocaleString('en-US');
@@ -32,13 +35,25 @@ function tableExists(db: Database.Database, name: string): boolean {
   return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(name);
 }
 
-/** When the newest crawl run is not a completed one, name the last completed run too (its pages
- * are what the dashboard is showing). A 'running' row with no live job is a crawl that died with
- * its server process; the data on screen is still the last completed crawl. */
-function lastGood(rows: { status: string | null; finished_at: string | null; started_at: string | null; urls_crawled: number | null }[], latest: { status: string | null }): string {
-  if (latest.status === 'completed') return '';
+type CrawlRow = { crawl_id: string; status: string | null; finished_at: string | null; started_at: string | null; urls_crawled: number | null };
+/** Which run's pages are on screen. Crawler.ensureWiped() deletes the previous snapshot on the new
+ *  run's FIRST page write, so: a newest run that wrote pages is what's shown, however it ended
+ *  (partial); a newest run that wrote nothing left the last completed run's pages in place. */
+function shownCrawlOf(rows: CrawlRow[]): DataFreshness['shownCrawl'] {
+  const latest = rows[0];
+  if (!latest) return undefined;
+  if (latest.status === 'completed' || (latest.urls_crawled ?? 0) > 0) {
+    return { crawlId: latest.crawl_id, status: latest.status ?? 'unknown', at: latest.finished_at ?? latest.started_at, partial: latest.status !== 'completed' };
+  }
   const ok = rows.find(r => r.status === 'completed');
-  return ok ? `; showing the last completed crawl (${(ok.finished_at ?? ok.started_at ?? '').slice(0, 10)}, ${fmtN(ok.urls_crawled ?? 0)} URLs)` : '';
+  return ok ? { crawlId: ok.crawl_id, status: 'completed', at: ok.finished_at ?? ok.started_at, partial: false } : undefined;
+}
+function crawlNote(rows: CrawlRow[], shown: DataFreshness['shownCrawl']): string {
+  const latest = rows[0];
+  if (!latest || latest.status === 'completed' || !shown) return '';
+  if (shown.crawlId === latest.crawl_id) return `; the pages on screen are this run's partial snapshot (${fmtN(latest.urls_crawled ?? 0)} URLs)`;
+  const ok = rows.find(r => r.crawl_id === shown.crawlId);
+  return `; this run wrote nothing, so the pages on screen are the last completed crawl (${(shown.at ?? '').slice(0, 10)}, ${fmtN(ok?.urls_crawled ?? 0)} URLs)`;
 }
 
 export function getDataFreshness(db: Database.Database): DataFreshness {
@@ -60,19 +75,21 @@ export function getDataFreshness(db: Database.Database): DataFreshness {
 
   // Crawl: the latest run of any status (a running or failed crawl is exactly what to show).
   let crawlRuns: DataFreshness['crawlRuns'] = [];
+  let shownCrawl: DataFreshness['shownCrawl'];
   if (tableExists(db, 'crawl_metadata')) {
     const rows = db.prepare(
       `SELECT crawl_id, status, started_at, finished_at, urls_crawled, urls_failed, duration_ms, error
        FROM crawl_metadata ORDER BY COALESCE(started_at, finished_at, '') DESC, rowid DESC LIMIT 6`,
-    ).all() as { crawl_id: string; status: string | null; started_at: string | null; finished_at: string | null; urls_crawled: number | null; urls_failed: number | null; duration_ms: number | null; error: string | null }[];
+    ).all() as (CrawlRow & { urls_failed: number | null; duration_ms: number | null; error: string | null })[];
     crawlRuns = rows.map(r => ({ crawlId: r.crawl_id, status: r.status ?? 'unknown', startedAt: r.started_at, finishedAt: r.finished_at, crawled: r.urls_crawled ?? 0, failed: r.urls_failed ?? 0, durationMs: r.duration_ms }));
     const latest = rows[0];
+    shownCrawl = shownCrawlOf(rows);
     sources.push(latest
       ? {
         kind: 'crawl',
         state: latest.status ?? 'unknown',
         at: latest.finished_at ?? latest.started_at,
-        detail: `${fmtN(latest.urls_crawled ?? 0)} URLs crawled${latest.urls_failed ? `, ${fmtN(latest.urls_failed)} failed` : ''}` + lastGood(rows, latest),
+        detail: `${fmtN(latest.urls_crawled ?? 0)} URLs crawled${latest.urls_failed ? `, ${fmtN(latest.urls_failed)} failed` : ''}` + crawlNote(rows, shownCrawl),
         error: latest.error,
       }
       : { kind: 'crawl', state: 'never', at: null, detail: 'No crawl yet - run start_crawl or refresh_property' });
@@ -80,10 +97,20 @@ export function getDataFreshness(db: Database.Database): DataFreshness {
 
   // Audit: the latest run.
   if (tableExists(db, 'audit_runs')) {
-    const a = db.prepare(`SELECT scope, started_at, finished_at, finding_count FROM audit_runs ORDER BY started_at DESC LIMIT 1`).get() as
-      { scope: string | null; started_at: string | null; finished_at: string | null; finding_count: number | null } | undefined;
+    const a = db.prepare(`SELECT scope, started_at, finished_at, finding_count, status, error FROM audit_runs ORDER BY started_at DESC LIMIT 1`).get() as
+      { scope: string | null; started_at: string | null; finished_at: string | null; finding_count: number | null; status: string | null; error: string | null } | undefined;
+    // status is written by the engine (running / completed / failed). Rows from before it existed
+    // fall back to finished_at; a run with neither that started over 30 minutes ago died with its
+    // process (an audit takes seconds), so it is reported as interrupted, never as running forever.
+    const auditState = (): string => {
+      if (!a) return 'never';
+      if (a.status) return a.status;
+      if (a.finished_at) return 'completed';
+      const started = a.started_at ? Date.parse(`${a.started_at.replace(' ', 'T')}Z`) : NaN;
+      return Number.isFinite(started) && Date.now() - started > 30 * 60_000 ? 'interrupted' : 'running';
+    };
     sources.push(a
-      ? { kind: 'audit', state: a.finished_at ? 'completed' : 'running', at: a.finished_at ?? a.started_at, detail: `${fmtN(a.finding_count ?? 0)} findings${a.scope ? `, ${a.scope} scope` : ''}` }
+      ? { kind: 'audit', state: auditState(), at: a.finished_at ?? a.started_at, detail: `${fmtN(a.finding_count ?? 0)} findings${a.scope ? `, ${a.scope} scope` : ''}`, error: a.error }
       : { kind: 'audit', state: 'never', at: null, detail: 'No audit yet - run run_audit' });
   }
 
@@ -105,5 +132,5 @@ export function getDataFreshness(db: Database.Database): DataFreshness {
     if (s.n) sources.push({ kind: 'sitemap', state: 'completed', at: s.at, detail: `${fmtN(s.n)} sitemap URLs` });
   }
 
-  return { sources, crawlRuns };
+  return { sources, crawlRuns, ...(shownCrawl ? { shownCrawl } : {}) };
 }
