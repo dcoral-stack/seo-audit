@@ -5,7 +5,7 @@ import { finalizeLinkGraph } from '../core/linkGraph.js';
 import { gscFreshness } from '../core/gscFreshness.js';
 import { brandToken } from '../core/url-key.js';
 import { snapshotCrawl } from './drift.js';
-import { checkIdsJson, computeHealth, serverVersion } from './history.js';
+import { checkIdsWithGrain, computeHealth, serverVersion } from './history.js';
 import { CHECKS, expectedCtr, type CheckContext, type CheckDef } from './checks.js';
 import { PAGE_EXPERIENCE_STAKE_SHARE } from './stakes.js';
 
@@ -265,7 +265,8 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
     });
     tx();
 
-    // Health (the dashboard's formula, against the page set this run read) + the check set + the
+    // Health (the dashboard's formula, against the page set this run read) + the check set (each
+    // regrouped check's finding grain as id@N, history.ts REGROUPED_CHECKS) + the
     // code version, written in the same completion UPDATE so a completed row always carries them.
     const health = computeHealth(db.db, runId);
     db.db.prepare(
@@ -273,7 +274,7 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
          health_score=?, health_error_pages=?, health_total_pages=?, health_basis=?, check_ids=?, server_version=?
        WHERE run_id=?`,
     ).run(total, crawlId, health?.score ?? null, health?.errorPages ?? null, health?.totalPages ?? null,
-      health ? 'audit' : 'none:no-pages', checkIdsJson(checks.map(c => c.id)), serverVersion(), runId);
+      health ? 'audit' : 'none:no-pages', checkIdsWithGrain(db.db, runId, checks.map(c => c.id)), serverVersion(), runId);
     startedRunId = null;
 
     // Stored counts, annotated with the true total wherever the per-check cap bit — a bare

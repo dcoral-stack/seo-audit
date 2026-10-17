@@ -81,6 +81,11 @@ try {
   const r = runAudit(dir, SITE, {});
   const n = (id) => r.byCheck.find(b => b.checkId === id)?.count ?? 0;
   check('run_audit byCheck: link 5, button 3 (was 24 each)', n('a11y-link-name') === 5 && n('a11y-button-name') === 3, JSON.stringify(r.byCheck.filter(b => b.checkId.startsWith('a11y'))));
+  // 0.16.2: the run records the roll-up grain, so it is never diffed against per-page findings.
+  const adb3 = new AuditDatabase(dbPathFor(dir, SITE));
+  const ids = JSON.parse(adb3.db.prepare(`SELECT check_ids FROM audit_runs ORDER BY started_at DESC, rowid DESC LIMIT 1`).get().check_ids);
+  adb3.close();
+  check('check_ids record the roll-up grain (a11y-link-name@2, a11y-button-name@2)', ids.includes('a11y-link-name@2') && ids.includes('a11y-button-name@2') && !ids.includes('a11y-link-name') && ids.includes('a11y-form-label'), JSON.stringify(ids.filter(i => i.startsWith('a11y'))));
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

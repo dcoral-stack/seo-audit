@@ -111,6 +111,7 @@ scripts/*
 !scripts/probe-assets.mjs
 !scripts/probe-a11y-rollup.mjs
 !scripts/probe-reply-latency.mjs
+!scripts/probe-regrouped-deltas.mjs
 
 # --- secrets hardening (never commit) ---
 *.pem

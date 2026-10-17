@@ -15,6 +15,9 @@ export interface VerdictInput {
   criticalOpen?: number | null;
   /** Findings resolved since the previous COMPARABLE audit (absent when there is no such pair). */
   resolvedSinceLastAudit?: number | null;
+  /** Checks left out of that count because their findings were regrouped between the two audits
+   *  (auditDeltas[].excluded.note), said in brackets so the number isn't read as the whole story. */
+  resolvedNote?: string | null;
   /** Pages changed between the two latest crawls (absent with < 2 snapshots or a stale diff). */
   pagesChanged?: number | null;
 }
@@ -59,7 +62,10 @@ export function buildVerdict(v: VerdictInput): Verdict {
 
   if (v.criticalOpen != null) {
     const seg: Segment[] = [{ text: `${fmt(v.criticalOpen)}`, n: true }, { text: ` critical ${plural(v.criticalOpen, 'issue is', 'issues are')} open` }];
-    if (v.resolvedSinceLastAudit != null) seg.push({ text: ', ' }, { text: fmt(v.resolvedSinceLastAudit), n: true }, { text: ' resolved since the last audit' });
+    if (v.resolvedSinceLastAudit != null) {
+      seg.push({ text: ', ' }, { text: fmt(v.resolvedSinceLastAudit), n: true }, { text: ' resolved since the last audit' });
+      if (v.resolvedNote) seg.push({ text: ` (${v.resolvedNote})` });
+    }
     clauses.push(seg);
     chips.push({ key: 'critical', label: `${fmt(v.criticalOpen)} critical`, direction: 'neutral' }); // a count, not a direction
   }

@@ -227,7 +227,8 @@ interface Totals { clicks: number; impressions: number; position: number }
 // 28: the real-data dashboard fixes (#68 follow-up): small-base clicksChangePct, cwvField detail, brand on exact-match domains.
 // 29: structureGraph.isolated (mapped pages with no in-content link, named in the Network tab).
 // 30: gscShape only while the GSC storage is pending or migrating (never after the migration).
-const PAYLOAD_VERSION = '30';
+// 31: auditDeltas[].excluded and findings.byCategory[].regrouped (regrouped checks left out of the counts).
+const PAYLOAD_VERSION = '31';
 
 /** Build the dashboard payload for a property from its synced GSC history. */
 export function getDashboardData(dataDir: string, siteUrl: string): DashboardData {
@@ -1106,7 +1107,7 @@ function crawlSide(db: Database.Database, maxDate: string | null): Pick<Dashboar
     // latest delta for this run, not skipped: same scope and check set).
     const lastDelta = history.auditDeltas.filter(d => d.runId === lastRun.run_id).pop();
     const prevComparable = lastDelta && !lastDelta.skipped ? lastDelta.prevRunId : null;
-    const byCategory = findingsByCategory(db, lastRun.run_id, prevComparable);
+    const byCategory = findingsByCategory(db, lastRun.run_id, prevComparable, prevComparable ? lastDelta?.excluded?.checkIds ?? [] : []);
 
     findings = { runId: lastRun.run_id, total: lastRun.finding_count, finishedAt: lastRun.finished_at, byCheck, top, recommendations, byCategory };
   }

@@ -84,6 +84,7 @@ function verdict(d: any): string {
     nonBrand: sum && bs ? { current: bs.nonBranded.clicks, prior: bs.priorNonBrandedClicks, brand: bs.brand } : null,
     criticalOpen: fc ? (fc.byCheck ?? []).filter((b: any) => b.severity === 'crit').reduce((s: number, b: any) => s + b.count, 0) : null,
     resolvedSinceLastAudit: lastDelta && !lastDelta.skipped ? lastDelta.resolved : null,
+    resolvedNote: lastDelta && !lastDelta.skipped ? lastDelta.excluded?.note ?? null : null,
     pagesChanged: dr?.counts && !dr.staleness ? dr.counts.pagesChanged : null,
   });
   if (v.empty) return empty('Nothing to summarise yet - sync Search Console (<code>sync_gsc</code>) or run a crawl and an audit.');
@@ -300,7 +301,8 @@ function health(d: any, ctx: SummaryCtx): void {
       formatter: (ps: any[]) => {
         const i = ps[0].dataIndex, h = hist[i], a = byRun.get(h.runId);
         const hs = h.score == null ? `health not computable (${String(h.basis ?? '').replace(/^none:/, '') || 'no basis'})` : `health ${h.score}/100`;
-        const dl = !a ? 'first audit shown' : a.skipped ? `not compared: ${SKIP_LABEL[a.skipped] ?? a.skipped}` : `${fmt(a.opened)} opened · ${fmt(a.resolved)} resolved · ${fmt(a.carried)} carried`;
+        const dl = !a ? 'first audit shown' : a.skipped ? `not compared: ${SKIP_LABEL[a.skipped] ?? a.skipped}`
+          : `${fmt(a.opened)} opened · ${fmt(a.resolved)} resolved · ${fmt(a.carried)} carried${a.excluded ? `<br/>${esc(a.excluded.note)}` : ''}`;
         return `${labels[i]}<br/>${hs}<br/>${dl}`;
       },
     },
@@ -327,6 +329,9 @@ function health(d: any, ctx: SummaryCtx): void {
   const notes: string[] = ['Only audits with the same scope and check set are compared.'];
   const skipped = hist.map(h => byRun.get(h.runId)).filter((a: any) => a?.skipped && !String(a.skipped).startsWith('run-'));
   if (skipped.length) notes.push(`Not compared: ${skipped.map((a: any) => `${dayLabel(a.at)} (${SKIP_LABEL[a.skipped] ?? a.skipped})`).join(', ')}.`);
+  // A check whose findings were regrouped between two audits is left out of that pair's bars.
+  const regrouped = hist.map(h => byRun.get(h.runId)).filter((a: any) => a && !a.skipped && a.excluded);
+  if (regrouped.length) notes.push(`${regrouped.map((a: any) => `${dayLabel(a.at)}: ${esc(a.excluded.note)}`).join('; ')} (they were re-keyed, not opened or resolved).`);
   const failed = deltas.filter(a => String(a.skipped ?? '').startsWith('run-'));
   if (failed.length) notes.push(`<span class="n">${failed.length}</span> audit${failed.length > 1 ? 's' : ''} didn't complete and ${failed.length > 1 ? 'are' : 'is'} stepped over.`);
   const nullScores = hist.filter(h => h.score == null).length;
@@ -353,6 +358,8 @@ function areas(d: any, ctx: SummaryCtx): string {
   const LBL: Record<string, string> = { ...ctx.catLabel, merged: 'Search demand' };
   const cnt = (v: number, sev: string): string => `<span class="cnt${v ? ` cnt-${sev}` : ' cnt-zero'}"><span class="n">${v}</span></span>`;
   const anyCompared = rows.some(r => r.opened != null);
+  const lastDelta = (d.auditDeltas ?? []).filter((a: any) => a.runId === fc.runId).pop();
+  const excludedNote: string | null = lastDelta && !lastDelta.skipped ? lastDelta.excluded?.note ?? null : null;
   const body = rows.map(r => {
     const pages = `${r.capped ? '≥' : ''}<span class="n">${fmt(r.pages)}</span>${r.site ? ' <span class="site-tag" title="Plus site-wide findings">+ site</span>' : ''}`;
     // Only non-zero changes carry a sign; no change at all reads as a muted "no change".
@@ -362,8 +369,11 @@ function areas(d: any, ctx: SummaryCtx): string {
         (r.opened ? `<span class="since-o"><span class="n">+${fmt(r.opened)}</span></span>` : '') +
         (r.opened && r.resolved ? ' ' : '') +
         (r.resolved ? `<span class="since-r"><span class="n">−${fmt(r.resolved)}</span></span>` : '') + '</span>';
+    // Checks regrouped between the two audits are left out of the change (and of the verdict's count).
+    const regroupedTag = r.regrouped?.length && r.opened != null
+      ? ` <span class="site-tag" title="${esc(`${r.regrouped.join(', ')}: ${excludedNote ?? 'findings regrouped; not counted'}`)}">regrouped</span>` : '';
     return `<tr class="area-link" data-area="${esc(r.category)}" tabindex="0" role="button" title="Show these issues"><td>${esc(LBL[r.category] ?? r.category)}</td><td class="num">${pages}</td>` +
-      `<td class="num sevs">${cnt(r.crit, 'crit')}${cnt(r.high, 'high')}${cnt(r.med, 'med')}${cnt(r.low, 'low')}</td><td class="num">${since}</td></tr>`;
+      `<td class="num sevs">${cnt(r.crit, 'crit')}${cnt(r.high, 'high')}${cnt(r.med, 'med')}${cnt(r.low, 'low')}</td><td class="num">${since}${regroupedTag}</td></tr>`;
   }).join('');
   const judgement = rows.reduce((s, r) => s + (r.judgement || 0), 0);
   const notes: string[] = ['C / H / M / L: pages (or the site) with a critical, high, medium or low issue.'];
@@ -371,6 +381,7 @@ function areas(d: any, ctx: SummaryCtx): string {
   if (rows.some(r => r.capped)) notes.push('≥: a check hit the 500-findings storage cap, so the count is a floor.');
   if (!d.summary && !rows.some(r => r.category === 'merged')) notes.push('Search-demand checks need Search Console, so they did not run.');
   notes.push(anyCompared ? 'Change: issues opened (+) and resolved (−) since the last comparable audit.' : 'Change needs two comparable audits.');
+  if (anyCompared && excludedNote) notes.push(`${esc(excludedNote.charAt(0).toUpperCase() + excludedNote.slice(1))} (${esc(lastDelta.excluded.checkIds.join(', '))}).`);
   return `<div class="findings-table areas-table"><table><thead><tr><th>Area</th><th class="num">Pages</th>` +
     `<th class="num sevs"><span class="sev-h" title="Critical">C</span><span class="sev-h" title="High">H</span><span class="sev-h" title="Medium">M</span><span class="sev-h" title="Low and info">L</span></th>` +
     `<th class="num" title="Opened (+) and resolved (−) since the last comparable audit">Change</th></tr></thead><tbody>${body}</tbody></table></div>` +

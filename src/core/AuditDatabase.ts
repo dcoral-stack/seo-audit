@@ -667,7 +667,7 @@ export class AuditDatabase {
     ensure('audit_runs', 'health_error_pages', 'health_error_pages INTEGER');
     ensure('audit_runs', 'health_total_pages', 'health_total_pages INTEGER');
     ensure('audit_runs', 'health_basis', 'health_basis TEXT');   // audit | snapshot:<crawlId> | none:<reason>
-    ensure('audit_runs', 'check_ids', 'check_ids TEXT');         // JSON array of the check ids that ran (sorted)
+    ensure('audit_runs', 'check_ids', 'check_ids TEXT');         // JSON array of the check ids that ran (sorted); a regrouped check as id@N (its finding grain, history.ts)
     ensure('audit_runs', 'server_version', 'server_version TEXT');
     ensure('agent_readiness', 'bots', 'bots TEXT');           // JSON [{bot,operator,group,verdict,inherits}] (aiBots.ts); NULL before it existed
     ensure('pages', 'images_missing_dimensions', 'images_missing_dimensions INTEGER DEFAULT 0');
