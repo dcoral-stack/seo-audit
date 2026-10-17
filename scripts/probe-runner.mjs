@@ -93,6 +93,7 @@ try {
     const stale = mcp.get(id);
     check('queued past the (scaled) 60 s with no runner: says no runner seems to be running', stale?.state === 'queued' && /no job runner seems to be running/.test(stale.note ?? ''), stale?.note);
     check('...and gives the docker run line', (stale?.note ?? '').includes('docker run -d --init --name seo-audit-runner') && (stale?.note ?? '').includes('npx -y -p @houtini/seo-audit-console seo-audit-runner'), stale?.note);
+    check('...whose env flags include every optional key the runner needs, CRUX_API_KEY too', ['DATAFORSEO_USERNAME', 'DATAFORSEO_PASSWORD', 'MAJESTIC_API_KEY', 'CRUX_API_KEY'].every(k => (stale?.note ?? '').includes(`-e ${k} `)), stale?.note);
     const live = liveJobTypes(dir, jobScopeFor(dir, site));
     check('liveJobTypes reports the queued type separately from live ones', !!live && live.queued?.has('crawl') && !live.has('crawl'), JSON.stringify({ live: live && [...live], queued: live?.queued && [...live.queued] }));
     check('a queued job counts for destructive guards (possiblyRunning)', mcp.possiblyRunning().some(j => j.id === id && j.state === 'queued'), JSON.stringify(mcp.possiblyRunning()));

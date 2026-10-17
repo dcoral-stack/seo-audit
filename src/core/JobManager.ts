@@ -37,7 +37,9 @@ export const jobRunnerModeFromEnv = (env: NodeJS.ProcessEnv = process.env): JobR
 /** The documented runner container, quoted wherever a queued job has no runner to claim it. */
 export const RUNNER_DOCKER_RUN =
   'docker run -d --init --name seo-audit-runner --restart unless-stopped -v mcp-sac-data:/data -v mcp-sac-creds:/creds:ro ' +
-  '-e SAC_DATA_DIR=/data -e GOOGLE_APPLICATION_CREDENTIALS=/creds/gsc.json node:22-slim npx -y -p @houtini/seo-audit-console seo-audit-runner';
+  '-e SAC_DATA_DIR=/data -e GOOGLE_APPLICATION_CREDENTIALS=/creds/gsc.json ' +
+  '-e DATAFORSEO_USERNAME -e DATAFORSEO_PASSWORD -e MAJESTIC_API_KEY -e CRUX_API_KEY ' +
+  'node:22-slim npx -y -p @houtini/seo-audit-console seo-audit-runner';
 export const QUEUED_NOTE = 'waiting for the job runner';
 
 /**
@@ -514,7 +516,7 @@ export class JobManager {
     const last = this.lastRunnerBeat();
     return `${QUEUED_NOTE}, but no job runner seems to be running (${last ? `the last runner heartbeat was at ${last}` : 'no runner has ever checked in to this data directory'}). ` +
       `This server is set to SAC_JOB_RUNNER=external, so jobs only run when a runner claims them. Start one on the same data volume: ${RUNNER_DOCKER_RUN} ` +
-      '(add the same DATAFORSEO_* / MAJESTIC_API_KEY env vars the MCP server has; on Windows Git Bash prefix MSYS_NO_PATHCONV=1). The job stays queued until a runner picks it up.';
+      '(the bare -e DATAFORSEO_* / MAJESTIC_API_KEY / CRUX_API_KEY flags copy those keys from your shell: the runner needs the same keys as the MCP server, so drop only the ones you do not use; on Windows Git Bash prefix MSYS_NO_PATHCONV=1). The job stays queued until a runner picks it up.';
   }
 
   /** What to say when a job has just been queued: the waiting line, plus the advice if no runner is alive. */
