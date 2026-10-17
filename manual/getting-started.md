@@ -9,6 +9,7 @@ This page takes you from nothing to your first audit: install, connect Google Se
 - **Claude Desktop** or **Claude Code** (any MCP client works; these are the two I test on)
 - A **Google Search Console property you own**. If your site isn't verified there yet, do that first - it's free, takes ten minutes, and you should have it regardless of this tool.
 - *Optional:* a **DataForSEO** account, for keyword volumes, competitor data and backlinks. Everything else works without it. See [competitive.md](competitive.md) for what it adds and what it costs.
+- *Optional:* a free **Chrome UX Report (CrUX) API key**, for real-user Core Web Vitals - including INP, which no lab tool can measure. Setup takes five minutes in Google Cloud: [CrUX key (optional)](#crux-key-optional) below.
 - *Optional, and only if you do link building:* a **[Majestic](https://majestic.com/plans-pricing)** API key. It enriches the `link_intersect` prospect list with **Trust Flow** and **Topical Trust Flow** and re-sorts it by real editorial authority, which is what stops directories sitting at the top of your outreach list. `link_intersect` runs fine without it.
 
 ## The quick route: npx (no clone, no build)
@@ -144,14 +145,15 @@ Add this to `claude_desktop_config.json` (Settings → Developer → Edit Config
         "DATAFORSEO_PASSWORD": "your-dataforseo-password",
         "DATAFORSEO_CACHE_DAYS": "20",
         "MAJESTIC_API_KEY": "your-majestic-api-key",
-        "MAJESTIC_CACHE_DAYS": "30"
+        "MAJESTIC_CACHE_DAYS": "30",
+        "CRUX_API_KEY": ""
       }
     }
   }
 }
 ```
 
-That's the everything block - every variable the server reads, so you can see the shape. Delete the lines for services you don't have, or leave their values blank to disable them; only `GOOGLE_APPLICATION_CREDENTIALS` is required, and each optional key just switches its own tier on (`MAJESTIC_API_KEY`, for instance, only ever does anything when you run `link_intersect`). Then **fully restart Claude Desktop** - quit it from the system tray, not just the window. Claude Desktop keeps the old server process running until you do, which catches people out constantly.
+That's the everything block - every variable the server reads, so you can see the shape. `CRUX_API_KEY` is optional: field Core Web Vitals, from a free Google API key restricted to the Chrome UX Report API ([setup below](#crux-key-optional)); an empty string leaves it off. Delete the lines for services you don't have, or leave their values blank to disable them; only `GOOGLE_APPLICATION_CREDENTIALS` is required, and each optional key just switches its own tier on (`MAJESTIC_API_KEY`, for instance, only ever does anything when you run `link_intersect`). Then **fully restart Claude Desktop** - quit it from the system tray, not just the window. Claude Desktop keeps the old server process running until you do, which catches people out constantly.
 
 ## 3b. Configure Claude Code
 
@@ -198,6 +200,7 @@ Don't commit real credential paths to a shared repo unless the team shares the s
 | `DATAFORSEO_CACHE_DAYS` | optional | DataForSEO response cache TTL (default 20 days) |
 | `MAJESTIC_API_KEY` | optional | Switches on the **Majestic** tier in `link_intersect`: every prospect gains **Trust Flow** and **Topical Trust Flow**, and the list re-sorts by real editorial authority instead of DataForSEO's link-volume rank. Get a key on [Majestic's plans page](https://majestic.com/plans-pricing). `link_intersect` works without it. |
 | `MAJESTIC_CACHE_DAYS` | optional | Majestic response cache TTL (default 30 days). Cache hits cost no Majestic units, so leave this generous. |
+| `CRUX_API_KEY` | optional | Switches on `sync_crux` and the CrUX step of `refresh_property`: real-user Core Web Vitals from the Chrome UX Report, and the `crux-field-*` / `crux-regression` checks. Free; see [CrUX key (optional)](#crux-key-optional). |
 
 Two more exist for people who need them, and you almost certainly don't:
 
@@ -207,6 +210,18 @@ Two more exist for people who need them, and you almost certainly don't:
 | `MAJESTIC_API_HOST` | optional | Points the Majestic client at a different host. The default is the live API (`api.majestic.com`); Majestic's developer sandbox is a frozen 2015 subset, useful for testing the wiring without spending units. |
 
 Each optional key only affects its own tier, and none of those services is called until you ask a question that needs it. **Leave a key blank to disable its tier.** A value that's still a placeholder - `your-majestic-api-key`, `<your key>`, `changeme`, `xxx`, anything containing `example`, or an unsubstituted `${...}` from your MCP host - counts as blank too: the tier stays off and the server writes one line to its log, e.g. `MAJESTIC_API_KEY looks like a placeholder; Majestic tier disabled.` So if a tier you expected is off, check the log for that line.
+
+### CrUX key (optional)
+
+The Chrome UX Report is Google's own record of how real Chrome users experience your pages - the same field data behind the Core Web Vitals report in Search Console. It's the only way to get **INP**, and it's free. You need a Google Cloud API key with one API switched on:
+
+1. Open the [Google Cloud console](https://console.cloud.google.com/) and pick a project. The one that holds your Search Console service account is fine.
+2. Go to **APIs & Services → Library**, search for **Chrome UX Report API**, and click **Enable**.
+3. Go to **APIs & Services → Credentials → Create credentials → API key**.
+4. Open the new key, set **API restrictions → Restrict key**, and tick only **Chrome UX Report API**. A key that can call nothing else is a key you don't have to worry about.
+5. Add it to your config's `env` block as `CRUX_API_KEY` and fully restart the client.
+
+Then ask *"pull CrUX data for yoursite.com"* (or just refresh the property - it runs on its own once the key is set). The API allows 150 calls a minute and the tool stays under that; the first pull for a site is about 200 calls (history, then the latest window, for the origin and 50 pages on phone and desktop), so it takes a minute or two. Pages without enough Chrome traffic simply have no CrUX data - they're recorded as *insufficient data*, never as a zero.
 
 You can also move the data directory later without touching config - ask *"where is my audit data stored?"* or *"set the data location to D:/seo-data"* (the `data_location` tool persists the choice).
 

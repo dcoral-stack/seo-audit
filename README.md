@@ -25,7 +25,7 @@ you  › run an SEO audit on mysite.com
      ⣾ search console  1.8M rows synced (19s - incremental)
      ⣾ crawl           868 pages · HTTP/2 · robots-polite · 8 parallel
      ⣾ link graph      internal PageRank · click depth · in-degree
-     ✓ 111 checks · 220 findings · ranked by expected clicks per dev-hour
+     ✓ 119 checks · 220 findings · ranked by expected clicks per dev-hour
 
      #1  CTR far below position-expected     /pricing                   XL
      #2  Page losing clicks (trend)          site-wide                  XL
@@ -52,12 +52,15 @@ It's on npm, so there's nothing to clone or build. You need Node.js 20 or newer 
       "command": "npx",
       "args": ["-y", "@houtini/seo-audit-console"],
       "env": {
-        "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json"
+        "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json",
+        "CRUX_API_KEY": ""
       }
     }
   }
 }
 ```
+
+`CRUX_API_KEY` is optional: field Core Web Vitals from a free Google API key restricted to the Chrome UX Report API. Leave it empty to switch it off.
 
 **Claude Code** - one command:
 
@@ -77,7 +80,7 @@ This README is the story and the quick start. The detail lives in the manual:
 |---|---|
 | [Getting started](manual/getting-started.md) | Install, the GSC service-account setup (and the step everyone misses), Claude Desktop and Claude Code config, your first audit, troubleshooting |
 | [Tool reference](manual/tools.md) | Every tool: what it does, inputs, joins, an example prompt |
-| [The check registry](manual/checks.md) | All 111 checks with what each catches, its D/N label, and the fix |
+| [The check registry](manual/checks.md) | All 119 checks with what each catches, its D/N label, and the fix |
 | [Composition](manual/composition.md) | The join keys, the grains, and thirteen worked recipes for asking your own questions across the data |
 | [Competitive analysis](manual/competitive.md) | The Semrush-replacement workflows, DataForSEO setup, link intersect with the Majestic Trust Flow tier, and the real costs |
 | [SEO Recon](manual/recon.md) | Why a page is losing: the live SERP + AI-Overview citation verdict, the competitor diff, and the trackable to-do ledger |
@@ -115,7 +118,7 @@ Yes. The crawl-plus-GSC merge is not a novelty; it's the method. On one property
 
 ## What the audit checks
 
-`run_audit` executes **111 checks** over the joined data and returns a ranked list - not a wall of everything, a priority order with the traffic at stake attached to each finding. The families, briefly:
+`run_audit` executes **119 checks** over the joined data and returns a ranked list - not a wall of everything, a priority order with the traffic at stake attached to each finding. The families, briefly:
 
 | Family | What it catches |
 |---|---|
@@ -242,7 +245,8 @@ Every environment variable the server reads, in one block - the first is require
         "DATAFORSEO_PASSWORD": "your-dataforseo-password",
         "DATAFORSEO_CACHE_DAYS": "20",
         "MAJESTIC_API_KEY": "your-majestic-api-key",
-        "MAJESTIC_CACHE_DAYS": "30"
+        "MAJESTIC_CACHE_DAYS": "30",
+        "CRUX_API_KEY": ""
       }
     }
   }
@@ -251,7 +255,7 @@ Every environment variable the server reads, in one block - the first is require
 
 Built from source instead? Swap the two launch lines for `"command": "node"` and `"args": ["C:/path/to/seo-audit-console/dist/index.js"]`; the `env` block is identical.
 
-`GOOGLE_APPLICATION_CREDENTIALS` gets you the whole core audit. DataForSEO adds the market layer, and `MAJESTIC_API_KEY` adds the Trust Flow re-sort to `link_intersect`. Line-by-line, including the two advanced ones you'll probably never need: [getting-started.md](manual/getting-started.md#environment-variables).
+`GOOGLE_APPLICATION_CREDENTIALS` gets you the whole core audit. DataForSEO adds the market layer, `MAJESTIC_API_KEY` adds the Trust Flow re-sort to `link_intersect`, and `CRUX_API_KEY` (optional: field Core Web Vitals, a free Google API key restricted to the Chrome UX Report API) adds real-user LCP, INP and CLS. Line-by-line, including the two advanced ones you'll probably never need: [getting-started.md](manual/getting-started.md#environment-variables).
 
 Then: *"list properties"* to check it's connected, *"refresh"*, *"run an SEO audit"*.
 

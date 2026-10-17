@@ -4,7 +4,8 @@ import { AuditDatabase } from './AuditDatabase.js';
 import { dbPathFor } from './paths.js';
 import { urlKey, hostFormForProperty, type UrlKeyOptions } from './url-key.js';
 import { extractPage, isInternalHost, decodeHtmlBody } from './extract.js';
-import { fetchRobots } from './robots.js';
+import { fetchRobotsTxt, rulesFromText } from './robots.js';
+import { storeRobotsTxt } from './robotsStore.js';
 import { finalizeLinkGraph } from './linkGraph.js';
 import { crawlRate, type CrawlStage } from './crawlProgress.js';
 import { fetchSitemapUrls } from './sitemap.js';
@@ -375,7 +376,11 @@ export class Crawler {
       wipedPrior = true;
     };
 
-    const robots = await fetchRobots(origin, ua);
+    // robots.txt: the crawl's own politeness gate, and the stored bytes the audit reads for
+    // Googlebot / AI-bot verdicts (#55). Unreachable or non-2xx = no restrictions, as before.
+    const robotsTxt = await fetchRobotsTxt(origin, ua);
+    try { storeRobotsTxt(db.db, origin, robotsTxt); } catch (err) { console.error('[crawl] robots.txt not stored:', err instanceof Error ? err.message : String(err)); }
+    const robots = rulesFromText(robotsTxt.body ?? '', 'seo-audit-console');
 
     const pageInsert = db.db.prepare(
       `INSERT INTO pages (crawl_id, url, url_key, status_code, content_type, content_encoding, cache_control,

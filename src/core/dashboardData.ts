@@ -20,6 +20,7 @@ import {
   type GscShape, type ClickWindows,
 } from './summaryData.js';
 import { monthlyFromHistory, type HistoryRow, type MonthRow } from './backlinkProfile.js';
+import { cwvFieldPayload, type CwvField } from './CruxSync.js';
 
 export interface BacklinkProfile {
   summary: { backlinks: number; referringDomains: number; domainRank: number | null; brokenBacklinks: number; brokenPages: number; nofollowPct: number | null; fetchedAt: string | null } | null;
@@ -200,6 +201,9 @@ export interface DashboardData {
   gscShape?: GscShape | null;
   /** Last 28 days vs the prior 28, clicks counted once per day (the Summary's verdict and tile). */
   clickWindows?: ClickWindows;
+  // Field Core Web Vitals (#55): CrUX latest origin window per form factor + p75 history. Read live on
+  // every load (outside the payload cache, like freshness): sync_crux writes on its own schedule.
+  cwvField?: CwvField | null;
 }
 
 interface Totals { clicks: number; impressions: number; position: number }
@@ -245,7 +249,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const version = `${PAYLOAD_VERSION}|${ver.sa ?? 'none'}|${ver.run ?? 'none'}|${ver.pg}|${ver.ar ?? ''}|${ver.rh ?? ''}|${ver.sf}|${ver.ms}|${ver.pb ?? ''}|${ver.lp ?? ''}|${ver.cr ?? ''}|${ver.rp ?? ''}|${ver.ui ?? ''}|${ver.bp ?? ''}`;
     const hit = db.db.prepare('SELECT payload FROM dashboard_cache WHERE id=1 AND version=?').get(version) as { payload: string } | undefined;
     // A corrupt/truncated cache row must fall through to a rebuild, not throw forever.
-    if (hit) { try { return { ...(JSON.parse(hit.payload) as DashboardData), freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))) }; } catch { /* rebuild below */ } }
+    if (hit) { try { return { ...(JSON.parse(hit.payload) as DashboardData), freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))), cwvField: cwvFieldPayload(db.db) }; } catch { /* rebuild below */ } }
 
     // Use the finalised date (trailing partial GSC days trimmed) for ALL windows + charts, so the
     // dashboard never shows the "traffic tanking" cliff of unfinalised data.
@@ -263,7 +267,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
           ON CONFLICT(id) DO UPDATE SET version=excluded.version, payload=excluded.payload, created_at=excluded.created_at`)
           .run(version, JSON.stringify(payload));
       } catch { /* cache is an optimisation */ }
-      return { ...payload, freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))) };
+      return { ...payload, freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))), cwvField: cwvFieldPayload(db.db) };
     }
     // Upper bound: never include unfinalised days past effectiveMax. Windows anchored on maxDate
     // only set a lower bound (date > date(maxDate,'-Nd')), so without this the partial trailing
@@ -1003,7 +1007,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         .run(version, JSON.stringify(payload));
     } catch { /* cache is an optimisation, never block the dashboard on it */ }
     // Freshness is read live on every load (outside the cache) - see dataFreshness.ts.
-    return { ...payload, freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))) };
+    return { ...payload, freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))), cwvField: cwvFieldPayload(db.db) };
   } finally {
     db.close();
   }

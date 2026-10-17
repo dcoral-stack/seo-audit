@@ -2,12 +2,14 @@ import { GscSync, FULL_DIMENSIONS } from './GscSync.js';
 import { Crawler } from './Crawler.js';
 import { UrlInspector } from './UrlInspector.js';
 import { RankTracker } from './RankTracker.js';
+import type { CruxSync } from './CruxSync.js';
 
 export interface RefreshOptions {
   gsc?: boolean;       // sync GSC history (default true)
   crawl?: boolean;     // crawl the site (default true)
   inspect?: boolean;   // GSC URL Inspection pass (default true)
   ranks?: boolean;     // DataForSEO over-time sequence (default true if available)
+  crux?: boolean;      // CrUX field data (default true when CRUX_API_KEY is set; at most weekly per target)
   segments?: boolean;  // also sync device/country breakdowns (heavier; off by default — lite sync)
   full?: boolean;      // force a full re-pull of the GSC window (default: incremental resume)
   location?: string | number; // DataForSEO target location (name or code)
@@ -31,6 +33,7 @@ export class Refresh {
     private readonly crawler: Crawler,
     private readonly inspector: UrlInspector | null,
     private readonly rankTracker: RankTracker | null,
+    private readonly cruxSync: CruxSync | null = null,
   ) {}
 
   async run(
@@ -85,6 +88,23 @@ export class Refresh {
         update({ phase: 'ranks' });
         phases.push('ranks');
         out.ranks = await this.rankTracker.run(siteUrl, { location: opts.location }, p => update({ phase: 'ranks', ...p }), signal);
+      }
+    }
+    if (signal.aborted) return out;
+
+    // CrUX last: it reads the freshly synced GSC clicks to pick its top URLs. Its own re-ask
+    // windows (7 days per target) keep a routine refresh to a handful of calls. A CrUX failure
+    // is reported, never fatal: the rest of the refresh has already been written.
+    if (opts.crux !== false) {
+      if (!this.cruxSync) { out.cruxSkipped = 'no CRUX_API_KEY'; }
+      else {
+        update({ phase: 'crux' });
+        phases.push('crux');
+        try {
+          out.crux = await this.cruxSync.run(siteUrl, {}, p => update({ phase: 'crux', ...p }), signal);
+        } catch (err) {
+          out.cruxError = err instanceof Error ? err.message : String(err);
+        }
       }
     }
 

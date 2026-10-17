@@ -68,7 +68,8 @@ import { triage404s, verifyLive } from './core/triage404.js';
 import { gscFreshness } from './core/gscFreshness.js';
 import { clusterKeywordList } from './audit/keywordList.js';
 import type { FetchOptions } from './core/types.js';
-import { dataForSeoCredentials, optionalSecret } from './core/secrets.js';
+import { dataForSeoCredentials, optionalSecret, cruxApiKey } from './core/secrets.js';
+import { CruxSync, CRUX_DEFAULT_URL_LIMIT } from './core/CruxSync.js';
 
 const SERVER_NAME = 'seo-audit-console';
 const SERVER_VERSION = (
@@ -227,6 +228,7 @@ A technical-SEO audit that fuses **Search Console + a site crawl + DataForSEO**,
 ## 1. Sync the data
 - **refresh_property** — sync everything (GSC → crawl → URL inspection → rank history). _"Refresh sc-domain:example.com"_ · add \`segments:true\` for device/country, \`maxPages\`, \`startDate\`.
 - **sync_gsc / start_crawl / inspect_urls / track_ranks** — run just one part. _"Crawl example.com, 500 pages"_
+- **sync_crux** — field Core Web Vitals (LCP / INP / CLS at p75) from the Chrome UX Report for the origin and your top pages, with ~25 weeks of history. Free; needs \`CRUX_API_KEY\`. _"Pull CrUX data for example.com"_
 - **check_sync_status / check_crawl_status** — poll a job. _"Check sync status"_
 - **list_properties** — _"List my Search Console properties"_
 
@@ -308,7 +310,10 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   // Backlinks after Majestic, so pull_backlinks can enrich per-URL pages with Trust Flow.
   const backlinks = dfs ? new Backlinks(dfs, dataDir(), majestic) : null;
   const entities = new Entities(new WikidataClient(path.join(dataDir(), 'wikidata-cache.db')), dataDir());
-  const refresh = new Refresh(sync, crawler, inspector, rankTracker);
+  // CrUX (#55): field Core Web Vitals. Free Google API key (CRUX_API_KEY), read placeholder-safe.
+  const cruxKey = cruxApiKey();
+  const cruxSync = cruxKey ? new CruxSync(cruxKey, dataDir()) : null;
+  const refresh = new Refresh(sync, crawler, inspector, rankTracker, cruxSync);
   // Every job works on one property; record which (its DB file name, stable across the different
   // mounts a gateway container and a Desktop process see of the same data dir) so per-property
   // questions - "is a crawl live for THIS site?", "is this DB's FTS build already running?" - can
@@ -987,13 +992,14 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'refresh_property',
     {
       title: 'Refresh a property (sync + crawl + inspect)',
-      description: 'Full refresh for a property in one async job: GSC sync → site crawl → URL inspection → DataForSEO rank history. Opens a live progress widget (phases + counts). Set gsc/crawl/inspect/ranks=false to run just part. GSC sync is "lite" (date×query×page) by default — set segments=true to also pull device/country breakdowns (much heavier on large sites). GSC sync is INCREMENTAL: the first sync pulls the window (default last 90 days; pass startDate to go deeper), later syncs only fetch new days — set full=true to force a full re-pull. Use this for "sync everything"; use the single-purpose tools to update just one thing.',
+      description: 'Full refresh for a property in one async job: GSC sync → site crawl → URL inspection → DataForSEO rank history → CrUX field data (when CRUX_API_KEY is set; each target at most once per 7 days). Opens a live progress widget (phases + counts). Set gsc/crawl/inspect/ranks/crux=false to run just part. GSC sync is "lite" (date×query×page) by default — set segments=true to also pull device/country breakdowns (much heavier on large sites). GSC sync is INCREMENTAL: the first sync pulls the window (default last 90 days; pass startDate to go deeper), later syncs only fetch new days — set full=true to force a full re-pull. Use this for "sync everything"; use the single-purpose tools to update just one thing.',
       inputSchema: {
         siteUrl: z.string(),
         gsc: z.boolean().optional(),
         crawl: z.boolean().optional(),
         inspect: z.boolean().optional(),
         ranks: z.boolean().optional(),
+        crux: z.boolean().optional(),
         segments: z.boolean().optional(),
         full: z.boolean().optional(),
         location: z.union([z.string(), z.number()]).optional(),
@@ -1004,11 +1010,11 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       },
       _meta: { ui: { resourceUri: SYNC_PROGRESS_URI } },
     },
-    async ({ siteUrl, gsc: doGsc, crawl, inspect, ranks, segments, full, location, startDate, endDate, maxPages, inspectLimit }) => {
+    async ({ siteUrl, gsc: doGsc, crawl, inspect, ranks, crux, segments, full, location, startDate, endDate, maxPages, inspectLimit }) => {
       // Property is now populated: the shared helper starts the browser dashboard and puts its link
       // on the finished job (polled via check_sync_status), and skips that if the job was cancelled.
       const jobId = startFor(siteUrl, 'refresh', withDashboard(siteUrl, (update, signal) =>
-        refresh.run(siteUrl, { gsc: doGsc, crawl, inspect, ranks, segments, full, location, startDate, endDate, maxPages, inspectLimit }, update, signal)));
+        refresh.run(siteUrl, { gsc: doGsc, crawl, inspect, ranks, crux, segments, full, location, startDate, endDate, maxPages, inspectLimit }, update, signal)));
       return jobStarted({ jobId, status: 'running', siteUrl }, `Refresh started for ${siteUrl} (job ${jobId}). Poll check_sync_status.`);
     },
   );
@@ -2761,6 +2767,27 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       const tracker = requireDfs(rankTracker);
       const jobId = startFor(siteUrl, 'rank_history', (update, signal) => tracker.run(siteUrl, { location }, update, signal));
       return jobStarted({ jobId, status: 'running', siteUrl }, `Rank-history ingest started for ${siteUrl} (job ${jobId}). Poll check_sync_status.`);
+    },
+  );
+
+  // sync_crux — field Core Web Vitals from the Chrome UX Report API (#55 item 4). Free (Google API
+  // key), quota 150 queries/min, throttled under it. Async job like the other collectors.
+  server.registerTool(
+    'sync_crux',
+    {
+      title: 'Sync CrUX field data (Core Web Vitals)',
+      description: `[Free: Google API key in CRUX_API_KEY | Use for: real-user Core Web Vitals, incl. INP, which lab tools cannot measure] Pull Chrome UX Report field data (p75 + good/needs-improvement/poor shares for LCP, INP, CLS, plus FCP, TTFB, RTT, the LCP sub-parts, LCP resource type and navigation types) for the property's origin and its top URLs by GSC clicks (default ${CRUX_DEFAULT_URL_LIMIT}), each on PHONE and DESKTOP, into crux_metrics / crux_fractions / crux_targets. A target's first pull backfills ~25 weekly 28-day windows of history; later pulls add the newest window, at most once per 7 days per target (force:true overrides). A URL without enough Chrome traffic is recorded as insufficient_data (not an error) and re-asked after 28 days. Throttled under the API's 150 queries/min. Async job - poll check_sync_status, then run_audit for crux-field-lcp / -inp / -cls and crux-regression. refresh_property runs this too when the key is set. Grain: target x form factor x metric x 28-day window (windows overlap - a trend, never a sum). Joins: target = url_key -> pages/GSC.`,
+      inputSchema: {
+        siteUrl: z.string(),
+        urls: z.array(z.string()).max(500).optional().describe('Collect these URLs instead of the top pages by GSC clicks'),
+        limit: z.number().int().min(0).max(500).optional().describe(`Top URLs by GSC clicks (28 days) to collect besides the origin (default ${CRUX_DEFAULT_URL_LIMIT}; 0 = origin only)`),
+        force: z.boolean().optional().describe('Re-ask targets checked within the last 7 days (28 for insufficient_data)'),
+      },
+    },
+    async ({ siteUrl, urls, limit, force }) => {
+      if (!cruxSync) throw new Error('CRUX_API_KEY is not set (or still a placeholder) - required for CrUX. It is a free Google Cloud API key with the Chrome UX Report API enabled: see manual/getting-started.md, "CrUX key (optional)".');
+      const jobId = startFor(siteUrl, 'crux', withDashboard(siteUrl, (update, signal) => cruxSync.run(siteUrl, { urls, limit, force }, update, signal)));
+      return jobStarted({ jobId, status: 'running', siteUrl }, `CrUX sync started for ${siteUrl} (job ${jobId}). Poll check_sync_status, then run_audit.`);
     },
   );
 
