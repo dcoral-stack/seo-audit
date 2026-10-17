@@ -216,7 +216,8 @@ function trend(d: any, ctx: SummaryCtx): void {
   const perMonth = (kind: 'crawl' | 'audit'): [number, number, number][] => {
     const n = new Map<number, number>();
     for (const e of events) if (e.kind === kind) { const i = idx.get(e.at.slice(0, 7))!; n.set(i, (n.get(i) ?? 0) + 1); }
-    return [...n.entries()].map(([i, c]) => [i + (kind === 'crawl' ? -0.17 : 0.17), 1, c]);
+    // Two lanes (crawls above, audits below), so the two kinds' counts never sit side by side.
+    return [...n.entries()].map(([i, c]) => [i, kind === 'crawl' ? 1.5 : 0.5, c]);
   };
   const ax = axisDefaults(col, { numeric: true });
   const evColor = { crawl: col.categorical[0], audit: col.categorical[1] } as const;
@@ -234,7 +235,7 @@ function trend(d: any, ctx: SummaryCtx): void {
           `${mm.partial && mm.clicks != null ? ` · partial (${mm.days} of ${mm.daysInMonth} days)` : ''}${g != null ? `<br/>same month last year ${fmt(g)}` : ''}`;
       },
     },
-    grid: [{ left: 44, right: 10, top: 12, bottom: 62 }, { left: 44, right: 10, height: 18, bottom: 16 }],
+    grid: [{ left: 44, right: 10, top: 12, bottom: 66 }, { left: 44, right: 10, height: 26, bottom: 10 }],
     xAxis: [
       { type: 'category', gridIndex: 0, data: months.map(mm => monthLabel(mm.month)), axisTick: { show: false }, axisLine: { lineStyle: { color: col.border } }, axisLabel: { color: col.axisText, fontSize: 10.5, fontFamily: monoFont(), hideOverlap: true } },
       { type: 'value', gridIndex: 1, min: -0.5, max: months.length - 0.5, show: false },
@@ -258,9 +259,10 @@ function trend(d: any, ctx: SummaryCtx): void {
         symbol: 'circle', symbolSize: 4, lineStyle: { type: 'dashed', width: 1.5, color: col.text, opacity: 0.5 }, itemStyle: { color: col.text, opacity: 0.5 }, z: 3,
       }] : []),
       ...(['crawl', 'audit'] as const).map(k => ({
-        name: k === 'crawl' ? 'Crawl' : 'Audit', type: 'scatter', xAxisIndex: 1, yAxisIndex: 1, symbol: 'rect', symbolSize: [3, 10],
+        name: k === 'crawl' ? 'Crawl' : 'Audit', type: 'scatter', xAxisIndex: 1, yAxisIndex: 1, symbol: 'rect', symbolSize: [3, 9],
         itemStyle: { color: evColor[k] }, tooltip: { show: false }, silent: true,
-        label: { show: true, position: 'bottom', distance: 1, fontSize: 9, fontFamily: monoFont(), color: col.axisText, formatter: (p: any) => (p.value[2] > 1 ? `${p.value[2]}` : '') },
+        // "2×" to the right of a tick when a month had several, in that kind's own lane.
+        label: { show: true, position: 'right', distance: 3, fontSize: 9, fontFamily: monoFont(), color: evColor[k], formatter: (p: any) => (p.value[2] > 1 ? `${p.value[2]}×` : '') },
         data: perMonth(k),
       })),
     ],
