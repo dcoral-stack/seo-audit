@@ -866,3 +866,5 @@ select, select.sel, #cannSelect {
 .brand-uncertain { color: var(--intent-warning); cursor: help; }
 .sf-rule { font-size: 11px; color: var(--text-faint); margin-top: 4px; line-height: 1.4; }
 .fresh-row.fr-flag .fr-v { color: var(--intent-warning); }
+/* Health and audit change with nothing to draw in the issues panel: the health line alone. */
+.chart.chart-health.chart-health-only { height: 170px; }

@@ -9,7 +9,7 @@
 //   - every number carries class "n" so redact mode (?redact=1) blurs it, and charts drop their
 //     numeric axes and tooltips when redacted.
 import { esc, fmtNum, fmtCompact, sparkline, countDelta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
-import { shareText, capHealth } from '../core/displayRules.js';
+import { shareText, capHealth, runLabels } from '../core/displayRules.js';
 import { buildVerdict, direction } from '../core/summaryVerdict.js';
 import { ago, SEV_LABEL, freshVerdict } from './panels.js';
 import { cwvTile, cwvCoverage } from './cwv.js';
@@ -142,8 +142,10 @@ function tiles(d: any): string {
     const capNote = hs.errorPages > 0 ? ` Never shown as 100 while any page carries a critical or high issue: ${hs.errorPages} of ${hs.totalPages} ${hs.errorPages === 1 ? 'page does' : 'pages do'}${(1 - hs.errorPages / hs.totalPages) * 100 >= 99.5 ? ', so the score is capped at 99 rather than rounded up to 100' : ''}.` : '';
     out.push(tile({
       label: 'Site health', value: `<span class="n" style="color:${tone}">${score}</span><span class="kpi-of">/100</span>`,
-      foot: `<span class="tile-band" title="Bands are a product convention, not an industry benchmark">${esc(hs.band)}</span>${hist.length >= 2 ? sparkline(hist, false, [0, 100]) : ''}`,
-      sub: hs.errorPages ? `<span class="n">${fmt(hs.errorPages)}</span> ${hs.errorPages === 1 ? 'page has' : 'pages have'} a critical or high issue` : 'no page has a critical or high issue',
+      foot: `<span class="tile-band" title="Bands are a product convention, not an industry benchmark">${esc(hs.band)}</span>${hist.length >= 2 && new Set(hist).size > 1 ? sparkline(hist, false, [0, 100]) : ''}`,
+      // A sparkline over identical scores is a stray flat line: say "unchanged" instead.
+      sub: (hs.errorPages ? `<span class="n">${fmt(hs.errorPages)}</span> ${hs.errorPages === 1 ? 'page has' : 'pages have'} a critical or high issue` : 'no page has a critical or high issue') +
+        (hist.length >= 2 && new Set(hist).size === 1 ? ` · unchanged over ${hist.length} audits` : ''),
       title: `${hs.definition} ${hs.totalPages - hs.errorPages} of ${hs.totalPages} pages.${capNote} Bands (Weak under 31, Fair, Good from 71, Excellent from 91) are a product convention, not an industry benchmark.${hist.length >= 2 ? ` Sparkline: ${hist.length} audits.` : ''}`,
     }));
   } else {
@@ -280,10 +282,17 @@ function health(d: any, ctx: SummaryCtx): void {
     return;
   }
   const byRun = new Map(deltas.map(a => [a.runId, a]));
-  const labels = hist.map(h => dayLabel(h.at));
+  // Same-day runs get their time ("17 Oct 16:20", "17 Oct 16:21"), never two identical labels.
+  const labels = runLabels(hist.map(h => h.at));
   const comparable = hist.map(h => { const a = byRun.get(h.runId); return a && !a.skipped ? a : null; });
   const nComparable = comparable.filter(Boolean).length;
+  // The opened / resolved panel only when there is something to draw: no comparable pair, or
+  // pairs that changed nothing, would be an empty 0-1 axis. The note says which instead.
+  const bars = comparable.some(a => a && (a.opened || a.resolved));
+  const chartEl = document.getElementById('sumHealthChart');
+  chartEl?.classList.toggle('chart-health-only', !bars);
   const ax = axisDefaults(col);
+  const xLabel = { color: col.axisText, fontSize: 10, fontFamily: monoFont(), hideOverlap: true };
   ctx.wrap('sumHealthChart').setOption({
     aria: { enabled: true }, animation: false,
     tooltip: ctx.redacted ? { show: false } : {
@@ -295,22 +304,24 @@ function health(d: any, ctx: SummaryCtx): void {
         return `${labels[i]}<br/>${hs}<br/>${dl}`;
       },
     },
-    legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 8, textStyle: { color: col.text, fontSize: 11 }, data: ['Health', 'Opened', 'Resolved'] },
+    legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 8, textStyle: { color: col.text, fontSize: 11 }, data: bars ? ['Health', 'Opened', 'Resolved'] : ['Health'] },
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
     // Fixed pixel heights: the axis titles keep a constant gap at any chart height.
-    grid: [{ left: 34, right: 10, top: 46, height: 64 }, { left: 34, right: 10, top: 152, bottom: 24 }],
+    grid: bars ? [{ left: 34, right: 10, top: 46, height: 64 }, { left: 34, right: 10, top: 152, bottom: 24 }] : [{ left: 34, right: 10, top: 46, bottom: 26 }],
     xAxis: [
-      { type: 'category', gridIndex: 0, data: labels, axisLabel: { show: false }, axisTick: { show: false }, axisLine: { lineStyle: { color: col.border } } },
-      { type: 'category', gridIndex: 1, data: labels, axisTick: { show: false }, axisLine: { lineStyle: { color: col.border } }, axisLabel: { color: col.axisText, fontSize: 10, fontFamily: monoFont(), hideOverlap: true } },
+      { type: 'category', gridIndex: 0, data: labels, axisTick: { show: false }, axisLine: { lineStyle: { color: col.border } }, axisLabel: bars ? { show: false } : xLabel },
+      ...(bars ? [{ type: 'category', gridIndex: 1, data: labels, axisTick: { show: false }, axisLine: { lineStyle: { color: col.border } }, axisLabel: xLabel }] : []),
     ],
     yAxis: [
       { type: 'value', gridIndex: 0, min: 0, max: 100, splitNumber: 2, name: 'health /100', nameGap: 14, nameTextStyle: { ...ax.nameTextStyle, align: 'left', fontSize: 10, padding: [0, 0, 0, -30] }, ...{ axisLabel: { ...ax.axisLabel, show: !ctx.redacted }, axisLine: { show: false }, splitLine: ax.splitLine } },
-      { type: 'value', gridIndex: 1, splitNumber: 2, minInterval: 1, name: 'issues', nameGap: 14, nameTextStyle: { ...ax.nameTextStyle, align: 'left', fontSize: 10, padding: [0, 0, 0, -30] }, ...{ axisLabel: { ...ax.axisLabel, show: !ctx.redacted }, axisLine: { show: false }, splitLine: ax.splitLine } },
+      ...(bars ? [{ type: 'value', gridIndex: 1, splitNumber: 2, minInterval: 1, name: 'issues', nameGap: 14, nameTextStyle: { ...ax.nameTextStyle, align: 'left', fontSize: 10, padding: [0, 0, 0, -30] }, ...{ axisLabel: { ...ax.axisLabel, show: !ctx.redacted }, axisLine: { show: false }, splitLine: ax.splitLine } }] : []),
     ],
     series: [
       { name: 'Health', type: 'line', step: 'end', xAxisIndex: 0, yAxisIndex: 0, connectNulls: false, data: hist.map(h => h.score), symbol: 'circle', symbolSize: 5, lineStyle: { width: 1.75, color: col.accent }, itemStyle: { color: col.accent } },
-      { name: 'Opened', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, barMaxWidth: 10, data: comparable.map(a => a ? a.opened : null), itemStyle: { color: col.amber, borderRadius: [2, 2, 0, 0] } },
-      { name: 'Resolved', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, barMaxWidth: 10, data: comparable.map(a => a ? a.resolved : null), itemStyle: { color: col.green, borderRadius: [2, 2, 0, 0] } },
+      ...(bars ? [
+        { name: 'Opened', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, barMaxWidth: 10, data: comparable.map(a => a ? a.opened : null), itemStyle: { color: col.amber, borderRadius: [2, 2, 0, 0] } },
+        { name: 'Resolved', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, barMaxWidth: 10, data: comparable.map(a => a ? a.resolved : null), itemStyle: { color: col.green, borderRadius: [2, 2, 0, 0] } },
+      ] : []),
     ],
   });
   const notes: string[] = ['Only audits with the same scope and check set are compared.'];
@@ -321,6 +332,10 @@ function health(d: any, ctx: SummaryCtx): void {
   const nullScores = hist.filter(h => h.score == null).length;
   if (nullScores) notes.push(`<span class="n">${nullScores}</span> past audit${nullScores > 1 ? 's have' : ' has'} no score: the page set couldn't be rebuilt from crawl snapshots, so it isn't estimated.`);
   if (nComparable === 0) notes.push(hist.length < 2 ? 'Opened vs resolved needs two comparable audits.' : 'No comparable pair yet, so no opened / resolved bars.');
+  else if (!bars) {
+    const carried = comparable.filter(Boolean).reduce((n: number, a: any) => n + (a.carried ?? 0), 0);
+    notes.push(`No issue opened or resolved between the ${nComparable === 1 ? 'two comparable audits' : `${nComparable + 1} comparable audits`}${carried ? ` (<span class="n">${fmt(carried)}</span> carried over)` : ''}, so there are no bars to draw.`);
+  }
   if (histAll.length > MAX || d.auditHistoryTruncated) notes.push(`The last <span class="n">${hist.length}</span> of <span class="n">${d.auditHistoryTruncated?.totalRuns ?? histAll.length}</span> audits.`);
   set('sumHealthNotes', `<div class="sum-note">${notes.join(' ')}</div>`);
   set('sumHealthSrc', `Audit · ${hist.length} run${hist.length > 1 ? 's' : ''}`);

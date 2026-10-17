@@ -10,7 +10,7 @@ import { rmSync } from 'node:fs';
 import {
   countChange, shareText, sharePct, capHealth, rankChange, SMALL_BASE_MIN,
   assessField, fieldValue, fieldWindowLagDays, quickWinsEmptyReason, trappedEmptyReason,
-  sourceFreshness, freshnessDot, GSC_STALE_DAYS, SNAPSHOT_STALE_DAYS,
+  sourceFreshness, freshnessDot, GSC_STALE_DAYS, SNAPSHOT_STALE_DAYS, runLabels,
 } from '../dist/core/displayRules.js';
 import { cwvFieldPayload } from '../dist/core/CruxSync.js';
 import { loadBrandQueries, spacedIsUncertain } from '../dist/core/brand.js';
@@ -205,6 +205,16 @@ console.log('freshness');
   ok(!audit.stale && freshnessDot('completed', audit.stale) === 'dot-ok', 'an audit from minutes ago is fresh, green dot');
   ok(freshnessDot('failed', false) === 'dot-bad' && freshnessDot('queued', false) === 'dot-run' && freshnessDot('never', false) === 'dot-never', 'failed / queued / never keep their own dots');
   ok(!sourceFreshness('crawl', { state: 'never', at: null }, { now }).stale, 'a source that never ran is "never", not stale');
+}
+
+// ── 10. Same-day runs are told apart ─────────────────────────────────────────────────────────
+console.log('run labels');
+{
+  const same = runLabels(['2026-10-17 16:20:50', '2026-10-17 16:21:38']);
+  ok(same[0] === '17 Oct 16:20' && same[1] === '17 Oct 16:21', `two audits on one day carry their time (${same.join(' | ')})`);
+  const mixed = runLabels(['2026-10-10 09:00:00', '2026-10-17 16:20:50', '2026-10-17T16:21:38Z']);
+  ok(mixed[0] === '10 Oct' && mixed[1] === '17 Oct 16:20' && mixed[2] === '17 Oct 16:21', `only the colliding days get a time (${mixed.join(' | ')})`);
+  ok(runLabels([null])[0] === '-', 'a missing date reads "-"');
 }
 
 rmSync(dataDir, { recursive: true, force: true });
