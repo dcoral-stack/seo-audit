@@ -201,8 +201,9 @@ export interface DashboardData {
   pageMovers?: PageMovers | null;
   /** What data the dashboard holds (the UI names what it doesn't). */
   coverage?: Coverage;
-  /** Days holding both GSC row shapes (all-country AND segmented rows), or null. The summary
-   *  aggregations count each such day once; the older payload totals (summary, rankTrend, ...) don't. */
+  /** Days still holding both GSC row shapes (all-country AND segmented rows) in search_analytics,
+   *  or null. Only a pending or migrating database has any; every figure counts each such day once.
+   *  Null once the storage is migrated (0.16.2: the note was shown after migration too). */
   gscShape?: GscShape | null;
   /** Last 28 days vs the prior 28, clicks counted once per day (the Summary's verdict and tile). */
   clickWindows?: ClickWindows;
@@ -225,7 +226,8 @@ interface Totals { clicks: number; impressions: number; position: number }
 // (#65 changed where segment rows live, not the payload; the version probe reads both tables.)
 // 28: the real-data dashboard fixes (#68 follow-up): small-base clicksChangePct, cwvField detail, brand on exact-match domains.
 // 29: structureGraph.isolated (mapped pages with no in-content link, named in the Network tab).
-const PAYLOAD_VERSION = '29';
+// 30: gscShape only while the GSC storage is pending or migrating (never after the migration).
+const PAYLOAD_VERSION = '30';
 
 /** Build the dashboard payload for a property from its synced GSC history. */
 export function getDashboardData(dataDir: string, siteUrl: string): DashboardData {

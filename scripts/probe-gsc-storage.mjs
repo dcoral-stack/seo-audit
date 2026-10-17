@@ -12,6 +12,7 @@ import Database from 'better-sqlite3';
 import { AuditDatabase } from '../dist/core/AuditDatabase.js';
 import { GscSync, FULL_DIMENSIONS } from '../dist/core/GscSync.js';
 import { migrateGscStorage } from '../dist/core/gscMigrate.js';
+import { gscMixedShape } from '../dist/core/gscRows.js';
 import { getDashboardData } from '../dist/core/dashboardData.js';
 import { dbPathFor } from '../dist/core/paths.js';
 
@@ -105,7 +106,7 @@ async function migrate(file, opts = {}) {
   const jun = d.monthly.months.find(m => m.month === '2026-06');
   const junBefore = JSON.parse(before.totals).filter(x => x.date < '2026-07').reduce((s, x) => s + x.c, 0);
   ok(jun.clicks === junBefore, `dashboard monthly: June clicks = the pre-migration per-day totals (${jun.clicks} / ${junBefore})`);
-  ok(d.gscShape?.mixedDays === 29, `the 29 mixed days (28 Jun was per-country only) survive as evidence for the UI note (${d.gscShape?.mixedDays} days)`);
+  ok(d.gscShape === null && one(file, `SELECT COUNT(*) n FROM gsc_day_shape`).n === 29, `migrated: the 29 mixed days (28 Jun was per-country only) stay in gsc_day_shape as evidence, and the UI's two-row-shapes note is gone (0.16.2; gscShape ${JSON.stringify(d.gscShape)})`);
 
   // ── 2. Idempotent: a second run (and a reopen) changes nothing ──
   const again = await migrate(file);
@@ -124,6 +125,9 @@ async function migrate(file, opts = {}) {
 {
   const { file } = legacyProperty('resume', srcLike);
   const before = readerView(file);
+  const shapeNote = () => { const db = new Database(file, { readonly: true }); try { return gscMixedShape(db); } finally { db.close(); } };
+  const pendingNote = shapeNote();
+  ok(pendingNote?.mixedDays > 0, `pending: the two-row-shapes note lists the mixed days (${pendingNote?.mixedDays})`);
   const ac = new AbortController();
   const r1 = await migrate(file, { batchRows: 40, signal: ac.signal, onProgress: (p) => { if (p.phase === 'moving') ac.abort(); } });
   ok(r1.ran && r1.state === 'migrating' && r1.daysDone > 0 && r1.daysDone < 30, `aborted part-way (${r1.daysDone} of 30 days)`);
@@ -131,8 +135,11 @@ async function migrate(file, opts = {}) {
   new AuditDatabase(file).close(); // a writable open mid-migration must not recompute #64's choices from the half-moved table
   const mid = readerView(file);
   ok(mid.totals === before.totals && mid.country === before.country && mid.device === before.device, 'mid-migration readers see the same totals and breakdowns');
+  const midNote = shapeNote();
+  ok(midNote && midNote.mixedDays < pendingNote.mixedDays, `migrating: the note counts only the days still mixed (${midNote?.mixedDays} of ${pendingNote?.mixedDays})`);
   const r2 = await migrate(file, { batchRows: 40 });
   ok(r2.ran && r2.state === 'done' && r2.backup === r1.backup && backups(file).length === 1, 'resumed to done with the original backup (no second one)');
+  ok(shapeNote() === null, 'migrated: no two-row-shapes note');
   const after = readerView(file);
   ok(after.totals === before.totals && after.country === before.country && after.device === before.device, 'after resuming: totals and breakdowns unchanged');
   ok(segmentRowsIn(file, 'search_analytics') === 0, 'no segment row left in search_analytics');
