@@ -196,8 +196,8 @@ ok(missing.length === 0, `all ${must.length} must-fire checks present${missing.l
 const pr = res.top.map(f => f.priority);
 ok(pr.every(p => Number.isFinite(p)) && pr.every((p, i) => i === 0 || p <= pr[i - 1]), 'priorities finite & sorted desc');
 const top = res.top[0];
-ok(top && JSON.parse(top.effort).expectedClicks != null, `top finding has expectedClicks basis (${top?.check_id})`);
-console.log(`  top 3: ${res.top.slice(0, 3).map(f => `${f.check_id}(${f.priority.toFixed(0)})`).join(', ')}`);
+ok(top && top.effort.expectedClicks != null, `top finding has expectedClicks basis (${top?.checkId})`);
+console.log(`  top 3: ${res.top.slice(0, 3).map(f => `${f.checkId}(${f.priority.toFixed(0)})`).join(', ')}`);
 
 // 4) Templates, opportunities, dashboard
 const adb3 = new AuditDatabase(dbPath);

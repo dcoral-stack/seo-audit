@@ -44,7 +44,10 @@ export interface AuditResult {
   truncatedChecks?: { checkId: string; stored: number; totalFound: number }[];
   /** Checks whose source data was never collected (CheckDef.collected): unknown, not passed. */
   notCollected?: { checkId: string; note: string }[];
-  top: any[];
+  /** The highest-priority findings (topLimit, default 10), as parsed objects with compact evidence. */
+  top: TopFinding[];
+  /** Each check in `top` once: its title and fix (the text is not repeated per finding). */
+  checks: Record<string, { title: string; fix: string }>;
   elapsedMs?: number; // wall-clock for the audit run (performance instrumentation)
   indexability?: Record<string, number>; // reason → count (indexable, http-404, noindex-meta, robots-disallowed, …)
 }
@@ -53,7 +56,48 @@ export interface AuditOptions {
   scope?: 'core' | 'full';
   categories?: string[];
   includeJudgement?: boolean; // run N (certainty < 1) checks too
+  topLimit?: number; // findings returned in `top` (default 10, max 50); query_audit is the drill-down
 }
+
+/** One `top` finding as returned by run_audit: parsed, rounded, evidence trimmed (full rows stay in `findings`). */
+export interface TopFinding {
+  id: number; // findings.id, for fix_finding
+  checkId: string;
+  category: string;
+  severity: string;
+  url: string | null;
+  priority: number;
+  traffic: { clicks: number; impressions: number; position: number };
+  effort: { hours: number; fixType: string; expectedClicks: number; yield: number; stakeShare?: number };
+  evidence: Record<string, unknown>;
+}
+
+export const TOP_DEFAULT = 10;
+export const TOP_MAX = 50;
+/** Evidence trimming for `top`: arrays keep their first 3 items (the full length goes in `<key>Total`), strings are cut at 200 chars. */
+export const EVIDENCE_ARRAY_MAX = 3;
+export const EVIDENCE_STRING_MAX = 200;
+
+/** Trim a finding's evidence for the run_audit reply. query_audit returns it in full. */
+export function compactEvidence(ev: unknown, depth = 0): Record<string, unknown> {
+  if (!ev || typeof ev !== 'object' || Array.isArray(ev)) return {};
+  const out: Record<string, unknown> = {};
+  const trim = (v: unknown, d: number): unknown => {
+    if (typeof v === 'string') return v.length > EVIDENCE_STRING_MAX ? `${v.slice(0, EVIDENCE_STRING_MAX - 1)}…` : v;
+    if (typeof v === 'number') return Number.isInteger(v) ? v : Math.round(v * 100) / 100;
+    if (Array.isArray(v)) return v.slice(0, EVIDENCE_ARRAY_MAX).map(x => trim(x, d + 1));
+    if (v && typeof v === 'object') return d >= 2 ? '[…]' : compactEvidence(v, d + 1);
+    return v;
+  };
+  for (const [k, v] of Object.entries(ev as Record<string, unknown>)) {
+    out[k] = trim(v, depth);
+    if (Array.isArray(v) && v.length > EVIDENCE_ARRAY_MAX && !(`${k}Total` in (ev as object))) out[`${k}Total`] = v.length;
+  }
+  return out;
+}
+
+const parseJson = (s: unknown): any => { if (typeof s !== 'string') return s ?? {}; try { return JSON.parse(s); } catch { return {}; } };
+const round1 = (n: unknown): number => Math.round((Number(n) || 0) * 10) / 10;
 
 export function listChecks(): Omit<CheckDef, 'run'>[] {
   return CHECKS.map(({ run: _run, ...meta }) => meta);
@@ -217,21 +261,37 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
       .all(runId) as AuditResult['byCheck'])
       .map(r => {
         const t = truncated.get(r.checkId);
-        return t ? { ...r, totalFound: t, truncated: true } : r;
+        const row = { ...r, priority: round1(r.priority) }; // AVG(): 1 dp is plenty, and 15 digits x 143 checks is not
+        return t ? { ...row, totalFound: t, truncated: true } : row;
       });
     const truncatedChecks = [...truncated.entries()]
       .map(([checkId, totalFound]) => ({ checkId, stored: MAX_PER_CHECK, totalFound }))
       .sort((a, b) => b.totalFound - a.totalFound);
-    const top = db.db
-      .prepare(`SELECT check_id, category, severity, url_key, evidence, traffic_at_risk, effort, priority, recommendation FROM findings WHERE run_id=? ORDER BY priority DESC LIMIT 25`)
-      .all(runId);
+    // `top` is the headline, not the dump (0.16.1): parsed objects, capped (default 10), evidence
+    // trimmed, and each check's title + fix given once in `checks` instead of on every finding.
+    const topLimit = Math.max(1, Math.min(TOP_MAX, Math.floor(opts.topLimit ?? TOP_DEFAULT)));
+    const checkText: AuditResult['checks'] = {};
+    const top: TopFinding[] = (db.db
+      .prepare(`SELECT id, check_id, category, severity, url_key, evidence, traffic_at_risk, effort, priority, recommendation FROM findings WHERE run_id=? ORDER BY priority DESC, id ASC LIMIT ?`)
+      .all(runId, topLimit) as any[])
+      .map(f => {
+        const rec = parseJson(f.recommendation), traf = parseJson(f.traffic_at_risk), eff = parseJson(f.effort);
+        checkText[f.check_id] ??= { title: rec.title ?? f.check_id, fix: rec.text ?? '' };
+        return {
+          id: f.id, checkId: f.check_id, category: f.category, severity: f.severity, url: f.url_key ?? null,
+          priority: round1(f.priority),
+          traffic: { clicks: Number(traf.clicks) || 0, impressions: Number(traf.impressions) || 0, position: round1(traf.position) },
+          effort: { hours: eff.hours, fixType: eff.fixType, expectedClicks: eff.expectedClicks, yield: eff.yield, ...(eff.stakeShare != null ? { stakeShare: eff.stakeShare } : {}) },
+          evidence: compactEvidence(parseJson(f.evidence)),
+        };
+      });
 
     const indexability = Object.fromEntries(
       (db.db.prepare(`SELECT COALESCE(indexable_reason,'indexable') reason, COUNT(*) n FROM pages WHERE is_internal IS NOT 0 GROUP BY reason ORDER BY n DESC`).all() as { reason: string; n: number }[])
         .map(r => [r.reason, r.n]),
     );
     return {
-      runId, siteUrl, integrityOk: pageCount > 0, total, bySeverity, byCategory, byCheck, top,
+      runId, siteUrl, integrityOk: pageCount > 0, total, bySeverity, byCategory, byCheck, top, checks: checkText,
       ...(truncatedChecks.length ? { truncatedChecks } : {}),
       ...(notCollected.length ? { notCollected } : {}),
       elapsedMs: Date.now() - t0, indexability,

@@ -40,7 +40,7 @@ const res = runAudit(dataDir, site, { scope: 'full' });
 console.log(`run ${res.runId}: ${res.total} findings\n`);
 console.log('Top findings by 6e priority (expected clicks / dev-hour):');
 for (const f of res.top) {
-  const e = JSON.parse(f.effort ?? '{}');
-  console.log(`  ${f.priority.toFixed(1).padStart(8)}  ${f.severity.padEnd(4)} ${String(f.check_id).padEnd(26)} ${f.url_key ?? '(site-wide)'}  [T=${e.expectedClicks} Y=${e.yield} hrs=${e.hours}]`);
+  const e = f.effort ?? {};
+  console.log(`  ${f.priority.toFixed(1).padStart(8)}  ${f.severity.padEnd(4)} ${String(f.checkId).padEnd(26)} ${f.url ?? '(site-wide)'}  [T=${e.expectedClicks} Y=${e.yield} hrs=${e.hours}]`);
 }
 rmSync(dataDir, { recursive: true, force: true });

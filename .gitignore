@@ -81,6 +81,7 @@ scripts/*
 !scripts/probe-backlinks.mjs
 !scripts/probe-dfs-labs.mjs
 !scripts/probe-6a.mjs
+!scripts/probe-audit-size.mjs
 !scripts/probe-6b.mjs
 !scripts/probe-6c.mjs
 !scripts/probe-6d.mjs

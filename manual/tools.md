@@ -73,6 +73,8 @@ Turns the crawl's 404 and 410 list into a short redirect map. Each dead URL gets
 
 ### `run_audit`
 Runs the full check registry over the joined data and returns scored findings ranked by expected clicks per developer-hour: priority = (traffic at stake × yield × certainty) / effort. `categories` filters (crawlability, indexation, onpage, content, schema, security, performance, accessibility, merged); `includeJudgement:true` adds the heuristic (N) checks, which are off by default. A check whose source data was never collected (the asset checks before a `headResources:true` crawl, say) is listed under *Not collected* with how to collect it, rather than reading as passed.
+
+The reply is a headline, kept small on purpose (about 22k characters on a 2,300-finding site): the counts (`byCheck`, `bySeverity`, `byCategory`, `notCollected`), and the `top` findings by priority as plain objects - 10 by default, `topLimit` up to 50. Each has its finding `id` (for `fix_finding`), check, URL, priority, traffic, effort and a trimmed copy of its evidence (lists cut to 3 items with a `<key>Total` count, long text cut at 200 characters). Each check's title and fix appear once, in `checks`, rather than on every finding. For every finding of one check with its full evidence, use `query_audit`.
 > Run an SEO audit on mysite.com
 > Run an SEO audit on mysite.com, indexation and schema only, with judgement findings
 

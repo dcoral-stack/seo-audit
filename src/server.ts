@@ -539,16 +539,17 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'run_audit',
     {
       title: 'Run SEO audit',
-      description: 'Run the technical-SEO checks against synced data and return scored findings, ranked by expected clicks per dev-hour — Priority = (T × Y × C) / E (T = clicks at stake from real GSC data, Y = expected yield, C = certainty, E = effort hours). Crawl + GSC + URL-inspection checks. Set includeJudgement=true to include heuristic (N) checks.',
+      description: 'Run the technical-SEO checks against synced data and return scored findings, ranked by expected clicks per dev-hour — Priority = (T × Y × C) / E (T = clicks at stake from real GSC data, Y = expected yield, C = certainty, E = effort hours). Crawl + GSC + URL-inspection checks. Set includeJudgement=true to include heuristic (N) checks. Returns the counts (byCheck, bySeverity, byCategory, notCollected) and the top findings (topLimit, default 10, max 50) with trimmed evidence; each check\'s title and fix appear once in `checks`. query_audit is the drill-down: every finding of one check, full evidence.',
       inputSchema: {
         siteUrl: z.string(),
         scope: z.enum(['core', 'full']).optional(),
         categories: z.array(z.enum(CHECK_CATEGORIES)).optional(),
         includeJudgement: z.boolean().optional(),
+        topLimit: z.number().int().min(1).max(50).optional().describe('Top findings to return (default 10, max 50)'),
       },
     },
-    async ({ siteUrl, scope, categories, includeJudgement }) => {
-      const result = runAudit(dataDir(), siteUrl, { scope, categories, includeJudgement });
+    async ({ siteUrl, scope, categories, includeJudgement, topLimit }) => {
+      const result = runAudit(dataDir(), siteUrl, { scope, categories, includeJudgement, topLimit });
       await autoServeDashboard(); // spin up the browser dashboard so browserLink() hands over a live URL
       return {
         content: [{ type: 'text', text: buildAuditMarkdown(result, siteUrl) + browserLink(siteUrl) }],
