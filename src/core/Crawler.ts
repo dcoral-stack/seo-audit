@@ -517,10 +517,14 @@ export class Crawler {
       events: limiter.events, currentConcurrency: limiter.limit, minConcurrency: limiter.min, maxConcurrency: limiter.max,
       retried: retriedUrls, unfetched: unfetched.length,
     });
+    // pages/sec is a FETCH rate: frozen when fetching ends, so the slower post-crawl stages (outbound
+    // link checks can take minutes) don't drag the reported crawl speed down to a misleading average.
+    let fetchPagesPerSec: number | null = null;
     const stage = (name: CrawlStage, extra: Record<string, unknown> = {}): void => {
       const rate = crawlRate(crawled, failed, frontier.length, maxPages, Date.now() - t0);
+      if (name === 'fetching') fetchPagesPerSec = rate.pagesPerSec;
       update({ crawlId, stage: name, crawled, discovered, failed, skipped, maxPages, linksSeen, elapsedSeconds: rate.elapsedSeconds,
-        pagesPerSec: rate.pagesPerSec, pagesRemaining: name === 'fetching' ? rate.pagesRemaining : 0, etaSeconds: name === 'fetching' ? rate.etaSeconds : null,
+        pagesPerSec: name === 'fetching' ? rate.pagesPerSec : fetchPagesPerSec, pagesRemaining: name === 'fetching' ? rate.pagesRemaining : 0, etaSeconds: name === 'fetching' ? rate.etaSeconds : null,
         rateLimited: rateLimitReport(), ...(platform ? { platform } : {}), ...extra });
     };
     const saveProgress = (): void => {

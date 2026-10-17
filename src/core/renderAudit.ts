@@ -4,7 +4,7 @@ import { AuditDatabase } from './AuditDatabase.js';
 import { dbPathFor } from './paths.js';
 import { hostFormForProperty } from './url-key.js';
 import { extractPage, decodeHtmlBody, type ExtractedPage } from './extract.js';
-import { renderHtml, closeRenderer, rendererAvailable } from './render.js';
+import { renderHtml, closeRenderer, rendererAvailable, RendererUnavailableError } from './render.js';
 
 const DEFAULT_UA = 'Mozilla/5.0 (compatible; seo-audit-console/0.1; +https://github.com/houtini-ai/seo-audit-console)';
 
@@ -90,7 +90,8 @@ export function dependsOnJsFlag(d: RenderDiff): boolean {
 
 export interface RenderAuditResult {
   available: boolean;              // was the renderer usable
-  note?: string;                   // why not, when unavailable
+  note?: string;                   // why not, when unavailable; or which pages failed to render
+  failed?: number;                 // pages skipped because fetching or rendering them failed
   audited: number;
   dependsOnJs: number;             // pages where content/links appear only after render
   rows: (RenderDiff & { urlKey: string })[];
@@ -148,6 +149,8 @@ export async function auditRender(
 
     const rows: (RenderDiff & { urlKey: string })[] = [];
     let dependsOnJs = 0;
+    let failed = 0;
+    let firstFailure: string | null = null;
     try {
       for (let i = 0; i < pages.length; i++) {
         if (signal?.aborted) break;
@@ -160,7 +163,17 @@ export async function auditRender(
           xRobotsTag = res.headers.get('x-robots-tag');
           rawHtml = decodeHtmlBody(Buffer.from(await res.arrayBuffer()), res.headers.get('content-type'));
           rendered = await renderHtml(url, ua);
-        } catch { continue; } // unreachable / render timeout - skip this URL, keep the batch going
+        } catch (e) {
+          // No browser on this install (npm ships the optional playwright package without Chromium):
+          // every URL would fail the same way, so stop and say how to fix it instead of reporting a
+          // "completed" batch that rendered nothing.
+          if (e instanceof RendererUnavailableError) {
+            return { available: false, note: `${e.message} The HTTP audit is unaffected.`, audited: rows.length, dependsOnJs, rows };
+          }
+          failed++;
+          firstFailure ??= `${url}: ${e instanceof Error ? e.message.slice(0, 160) : String(e)}`;
+          continue; // unreachable page / render timeout - skip this URL, keep the batch going
+        }
         // The response header is the same before and after JS, so it applies to both extracts.
         const rawEx = extractPage(rawHtml, url, baseHost, keyOpts, xRobotsTag);
         const renEx = extractPage(rendered, url, baseHost, keyOpts, xRobotsTag);
@@ -183,7 +196,10 @@ export async function auditRender(
       await closeRenderer();
       await dispatcher.close().catch(() => { /* pool already gone */ });
     }
-    return { available: true, audited: rows.length, dependsOnJs, rows };
+    const note = failed
+      ? `${failed} of ${pages.length} page(s) could not be rendered and were skipped (first: ${firstFailure}).`
+      : undefined;
+    return { available: true, audited: rows.length, dependsOnJs, rows, ...(note ? { note, failed } : {}) };
   } finally {
     db.close();
   }

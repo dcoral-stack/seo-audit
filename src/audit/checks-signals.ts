@@ -32,10 +32,13 @@ function storedRobots(c: CheckContext): { origin: string; body: string; fetchedA
 // ── Item 1: site-wide-indexing-alarm ─────────────────────────────────────────────────────────
 /** Thresholds, stated: a sitemap "majority" is more than half of its crawled 200 URLs, and needs at least this many. */
 export const SITEMAP_NOINDEX_MIN_URLS = 5;
-/** Week-on-week drop in distinct pages earning impressions that raises the alarm (#55: "more than 20%"). */
-export const IMPRESSION_PAGES_DROP = 0.2;
+/** Week-on-week drop in distinct pages earning impressions that raises the CRITICAL alarm. #55 proposed
+ * "more than 20%", but the 0.16.0 end-to-end run showed a 58 -> 46 page dip (-21%) on a healthy small
+ * site raising a critical: ordinary weekly variation. A shipped noindex or Disallow: / takes half or
+ * more of the pages out within days, so the alarm is reserved for drops of that size. */
+export const IMPRESSION_PAGES_DROP = 0.4;
 /** The prior week needs at least this many pages with impressions, or a small site's noise reads as a collapse. */
-export const IMPRESSION_PAGES_MIN = 20;
+export const IMPRESSION_PAGES_MIN = 50;
 
 const NOINDEXED = (alias: string): string => `(${alias}indexable_reason IN ('noindex-meta','noindex-header') OR ${alias}noindex=1)`;
 

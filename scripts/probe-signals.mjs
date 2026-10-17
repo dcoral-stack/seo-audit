@@ -124,7 +124,7 @@ try {
         rowsFor('');
         // Mixed row shapes on 11 prior-window days: segmented rows duplicating the same clicks.
         if (k >= 30 && k <= 40) rowsFor('gbr');
-        const active = k <= 6 ? 20 : 30; // distinct pages with impressions: 30 a week, then 20
+        const active = k <= 6 ? 30 : 60; // distinct pages with impressions: 60 a week, then 30 (-50%; the alarm needs > 40% of >= 50)
         for (let i = 1; i <= active; i++) ins.run(date, `widget ${i}`, pageUrl(i), urlKey(pageUrl(i), keyOpts), '', '', 0, 5);
       }
     })();
@@ -156,7 +156,7 @@ try {
     const alarm = runCheck(adb.db, 'site-wide-indexing-alarm');
     const trig = alarm[0]?.evidence.triggers ?? [];
     const drop = trig.find(t => t.trigger === 'impression-pages-drop');
-    check('indexing alarm: pages with impressions 30 -> 20 week on week fires (-33%)', alarm.length === 1 && drop?.priorWeek.pages === 30 && drop?.currentWeek.pages === 20 && drop.changePct === -33.3, JSON.stringify(trig));
+    check('indexing alarm: pages with impressions 60 -> 30 week on week fires (-50%)', alarm.length === 1 && drop?.priorWeek.pages === 60 && drop?.currentWeek.pages === 30 && drop.changePct === -50, JSON.stringify(trig));
     check('indexing alarm: only the GSC trigger here (homepage indexable, Googlebot allowed)', trig.length === 1);
     check('indexing alarm: registry says critical, site-level', CHECKS.find(c => c.id === 'site-wide-indexing-alarm').severity === 'crit' && alarm[0].urlKey === null);
 

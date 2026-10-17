@@ -12,6 +12,7 @@
   },
   "files": [
     "dist",
+    "!dist/**/*.map",
     "server.json",
     "README.md",
     "LICENSE"

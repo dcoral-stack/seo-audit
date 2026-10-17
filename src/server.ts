@@ -706,6 +706,14 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     if (job.state === 'failed') return `${head}: ${job.error ?? 'unknown error'}${corruptionHint(job.error)}`;
     if (job.state === 'interrupted') return `${head}: ${job.error ?? 'the process running it exited before it finished.'}`;
     const prog = Object.keys(job.progress).length ? ` ${crawlProgressLine(job.progress) ?? JSON.stringify(job.progress).slice(0, 300)}` : '';
+    // render_pages: say plainly when nothing could be rendered (no browser on this install) or some
+    // pages were skipped, rather than leave a bare "completed" over an empty result.
+    if (job.type === 'render' && job.state === 'completed') {
+      const r = job.result as { available?: boolean; note?: string; audited?: number; dependsOnJs?: number } | undefined;
+      if (r?.available === false) return `${head}, but nothing was rendered: ${r.note ?? 'the renderer is unavailable.'}`;
+      const summary = r ? ` - ${r.audited ?? 0} page(s) rendered, ${r.dependsOnJs ?? 0} depend on JavaScript.` : '';
+      return head + summary + (r?.note ? ` ${r.note}` : '') + (r?.audited ? ' Run run_audit to see the render checks.' : '');
+    }
     if (!detail || job.state !== 'completed' || !DATA_JOBS.has(job.type)) return head + prog;
     const link = (job.result as { dashboard?: string } | undefined)?.dashboard;
     const siteUrl = (job.result as { siteUrl?: string } | undefined)?.siteUrl;
