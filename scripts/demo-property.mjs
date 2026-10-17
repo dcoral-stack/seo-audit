@@ -24,8 +24,8 @@
 //   - Agent readiness is genuine (the real probe, run against the in-process server). Passage
 //     scores are genuine when the local cross-encoder is cached (skip with --no-ml).
 //   - DataForSEO / Google-only enrichments (URL inspection, backlinks, link prospects, rank
-//     history, CWV, keyword intent, content-recon AI Overview reads) are synthetic but derived from
-//     the crawl so they agree with it.
+//     history, lab CWV, CrUX field CWV, keyword intent, content-recon AI Overview reads) are
+//     synthetic but derived from the crawl so they agree with it.
 //   - The AUDIT is genuine: runAudit runs every check over the result.
 //
 // Run:  npm run build && npm run demo:property -- [--out <dir>] [--end YYYY-MM-DD] [--no-ml]
@@ -620,6 +620,128 @@ const crawlA = await crawlOnce('A');
   log(`agent readiness: ${r.score}/100 (${r.level})`);
 }
 
+// ── CrUX field data (synthetic; what sync_crux would store) ──────────────────
+// Twelve weekly 28-day windows for the origin and two busy pages, PHONE and DESKTOP, in the real
+// crux_metrics / crux_fractions / crux_targets shapes. The story: phone INP drifts from good into
+// needs-improvement over the last three windows (crux-field-inp + crux-regression fire), and the
+// tents collection's phone LCP sits in needs-improvement (crux-field-lcp, consistent with the lab
+// figures). Four more top pages have too little Chrome traffic, as most small-site URLs do.
+// Its own seeded generator, so adding it leaves every other synthetic figure unchanged.
+function writeDemoCrux(db) {
+  const r = mulberry32(20261017);
+  const jit = (v, pct) => v * (1 + (r() * 2 - 1) * pct);
+  const WINDOWS = 12;
+  // Windows end on a Saturday, a few days before the last check, a week apart.
+  const lastEnd = new Date(Date.parse(END) - 1 * DAY);
+  while (lastEnd.getUTCDay() !== 6) lastEnd.setUTCDate(lastEnd.getUTCDate() - 1);
+  const ends = Array.from({ length: WINDOWS }, (_, i) => lastEnd.getTime() - (WINDOWS - 1 - i) * 7 * DAY);
+  const EDGES = { // bin edges as the API returns them (good max, needs-improvement max)
+    largest_contentful_paint: [2500, 4000], interaction_to_next_paint: [200, 500], cumulative_layout_shift: [0.1, 0.25],
+    first_contentful_paint: [1800, 3000], experimental_time_to_first_byte: [800, 1800],
+  };
+  // Good / NI / poor shares consistent with a p75: the share under the good edge falls as p75 nears it.
+  const shares = (metric, p75) => {
+    const [g, n] = EDGES[metric];
+    const good = Math.max(0.42, Math.min(0.93, 0.75 + (g - p75) / g * 0.55));
+    const poor = Math.max(0.01, Math.min(0.2, 0.03 + (p75 - g) / (n - g) * 0.12));
+    return [good, Math.max(0, 1 - good - poor), poor].map(x => Math.round(x * 10000) / 10000);
+  };
+  // Base p75 per target x form factor; `inpRegress` marks the phone INP regression at the origin.
+  const home = k(ORIGIN + '/'), tents = k(ORIGIN + '/collections/tents');
+  const targets = [
+    { scope: 'origin', target: ORIGIN, url: ORIGIN, ff: 'PHONE', lcp: 2380, inp: 168, cls: 0.07, fcp: 1580, ttfb: 690, rtt: 145, inpRegress: true },
+    { scope: 'origin', target: ORIGIN, url: ORIGIN, ff: 'DESKTOP', lcp: 1640, inp: 86, cls: 0.04, fcp: 1050, ttfb: 430, rtt: 55 },
+    { scope: 'url', target: home, url: ORIGIN + '/', ff: 'PHONE', lcp: 2210, inp: 152, cls: 0.05, fcp: 1490, ttfb: 640, rtt: 140 },
+    { scope: 'url', target: home, url: ORIGIN + '/', ff: 'DESKTOP', lcp: 1480, inp: 78, cls: 0.03, fcp: 980, ttfb: 410, rtt: 52 },
+    { scope: 'url', target: tents, url: ORIGIN + '/collections/tents', ff: 'PHONE', lcp: 3120, inp: 181, cls: 0.09, fcp: 1720, ttfb: 720, rtt: 150 },
+    { scope: 'url', target: tents, url: ORIGIN + '/collections/tents', ff: 'DESKTOP', lcp: 2050, inp: 94, cls: 0.06, fcp: 1180, ttfb: 450, rtt: 58 },
+  ];
+  const checkedAt = sqlTs(nowMs - 22 * 3600_000);
+  const insM = db.prepare(`INSERT OR REPLACE INTO crux_metrics (scope,target,form_factor,metric,period_first,period_last,p75,good,ni,poor,good_max,ni_max,source,fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const insF = db.prepare(`INSERT OR REPLACE INTO crux_fractions (scope,target,form_factor,metric,period_last,bucket,fraction) VALUES (?,?,?,?,?,?,?)`);
+  const insT = db.prepare(`INSERT OR REPLACE INTO crux_targets (scope,target,form_factor,status,last_checked,error,query_url) VALUES (?,?,?,?,?,?,?)`);
+  const r4 = (x) => Math.round(x * 10000) / 10000;
+  let metrics = 0, fractions = 0;
+  for (const t of targets) {
+    ends.forEach((endT, i) => {
+      const last = isoDate(endT), first = isoDate(endT - 27 * DAY);
+      const source = i === WINDOWS - 1 ? 'record' : 'history'; // the newest window is also the current record
+      // Phone INP at the origin: good for nine windows, then 196 -> 214 -> 236 ms (good -> needs improvement).
+      const inp = t.inpRegress && i >= WINDOWS - 3 ? [196, 214, 236][i - (WINDOWS - 3)] : Math.round(jit(t.inp, 0.06));
+      const lcp = Math.round(jit(t.lcp, 0.04)), cls = Math.round(jit(t.cls, 0.12) * 100) / 100;
+      const fcp = Math.round(jit(t.fcp, 0.04)), ttfb = Math.round(jit(t.ttfb, 0.05));
+      for (const [metric, p75] of [['largest_contentful_paint', lcp], ['interaction_to_next_paint', inp], ['cumulative_layout_shift', cls], ['first_contentful_paint', fcp], ['experimental_time_to_first_byte', ttfb]]) {
+        const [good, ni, poor] = shares(metric, p75);
+        insM.run(t.scope, t.target, t.ff, metric, first, last, p75, good, ni, poor, EDGES[metric][0], EDGES[metric][1], source, checkedAt); metrics++;
+      }
+      insM.run(t.scope, t.target, t.ff, 'round_trip_time', first, last, Math.round(jit(t.rtt, 0.05)), null, null, null, null, null, source, checkedAt); metrics++;
+      // LCP sub-parts (a p75 each; they don't sum to the LCP p75 exactly, as in the real API).
+      const parts = { largest_contentful_paint_image_time_to_first_byte: ttfb * 0.95, largest_contentful_paint_image_resource_load_delay: lcp * 0.2,
+        largest_contentful_paint_image_resource_load_duration: lcp * 0.31, largest_contentful_paint_image_element_render_delay: lcp * 0.16 };
+      for (const [metric, v] of Object.entries(parts)) { insM.run(t.scope, t.target, t.ff, metric, first, last, Math.round(jit(v, 0.05)), null, null, null, null, null, source, checkedAt); metrics++; }
+      const image = r4(jit(t.target === tents ? 0.9 : 0.78, 0.03));
+      for (const [bucket, f] of [['image', image], ['text', r4(1 - image)]]) { insF.run(t.scope, t.target, t.ff, 'largest_contentful_paint_resource_type', last, bucket, f); fractions++; }
+      const nav = { navigate_cache: 0.04, reload: 0.04, restore: 0.01, back_forward: 0.06, back_forward_cache: r4(jit(t.ff === 'PHONE' ? 0.11 : 0.07, 0.08)), prerender: 0.03 };
+      nav.navigate = r4(1 - Object.values(nav).reduce((s, v) => s + v, 0));
+      for (const [bucket, f] of Object.entries(nav)) { insF.run(t.scope, t.target, t.ff, 'navigation_types', last, bucket, f); fractions++; }
+    });
+    insT.run(t.scope, t.target, t.ff, 'ok', checkedAt, null, t.url);
+  }
+  // Top pages by clicks with too little Chrome traffic for CrUX (the API's 404 NOT_FOUND).
+  for (const p of ['/collections/waterproof-jackets', '/guides/wild-camping-uk-guide', '/collections/sleeping-bags', '/guides/what-is-a-bothy']) {
+    for (const ff of ['PHONE', 'DESKTOP']) insT.run('url', k(ORIGIN + p), ff, 'insufficient_data', checkedAt, null, ORIGIN + p);
+  }
+  return `${metrics} metric rows, ${fractions} fraction rows, ${WINDOWS} windows to ${isoDate(lastEnd.getTime())}`;
+}
+
+// ── Backlink profile (synthetic; what pull_backlinks stores for the Links tab) ─
+// Referring domains (live and lost), the anchor mix and a year of daily new/lost history, all on
+// invented .example domains, totals matching property_meta (386 referring domains). Its own seeded
+// generator, like the CrUX block.
+function writeDemoBacklinkProfile(db, snapshotSql) {
+  const r = mulberry32(20261018);
+  const ri = (lo, hi) => Math.floor(lo + r() * (hi - lo + 1));
+  const snap = new Date(snapshotSql.replace(' ', 'T') + 'Z').toISOString();
+  const STEMS = ['trail', 'fell', 'ridge', 'bothy', 'summit', 'moor', 'glen', 'tarn', 'crag', 'dale', 'peak', 'coast', 'camp', 'hike', 'gear', 'wild', 'kit', 'route'];
+  const TAILS = ['notes', 'journal', 'blog', 'weekly', 'forum', 'club', 'guide', 'diaries', 'reviews', 'mag', 'life', 'hub'];
+  // Every stem x tail pair, with and without "-uk" (432), shuffled with the seed; the first 400 are used.
+  const domains = STEMS.flatMap(st => TAILS.flatMap(t => [`${st}-${t}.example`, `${st}-${t}-uk.example`]))
+    .map(d => [r(), d]).sort((x, y) => x[0] - y[0]).map(x => x[1]).slice(0, 400);
+  const insD = db.prepare(`INSERT OR REPLACE INTO referring_domains (snapshot_at,domain,rank,backlinks,referring_pages,nofollow_pages,spam_score,broken_backlinks,first_seen,lost_date) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  let live = 0, lost = 0;
+  domains.forEach((d, i) => {
+    const isLost = i >= 386;
+    const rank = Math.max(1, Math.round(420 * Math.pow(r(), 2.2)));
+    const bl = Math.max(1, Math.round(Math.exp(r() * 3.2)));
+    const rp = Math.max(1, Math.min(bl, Math.round(bl * (0.4 + r() * 0.6))));
+    insD.run(snap, d, rank, bl, rp, Math.round(rp * r() * 0.5), ri(0, /forum|club/.test(d) ? 30 : 12), r() < 0.08 ? ri(1, 3) : 0,
+      isoDate(nowMs - ri(40, 1400) * DAY), isLost ? isoDate(nowMs - ri(5, 120) * DAY) : null);
+    if (isLost) lost++; else live++;
+  });
+  const insA = db.prepare(`INSERT OR REPLACE INTO backlink_anchors (snapshot_at,anchor,kind,backlinks,referring_domains,nofollow_pages,first_seen,lost_date) VALUES (?,?,?,?,?,?,?,?)`);
+  const ANCHORS = [
+    ['Larchmere Outfitters', 'branded', 980, 141], ['larchmere', 'branded', 610, 88], ['Larchmere', 'branded', 240, 41],
+    ['larchmere.example', 'url', 420, 64], ['https://larchmere.example/', 'url', 310, 52], ['https://larchmere.example/guides/wild-camping-uk-guide', 'url', 95, 21],
+    ['wild camping in the UK', 'keyword', 160, 27], ['what is a bothy', 'keyword', 118, 22], ['three peaks kit list', 'keyword', 84, 17],
+    ['waterproof ratings explained', 'keyword', 66, 14], ['how to reproof a waterproof jacket', 'keyword', 41, 9], ['sleeping bag temperature ratings', 'keyword', 38, 8],
+    ['here', 'generic', 140, 33], ['this guide', 'generic', 96, 24], ['read more', 'generic', 72, 19], ['website', 'generic', 44, 12], ['source', 'generic', 31, 9],
+    ['', 'empty', 205, 38],
+  ];
+  for (const [anchor, kind, bl, rd] of ANCHORS) insA.run(snap, anchor, kind, bl, rd, Math.round(bl * 0.3 * r()), isoDate(nowMs - ri(60, 1300) * DAY), null);
+  insA.run(snap, 'outdoor gear shop', 'keyword', 12, 3, 0, isoDate(nowMs - 900 * DAY), isoDate(nowMs - 40 * DAY));
+  const insH = db.prepare(`INSERT OR REPLACE INTO backlink_history (date,rank,backlinks,new_backlinks,lost_backlinks,referring_domains,new_referring_domains,lost_referring_domains,fetched_at) VALUES (?,?,?,?,?,?,?,?,?)`);
+  let rd = 318, bl = 3520;
+  const DAYS_H = 365;
+  for (let d = DAYS_H; d >= 1; d--) {
+    const seasonal = 1 + 0.5 * Math.sin((DAYS_H - d) / 58); // link-building comes in bursts
+    const newRd = r() < 0.32 * seasonal ? ri(1, 2) : 0, lostRd = r() < 0.12 ? 1 : 0;
+    const newBl = ri(0, Math.round(9 * seasonal)), lostBl = ri(0, 6);
+    rd += newRd - lostRd; bl += newBl - lostBl;
+    insH.run(isoDate(nowMs - d * DAY), Math.round(190 + (DAYS_H - d) * 0.06), bl, newBl, lostBl, rd, newRd, lostRd, snapshotSql);
+  }
+  return `${live} live + ${lost} lost referring domains, ${ANCHORS.length + 1} anchors, ${DAYS_H} days of history`;
+}
+
 // ── 4. Enrichments that normally need Google / DataForSEO / Majestic ─────────
 {
   const adb = new AuditDatabase(dbPath);
@@ -730,8 +852,11 @@ const crawlA = await crawlOnce('A');
     const cites = !present ? 0 : i === 5 ? null : i % 3 === 0 ? 1 : 0;
     insRecon.run(k(`${ORIGIN}/guides/${g[0]}`), q, cites === 1 ? 'defend-and-deepen' : present ? 'accuracy-or-freshness' : 'competitive-gap', '', Math.max(1, Math.round(pos - 1)), pos, Math.round(vol * 18), present, cites, i % 5 === 0 ? 1 : 0, 0, '["Article"]', '{}', sqlTs(nowMs - (4 + i) * 3600_000));
   });
+  const crux = writeDemoCrux(db);
+  const profile = writeDemoBacklinkProfile(db, blAt);
+  log(`backlink profile: ${profile}`);
   adb.close();
-  log(`enrichments: ${inspected} URLs inspected, ${blTargets.length + blProducts.length} backlinked pages, ${PROSPECTS.length} link prospects, 13 months of rank history, ${cwvPages.length} CWV pages`);
+  log(`enrichments: ${inspected} URLs inspected, ${blTargets.length + blProducts.length} backlinked pages, ${PROSPECTS.length} link prospects, 13 months of rank history, ${cwvPages.length} CWV pages, CrUX ${crux}`);
 }
 
 // ── 5. Passage scores + the audit history (three crawls, three real audits) ──

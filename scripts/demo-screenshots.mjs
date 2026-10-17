@@ -6,11 +6,14 @@
 //   npm run build
 //   npm run demo:property -- --out <dir>
 //   node scripts/demo-screenshots.mjs --data <dir> [--out assets] [--theme light|dark] [--only name,name]
+//   node scripts/demo-screenshots.mjs --data <dir> --qa design/summary/qa [--theme light|dark]
 //
 // Serves the built dashboard in-process against <dir> (which must hold ONLY the demo database),
 // drives it with Playwright at 1440px wide (the Summary also at 390, the phone layout), and writes
 // palette-optimised PNGs into assets/. A shot with height 'auto' is captured at the page's full
 // height; the phone shot also fails the run if the page scrolls sideways.
+// --qa <dir> captures every tab at full height instead (<tab>-<theme>-1440.png, plus
+// <tab>-light-390.png on a light run): the design QA set.
 // Needs `playwright` (npx playwright install chromium) or a local Chrome; `sharp` for optimisation.
 //
 // The Content research tab makes live lookups (Google News / DataForSEO). Those handlers are
@@ -27,6 +30,7 @@ const DATA = path.resolve(arg('--data') ?? path.join(os.tmpdir(), 'sac-demo'));
 const OUT = path.resolve(arg('--out') ?? path.join(root, 'assets'));
 const THEME = arg('--theme') ?? 'light';
 const ONLY = arg('--only')?.split(',');
+const QA = arg('--qa') ? path.resolve(arg('--qa')) : null;
 const WIDTH = 1440;
 
 const dbs = readdirSync(DATA).filter(f => f.endsWith('.db') && !/cache/.test(f));
@@ -106,21 +110,35 @@ const SHOTS = [
   { name: 'tab-opps', tab: 'opportunities', height: 1000, selector: '[data-panel="opportunities"] .chart-card:has(#quickWinsChart)', extend: 3, cap: 1900 },
   { name: 'content-architecture', tab: 'opportunities', height: 1000, selector: '#topicClustersCard', cap: 1150 },
   { name: 'links', tab: 'links', height: 1210 },
-  { name: 'research', tab: 'research', height: 640, before: async () => {
-    await page.fill('#researchKw', 'waterproof jackets');
-    await page.click('[data-research="news"]');
-    await page.waitForSelector('#researchOut table', { timeout: 10_000 });
-  } },
+  { name: 'research', tab: 'research', height: 640, before: researchQuery },
 ];
+async function researchQuery() {
+  await page.fill('#researchKw', 'waterproof jackets');
+  await page.click('[data-research="news"]');
+  await page.waitForSelector('#researchOut table', { timeout: 10_000 });
+}
+const TABS = ['summary', 'issues', 'health', 'architecture', 'search', 'opportunities', 'links', 'research'];
+const QA_SHOTS = TABS.flatMap(tab => [
+  { name: `${tab}-${THEME}-1440`, tab, height: 'auto', fixedName: true, before: tab === 'research' ? researchQuery : undefined },
+  { name: `${tab}-light-390`, tab, height: 'auto', width: 390, lightOnly: true, fixedName: true, before: tab === 'research' ? researchQuery : undefined },
+]);
 
-mkdirSync(OUT, { recursive: true });
+const DEST = QA ?? OUT;
+mkdirSync(DEST, { recursive: true });
 const report = [];
-for (const s of SHOTS) {
+for (const s of QA ? QA_SHOTS : SHOTS) {
   if (ONLY && !ONLY.includes(s.name)) continue;
   if (s.lightOnly && THEME !== 'light') continue;
   const width = s.width ?? WIDTH;
-  const height = await open(s.tab, s.height, width);
-  if (s.before) await s.before();
+  let height = await open(s.tab, s.height, width);
+  if (s.before) {
+    await s.before();
+    if (s.height === 'auto') { // the step added content: re-measure the page
+      height = await page.evaluate(() => Math.ceil(document.documentElement.scrollHeight));
+      await page.setViewportSize({ width, height });
+      await page.waitForTimeout(800);
+    }
+  }
   const overflowX = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   let clip;
   if (s.selector) {
@@ -143,7 +161,7 @@ for (const s of SHOTS) {
   }
   let buf = await page.screenshot({ fullPage: !!s.selector, clip });
   if (sharp) buf = await sharp(buf).png({ palette: true, quality: 90, effort: 10, compressionLevel: 9 }).toBuffer();
-  const file = path.join(OUT, `${s.name}${THEME === 'dark' ? '-dark' : ''}.png`);
+  const file = path.join(DEST, `${s.name}${THEME === 'dark' && !s.fixedName ? '-dark' : ''}.png`);
   writeFileSync(file, buf);
   report.push({ file: path.relative(root, file), kb: Math.round(buf.length / 1024), overflowX });
   if (overflowX && width < 900) consoleErrors.push(`${s.name}: the page scrolls sideways at ${width}px`);
