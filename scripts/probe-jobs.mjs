@@ -222,6 +222,8 @@ const site = 'https://example.com/';
   fdb.db.prepare("INSERT INTO crawl_metadata (crawl_id, base_url, base_domain, status, started_at) VALUES ('c9', ?, 'example.com', 'running', '2026-10-16T17:45:45.414Z')").run(site);
   const crawlState = (live) => getDataFreshness(fdb.db, live).sources.find(s => s.kind === 'crawl')?.state;
   check('orphaned running crawl reads as interrupted', crawlState(new Set()) === 'interrupted', crawlState(new Set()));
+  const orphanErr = getDataFreshness(fdb.db, new Set()).sources.find(s => s.kind === 'crawl')?.error;
+  check('orphaned crawl uses the shared interrupted wording', orphanErr === 'The server process running this crawl exited before it finished.', orphanErr);
   check('running crawl with a live crawl job stays running', crawlState(new Set(['crawl'])) === 'running', crawlState(new Set(['crawl'])));
   check('no registry: crawl state left as stored', crawlState(null) === 'running', crawlState(null));
   fdb.close();
