@@ -51,13 +51,13 @@ const realProbe = (): ContainerProbe => ({
   read: (p) => { try { return readFileSync(p, 'utf8'); } catch { return null; } },
 });
 
-/** True when this process runs inside a container: /.dockerenv, a container cgroup for PID 1, or
- * the image convention SAC_DATA_DIR=/data (the Docker MCP gateway's worker sets it). */
+/** True when this process runs inside a container: Docker's /.dockerenv, Podman's
+ * /run/.containerenv, or a container cgroup for PID 1. SAC_DATA_DIR=/data is deliberately NOT a
+ * signal: a bare-metal Linux install may use /data too, and would then lose its working link. */
 export function inContainer(probe: ContainerProbe = realProbe()): boolean {
-  if (probe.exists('/.dockerenv')) return true;
+  if (probe.exists('/.dockerenv') || probe.exists('/run/.containerenv')) return true;
   const cg = probe.read('/proc/1/cgroup');
-  if (cg && /docker|containerd|kubepods|libpod|lxc/i.test(cg)) return true;
-  return (probe.env.SAC_DATA_DIR ?? '').replace(/\/+$/, '') === '/data';
+  return !!cg && /docker|containerd|kubepods|libpod|lxc/i.test(cg);
 }
 
 /**

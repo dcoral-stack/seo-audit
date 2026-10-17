@@ -20,9 +20,8 @@ check('bare metal: reachable', dashboardReachable(probe()), 'bare metal marked u
 check('/.dockerenv => container', inContainer(probe({}, { '/.dockerenv': '' })), 'missed /.dockerenv');
 check('docker cgroup => container', inContainer(probe({}, { '/proc/1/cgroup': '0::/docker/abc123\n' })), 'missed docker cgroup');
 check('plain host cgroup => not a container', !inContainer(probe({}, { '/proc/1/cgroup': '0::/init.scope\n' })), 'host cgroup read as container');
-check('SAC_DATA_DIR=/data => container', inContainer(probe({ SAC_DATA_DIR: '/data' })), 'missed the image convention');
-check('SAC_DATA_DIR=/data/ => container', inContainer(probe({ SAC_DATA_DIR: '/data/' })), 'missed trailing slash');
-check('SAC_DATA_DIR=/data/x => not by itself', !inContainer(probe({ SAC_DATA_DIR: '/data/x' })), 'over-matched');
+check('podman /run/.containerenv => container', inContainer(probe({}, { '/run/.containerenv': '' })), 'missed podman');
+check('bare-metal Linux with SAC_DATA_DIR=/data => NOT a container', !inContainer(probe({ SAC_DATA_DIR: '/data' })), 'a /data data dir alone must not hide a working link');
 
 // ── Reachability inside a container ──
 const docker = { '/.dockerenv': '' };
