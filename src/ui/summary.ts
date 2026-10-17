@@ -167,7 +167,7 @@ function tiles(d: any): string {
     const tone = hs.band === 'Excellent' || hs.band === 'Good' ? 'var(--intent-success)' : hs.band === 'Fair' ? 'var(--intent-warning)' : 'var(--intent-danger)';
     out.push(tile({
       label: 'Site health', value: `<span class="n" style="color:${tone}">${hs.score}</span><span class="kpi-of">/100</span>`,
-      foot: `<span class="tile-band" title="Bands are a product convention, not an industry benchmark">${esc(hs.band)}</span>${hist.length >= 2 ? sparkline(hist) : ''}`,
+      foot: `<span class="tile-band" title="Bands are a product convention, not an industry benchmark">${esc(hs.band)}</span>${hist.length >= 2 ? sparkline(hist, false, [0, 100]) : ''}`,
       sub: 'pages with no critical or high issue',
       title: `${hs.definition} ${hs.totalPages - hs.errorPages} of ${hs.totalPages} pages. Bands (Weak under 31, Fair, Good from 71, Excellent from 91) are a product convention, not an industry benchmark.${hist.length >= 2 ? ` Sparkline: ${hist.length} audits.` : ''}`,
     }));
@@ -211,10 +211,12 @@ function trend(d: any, ctx: SummaryCtx): void {
   const anyGhost = ghost.some(g => g != null);
   const idx = new Map(months.map((mm, i) => [mm.month, i]));
   const events: any[] = (d.events ?? []).filter((e: any) => idx.has(e.at.slice(0, 7)));
-  const pos = (at: string): number => {
-    const i = idx.get(at.slice(0, 7))!;
-    const dim = byMonth.get(at.slice(0, 7)).daysInMonth;
-    return i - 0.5 + (Number(at.slice(8, 10)) - 0.5) / dim;
+  // One marker per month and kind (crawls left of the month centre, audits right), with a count
+  // when a month had several: day-precise ticks stacked into one smudge at busy months.
+  const perMonth = (kind: 'crawl' | 'audit'): [number, number, number][] => {
+    const n = new Map<number, number>();
+    for (const e of events) if (e.kind === kind) { const i = idx.get(e.at.slice(0, 7))!; n.set(i, (n.get(i) ?? 0) + 1); }
+    return [...n.entries()].map(([i, c]) => [i + (kind === 'crawl' ? -0.17 : 0.17), 1, c]);
   };
   const ax = axisDefaults(col, { numeric: true });
   const evColor = { crawl: col.categorical[0], audit: col.categorical[1] } as const;
@@ -232,7 +234,7 @@ function trend(d: any, ctx: SummaryCtx): void {
           `${mm.partial && mm.clicks != null ? ` · partial (${mm.days} of ${mm.daysInMonth} days)` : ''}${g != null ? `<br/>same month last year ${fmt(g)}` : ''}`;
       },
     },
-    grid: [{ left: 44, right: 10, top: 12, bottom: 56 }, { left: 44, right: 10, height: 16, bottom: 26 }],
+    grid: [{ left: 44, right: 10, top: 12, bottom: 62 }, { left: 44, right: 10, height: 18, bottom: 16 }],
     xAxis: [
       { type: 'category', gridIndex: 0, data: months.map(mm => monthLabel(mm.month)), axisTick: { show: false }, axisLine: { lineStyle: { color: col.border } }, axisLabel: { color: col.axisText, fontSize: 10.5, fontFamily: monoFont(), hideOverlap: true } },
       { type: 'value', gridIndex: 1, min: -0.5, max: months.length - 0.5, show: false },
@@ -255,10 +257,11 @@ function trend(d: any, ctx: SummaryCtx): void {
         name: 'Same month last year', type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: ghost, connectNulls: false,
         symbol: 'circle', symbolSize: 4, lineStyle: { type: 'dashed', width: 1.5, color: col.text, opacity: 0.5 }, itemStyle: { color: col.text, opacity: 0.5 }, z: 3,
       }] : []),
-      ...(['crawl', 'audit'] as const).map((k, lane) => ({
-        name: k === 'crawl' ? 'Crawl' : 'Audit', type: 'scatter', xAxisIndex: 1, yAxisIndex: 1, symbol: 'rect', symbolSize: [2, 8],
+      ...(['crawl', 'audit'] as const).map(k => ({
+        name: k === 'crawl' ? 'Crawl' : 'Audit', type: 'scatter', xAxisIndex: 1, yAxisIndex: 1, symbol: 'rect', symbolSize: [3, 10],
         itemStyle: { color: evColor[k] }, tooltip: { show: false }, silent: true,
-        data: events.filter(e => e.kind === k).map(e => [pos(e.at), lane === 0 ? 1.45 : 0.55]),
+        label: { show: true, position: 'bottom', distance: 1, fontSize: 9, fontFamily: monoFont(), color: col.axisText, formatter: (p: any) => (p.value[2] > 1 ? `${p.value[2]}` : '') },
+        data: perMonth(k),
       })),
     ],
   });
@@ -314,14 +317,15 @@ function health(d: any, ctx: SummaryCtx): void {
     },
     legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 8, textStyle: { color: col.text, fontSize: 11 }, data: ['Health', 'Opened', 'Resolved'] },
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
-    grid: [{ left: 34, right: 10, top: 40, height: '30%' }, { left: 34, right: 10, top: '64%', bottom: 24 }],
+    // Fixed pixel heights: the axis titles keep a constant gap at any chart height.
+    grid: [{ left: 34, right: 10, top: 46, height: 64 }, { left: 34, right: 10, top: 152, bottom: 24 }],
     xAxis: [
       { type: 'category', gridIndex: 0, data: labels, axisLabel: { show: false }, axisTick: { show: false }, axisLine: { lineStyle: { color: col.border } } },
       { type: 'category', gridIndex: 1, data: labels, axisTick: { show: false }, axisLine: { lineStyle: { color: col.border } }, axisLabel: { color: col.axisText, fontSize: 10, fontFamily: monoFont(), hideOverlap: true } },
     ],
     yAxis: [
-      { type: 'value', gridIndex: 0, min: 0, max: 100, splitNumber: 2, name: 'health /100', nameGap: 8, nameTextStyle: { ...ax.nameTextStyle, align: 'left', fontSize: 10 }, ...{ axisLabel: { ...ax.axisLabel, show: !ctx.redacted }, axisLine: { show: false }, splitLine: ax.splitLine } },
-      { type: 'value', gridIndex: 1, splitNumber: 2, minInterval: 1, name: 'issues', nameGap: 8, nameTextStyle: { ...ax.nameTextStyle, align: 'left', fontSize: 10 }, ...{ axisLabel: { ...ax.axisLabel, show: !ctx.redacted }, axisLine: { show: false }, splitLine: ax.splitLine } },
+      { type: 'value', gridIndex: 0, min: 0, max: 100, splitNumber: 2, name: 'health /100', nameGap: 14, nameTextStyle: { ...ax.nameTextStyle, align: 'left', fontSize: 10, padding: [0, 0, 0, -30] }, ...{ axisLabel: { ...ax.axisLabel, show: !ctx.redacted }, axisLine: { show: false }, splitLine: ax.splitLine } },
+      { type: 'value', gridIndex: 1, splitNumber: 2, minInterval: 1, name: 'issues', nameGap: 14, nameTextStyle: { ...ax.nameTextStyle, align: 'left', fontSize: 10, padding: [0, 0, 0, -30] }, ...{ axisLabel: { ...ax.axisLabel, show: !ctx.redacted }, axisLine: { show: false }, splitLine: ax.splitLine } },
     ],
     series: [
       { name: 'Health', type: 'line', step: 'end', xAxisIndex: 0, yAxisIndex: 0, connectNulls: false, data: hist.map(h => h.score), symbol: 'circle', symbolSize: 5, lineStyle: { width: 1.75, color: col.accent }, itemStyle: { color: col.accent } },
@@ -356,8 +360,13 @@ function areas(d: any, ctx: SummaryCtx): string {
   const anyCompared = rows.some(r => r.opened != null);
   const body = rows.map(r => {
     const pages = `${r.capped ? '≥' : ''}<span class="n">${fmt(r.pages)}</span>${r.site ? ' <span class="site-tag" title="Plus site-wide findings">+ site</span>' : ''}`;
+    // Only non-zero changes carry a sign; no change at all reads as a muted "no change".
     const since = r.opened == null ? '<span class="cell-null" title="No comparable previous audit">–</span>'
-      : `<span class="since-o" title="opened"><span class="n">+${fmt(r.opened)}</span></span> <span class="since-r" title="resolved"><span class="n">−${fmt(r.resolved)}</span></span>`;
+      : !r.opened && !r.resolved ? '<span class="cell-null" title="No change since the last audit">0</span>'
+      : `<span title="${fmt(r.opened)} opened, ${fmt(r.resolved)} resolved">` +
+        (r.opened ? `<span class="since-o"><span class="n">+${fmt(r.opened)}</span></span>` : '') +
+        (r.opened && r.resolved ? ' ' : '') +
+        (r.resolved ? `<span class="since-r"><span class="n">−${fmt(r.resolved)}</span></span>` : '') + '</span>';
     return `<tr class="area-link" data-area="${esc(r.category)}" tabindex="0" role="button" title="Show these issues"><td>${esc(LBL[r.category] ?? r.category)}</td><td class="num">${pages}</td>` +
       `<td class="num sevs">${cnt(r.crit, 'crit')}${cnt(r.high, 'high')}${cnt(r.med, 'med')}${cnt(r.low, 'low')}</td><td class="num">${since}</td></tr>`;
   }).join('');
@@ -366,10 +375,10 @@ function areas(d: any, ctx: SummaryCtx): string {
   if (judgement) notes.push(`Includes <span class="n">${fmt(judgement)}</span> judgement findings (the audit ran with <code>includeJudgement</code>).`);
   if (rows.some(r => r.capped)) notes.push('≥: a check hit the 500-findings storage cap, so the count is a floor.');
   if (!d.summary && !rows.some(r => r.category === 'merged')) notes.push('Search-demand checks need Search Console, so they did not run.');
-  if (!anyCompared) notes.push('"Since last audit" needs two comparable audits.');
+  notes.push(anyCompared ? 'Change: issues opened (+) and resolved (−) since the last comparable audit.' : 'Change needs two comparable audits.');
   return `<div class="findings-table areas-table"><table><thead><tr><th>Area</th><th class="num">Pages</th>` +
     `<th class="num sevs"><span class="sev-h" title="Critical">C</span><span class="sev-h" title="High">H</span><span class="sev-h" title="Medium">M</span><span class="sev-h" title="Low and info">L</span></th>` +
-    `<th class="num">Since last audit</th></tr></thead><tbody>${body}</tbody></table></div>` +
+    `<th class="num" title="Opened (+) and resolved (−) since the last comparable audit">Change</th></tr></thead><tbody>${body}</tbody></table></div>` +
     `<div class="sum-note">${notes.join(' ')}</div>`;
 }
 
@@ -395,15 +404,20 @@ function actions(d: any, ctx: SummaryCtx): string {
     const labels: string[] = (() => { try { return JSON.parse(f.labels || '[]'); } catch { return []; } })();
     const judgement = labels.includes('N');
     const w = Math.max(4, Math.round(((Number(f.impact) || 0) / maxImpact) * 100));
+    const sz = String(f.size ?? '');
     const risk = b.clicksAtRisk != null && d.summary
       ? ` · <span class="n">${fmt(b.clicksAtRisk)}</span> clicks (28d) on affected pages` : '';
     return `<li class="df-row" data-check="${esc(f.check_id)}" tabindex="0" role="button" title="Show this check's findings">` +
       `<span class="df-n">${i + 1}</span><div class="df-main"><div class="df-title">${esc(rec.title || f.check_id)}</div>` +
       `<div class="df-sub">${pages ? `<span class="n">${fmt(pages)}</span> ${pages === 1 ? 'page' : 'pages'}` : 'site-wide'}${risk}</div></div>` +
-      `<span class="df-chips"><span class="impact impact-${String(f.size ?? 's').toLowerCase()}" title="Impact size, relative to this audit's top finding">${esc(String(f.size ?? ''))}</span>` +
+      `<span class="df-chips"><span class="impact impact-${(sz || 's').toLowerCase()}" title="Impact band ${esc(sz)}: XL 50-100, L 20-49, M 5-19, S under 5">${esc(sz)}</span>` +
       `<span class="tag-badge ${judgement ? 'tag-warning' : 'tag-neutral'}" title="${esc(evidenceTitle(labels))}">${esc(evidenceLabel(labels))}</span></span>` +
-      `<span class="ti-bar df-bar" title="${esc(SEV_LABEL[f.severity] ?? f.severity)} severity · impact ${f.impact ?? ''} of 100"><span style="width:${w}%;background:${SEV_BAR[f.severity] ?? SEV_BAR.low}"></span></span></li>`;
-  }).join('')}</ol><div class="sum-note">Ranked by impact for the effort (clicks at stake × yield × certainty ÷ hours). Clicks are what the affected pages earn now, not a forecast.</div>`;
+      `<span class="df-impact" title="Impact ${f.impact ?? ''} of 100 (relative to this audit's top finding); bar colour = ${esc(SEV_LABEL[f.severity] ?? f.severity)} severity">` +
+      `<b class="n">${f.impact ?? '–'}</b><span class="ti-bar df-bar"><span style="width:${w}%;background:${SEV_BAR[f.severity] ?? SEV_BAR.low}"></span></span></span></li>`;
+  }).join('')}</ol>` +
+    `<div class="df-key"><span><b>Impact</b> 0-100 vs this audit's top finding; bar colour = severity</span>` +
+    `<span><b>XL / L / M / S</b> impact band</span><span><b>D</b> deterministic · <b>N</b> judgement · <b>G</b> uses Search Console data</span></div>` +
+    `<div class="sum-note">Ranked by impact for the effort (clicks at stake × yield × certainty ÷ hours). Clicks are what the affected pages earn now, not a forecast.</div>`;
 }
 
 // ── Panel 6: changed since last crawl ─────────────────────────────────────────────────────────
@@ -479,12 +493,12 @@ function ai(d: any): string {
     const pill = (b: any): string => {
       const blocked = b.verdict === 'blocked' || (b.verdict === 'not-stated' && b.inherits === 'blocked');
       const cls = blocked ? (b.group === 'search' ? 'bp-bad' : 'bp-muted') : 'bp-ok';
-      const txt = b.verdict === 'not-stated' ? `* ${b.inherits === 'allowed' ? 'allows' : 'blocks'}` : b.verdict;
+      const txt = b.verdict === 'not-stated' ? `${b.inherits}*` : b.verdict;
       return `<li title="${esc(`${b.operator}: ${b.bot}${b.verdict === 'not-stated' ? ' is not named in robots.txt, so the * group applies' : ''}`)}"><span class="bot">${esc(b.bot)}</span><span class="bp ${cls}">${esc(txt)}</span></li>`;
     };
     botsHtml = `<div class="bots"><div><div class="bots-h">Search and citation</div><ul>${bots.filter(b => b.group === 'search').map(pill).join('')}</ul></div>` +
       `<div><div class="bots-h">Training</div><ul>${bots.filter(b => b.group === 'training').map(pill).join('')}</ul></div></div>` +
-      `<div class="sum-note">robots.txt rules for the site root ("* allows" = not named, the default group applies). Blocking a training crawler doesn't remove the site from AI search answers; blocking a search one does.</div>`;
+      `<div class="sum-note">robots.txt rules for the site root (* = not named, so the default group applies). Blocking a training crawler doesn't remove the site from AI search answers; blocking a search one does.</div>`;
   }
 
   const ao = d.aiOverview;
