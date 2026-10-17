@@ -94,6 +94,7 @@ scripts/*
 !scripts/probe-jobs.mjs
 !scripts/probe-priority-calibration.mjs
 !scripts/probe-runner.mjs
+!scripts/probe-runner-stopped.mjs
 !scripts/probe-crawl-local.mjs
 !scripts/probe-checks-v2.mjs
 !scripts/probe-integrity.mjs

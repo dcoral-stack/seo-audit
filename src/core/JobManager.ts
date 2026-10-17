@@ -230,6 +230,10 @@ export class JobManager {
       if (!cols.has('scope')) db.exec(`ALTER TABLE jobs ADD COLUMN scope TEXT`);
       if (!cols.has('args')) db.exec(`ALTER TABLE jobs ADD COLUMN args TEXT`);
       if (!cols.has('cancel_requested')) db.exec(`ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0`);
+      // 0.16.1: a cleanly stopped runner keeps its row, marked stopped, so the queued-job advice can
+      // say when the last runner stopped instead of "no runner has ever checked in".
+      const rcols = new Set((db.prepare(`PRAGMA table_info(runners)`).all() as { name: string }[]).map(c => c.name));
+      if (!rcols.has('stopped_at')) db.exec(`ALTER TABLE runners ADD COLUMN stopped_at TEXT`);
       db.exec(`CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state, started_at)`);
       this.db = db;
     } catch (err) {
@@ -485,7 +489,7 @@ export class JobManager {
     try {
       const now = new Date().toISOString();
       this.db.prepare(`INSERT INTO runners (instance_id, started_at, heartbeat_at, info) VALUES (?, ?, ?, ?)
-        ON CONFLICT(instance_id) DO UPDATE SET heartbeat_at = excluded.heartbeat_at, info = excluded.info`)
+        ON CONFLICT(instance_id) DO UPDATE SET heartbeat_at = excluded.heartbeat_at, info = excluded.info, stopped_at = NULL`)
         .run(this.instanceId, now, now, JSON.stringify(info));
       this.db.prepare(`DELETE FROM runners WHERE heartbeat_at < ?`).run(new Date(Date.now() - DAY_MS).toISOString());
     } catch (err) {
@@ -493,17 +497,29 @@ export class JobManager {
     }
   }
 
-  /** A clean shutdown removes the runner's row, so status text stops counting it at once. */
+  /**
+   * A clean shutdown marks the runner's row stopped (0.16.1; it used to delete it), so status text
+   * stops counting it as alive at once but can still say when the last runner stopped.
+   */
   removeRunner(): void {
-    try { this.db?.prepare(`DELETE FROM runners WHERE instance_id = ?`).run(this.instanceId); } catch { /* closing anyway */ }
+    try { this.db?.prepare(`UPDATE runners SET stopped_at = ? WHERE instance_id = ?`).run(new Date().toISOString(), this.instanceId); } catch { /* closing anyway */ }
   }
 
-  /** The newest runner heartbeat in the registry, or null if no runner has ever checked in. */
+  /** The newest heartbeat of a runner that hasn't stopped, or null when none is registered. */
   lastRunnerBeat(): string | null {
     if (!this.db) return null;
     try {
-      const r = this.db.prepare(`SELECT MAX(heartbeat_at) at FROM runners`).get() as { at: string | null } | undefined;
+      const r = this.db.prepare(`SELECT MAX(heartbeat_at) at FROM runners WHERE stopped_at IS NULL`).get() as { at: string | null } | undefined;
       return r?.at ?? null;
+    } catch { return null; }
+  }
+
+  /** The most recently seen runner: its last heartbeat, and when it stopped if it shut down cleanly. Null if none ever checked in. */
+  lastRunnerSeen(): { heartbeatAt: string; stoppedAt: string | null } | null {
+    if (!this.db) return null;
+    try {
+      const r = this.db.prepare(`SELECT heartbeat_at, stopped_at FROM runners ORDER BY COALESCE(stopped_at, heartbeat_at) DESC LIMIT 1`).get() as { heartbeat_at: string; stopped_at: string | null } | undefined;
+      return r ? { heartbeatAt: r.heartbeat_at, stoppedAt: r.stopped_at ?? null } : null;
     } catch { return null; }
   }
 
@@ -540,8 +556,11 @@ export class JobManager {
 
   /** "No runner seems to be running", with the last-seen time and the docker run line. */
   noRunnerAdvice(): string {
-    const last = this.lastRunnerBeat();
-    return `${QUEUED_NOTE}, but no job runner seems to be running (${last ? `the last runner heartbeat was at ${last}` : 'no runner has ever checked in to this data directory'}). ` +
+    const last = this.lastRunnerSeen();
+    const seen = !last ? 'no runner has ever checked in to this data directory'
+      : last.stoppedAt ? `the last runner stopped at ${last.stoppedAt}`
+      : `the last runner heartbeat was at ${last.heartbeatAt}`;
+    return `${QUEUED_NOTE}, but no job runner seems to be running (${seen}). ` +
       `This server is set to SAC_JOB_RUNNER=external, so jobs only run when a runner claims them. Start one on the same data volume: ${RUNNER_DOCKER_RUN} ` +
       '(the bare -e DATAFORSEO_* / MAJESTIC_API_KEY / CRUX_API_KEY flags copy those keys from your shell: the runner needs the same keys as the MCP server, so drop only the ones you do not use; on Windows Git Bash prefix MSYS_NO_PATHCONV=1). The job stays queued until a runner picks it up.';
   }
@@ -736,7 +755,8 @@ export function liveJobTypes(dataDir: string, scope?: string | null, staleMs = S
       ? db.prepare(`SELECT type, started_at FROM jobs WHERE state = 'queued' AND started_at >= ? AND (scope = ? OR scope IS NULL)`).all(dayAgo, scope)
       : db.prepare(`SELECT type, started_at FROM jobs WHERE state = 'queued' AND started_at >= ?`).all(dayAgo)) as { type: string; started_at: string }[];
     const hasRunners = !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runners'`).get();
-    const beat = hasRunners ? (db.prepare(`SELECT MAX(heartbeat_at) at FROM runners`).get() as { at: string | null } | undefined)?.at ?? null : null;
+    const hasStopped = hasRunners && (db.prepare(`PRAGMA table_info(runners)`).all() as { name: string }[]).some(c => c.name === 'stopped_at');
+    const beat = hasRunners ? (db.prepare(`SELECT MAX(heartbeat_at) at FROM runners${hasStopped ? ' WHERE stopped_at IS NULL' : ''}`).get() as { at: string | null } | undefined)?.at ?? null : null;
     const beatMs = beat ? Date.parse(beat) : NaN;
     const runnerAlive = Number.isFinite(beatMs) && Date.now() - beatMs <= RUNNER_STALE_MS;
     const freshSince = Date.now() - QUEUED_FRESH_MS;
