@@ -15,6 +15,15 @@ export interface DashboardData {
   linkProspects?: { domain: string; intersections: number; linkedTargets: string[]; domainTrust: number | null; spamScore: number | null; dofollow: boolean; trustFlow: number | null; citationFlow: number | null; topTopic: string | null; competitors: string[]; fetchedAt: string | null }[];
   apiKeys?: { dataforseo: boolean; majestic: boolean };
   trappedAuthority?: { url: string; referringDomains: number; backlinks: number; clickDepth: number | null; ipr: number; trustFlow: number | null; topTopic: string | null }[];
+  backlinkProfile?: {
+    summary: { backlinks: number; referringDomains: number; domainRank: number | null; brokenBacklinks: number; brokenPages: number; nofollowPct: number | null; fetchedAt: string | null } | null;
+    topPages: { url: string; backlinks: number; referringDomains: number; dofollow: number; status: number | null; trustFlow: number | null }[];
+    brokenPages: { url: string; backlinks: number; referringDomains: number; status: number }[];
+    pagesTotal: number; pagesUnchecked: number;
+    referringDomains: { snapshotAt: string; live: number; lost: number; top: { domain: string; rank: number | null; backlinks: number; referringPages: number; nofollowPages: number; spamScore: number | null; firstSeen: string | null }[] } | null;
+    anchors: { snapshotAt: string; mix: { kind: string; anchors: number; backlinks: number; referringDomains: number }[]; top: { anchor: string; kind: string; backlinks: number; referringDomains: number }[] } | null;
+    history: { fetchedAt: string | null; months: { month: string; newDomains: number; lostDomains: number; referringDomains: number | null; backlinks: number | null; days: number }[] } | null;
+  } | null;
   dateRange?: { current: string; prior?: string; maxDate: string; rawMaxDate?: string; trimmedDays?: number };
   summary?: { current: Totals; prior: Totals };
   rankTrend?: { date: string; clicks: number; impressions: number; position: number }[];
@@ -1354,8 +1363,93 @@ function upsellCard(o: { title: string; lead: string; provider: keyof typeof AFF
   </div>`;
 }
 
+// Links tab, top half (#47): OUR backlink profile from pull_backlinks. Every number is a stored
+// row; a section whose table was never filled says "not collected" rather than showing zero.
+function renderBacklinkProfile(data: DashboardData): void {
+  const top = document.getElementById('backlinkProfilePanel');
+  const trendCard = document.getElementById('backlinkTrendCard');
+  const detail = document.getElementById('backlinkDetailPanel');
+  if (!top || !trendCard || !detail) return;
+  const bp = data.backlinkProfile;
+  const noKey = data.apiKeys && !data.apiKeys.dataforseo;
+  const runHint = `Ask Claude to run <code>pull_backlinks for ${esc(data.siteUrl)}</code> (DataForSEO Backlinks subscription; cached 20 days).`;
+  if (!bp) {
+    top.innerHTML = `<div class="chart-card"><h3>Backlink profile</h3><div class="hint">${noKey ? 'Not collected — DataForSEO isn’t connected, so your own backlink profile hasn’t been pulled.' : `Not collected yet. ${runHint} It stores the summary, the backlinked pages with their live status, the referring domains, the anchor mix and twelve months of new/lost history.`}</div></div>`;
+    trendCard.hidden = true; detail.innerHTML = '';
+    return;
+  }
+  const s = bp.summary;
+  const when = (iso: string | null | undefined): string => iso ? esc(String(iso).slice(0, 10)) : 'unknown date';
+  const nc = (what: string): string => `<div class="empty-state">${what} not collected — re-run <code>pull_backlinks</code> (0.16+ stores it).</div>`;
+  const kpis = s ? kpiGrid([
+    { label: 'Backlinks', value: fmtNum(s.backlinks) },
+    { label: 'Referring domains', value: fmtNum(s.referringDomains) },
+    { label: 'Domain Rank', value: s.domainRank == null ? '–' : String(s.domainRank) },
+    { label: 'Broken backlinks', value: fmtNum(s.brokenBacklinks) },
+    { label: 'Nofollow share', value: s.nofollowPct == null ? '–' : `${Math.round(s.nofollowPct * 100)}%` },
+  ]) : nc('Summary');
+  top.innerHTML = `<div class="chart-card"><h3>Backlink profile — your own links</h3>
+    <div class="hint">From <code>pull_backlinks</code>${s ? `, summary pulled ${when(s.fetchedAt)}` : ''}: ${fmtNum(bp.pagesTotal)} backlinked pages stored${bp.pagesUnchecked ? `, ${fmtNum(bp.pagesUnchecked)} without a live status check` : ''}. Domain Rank is DataForSEO’s 0–1000 authority score.</div>
+    ${kpis}</div>`;
+
+  // Trend: new vs lost referring domains per month (DataForSEO daily history, summed per month).
+  const months = bp.history?.months ?? [];
+  if (months.length) {
+    trendCard.hidden = false;
+    const col = palette(), axis = axisDefaults(col);
+    (document.getElementById('backlinkTrendHint') as HTMLElement).textContent = `${months.length} months of daily history (pulled ${bp.history?.fetchedAt ? String(bp.history.fetchedAt).slice(0, 10) : 'unknown date'}); a partial first or last month covers only the days DataForSEO reported.`;
+    wrap('backlinkTrendChart').setOption({
+      ...ARIA,
+      grid: { left: 48, right: 16, top: 28, bottom: 28 },
+      legend: { top: 0, textStyle: { color: col.text, fontSize: 12 } },
+      tooltip: { ...tooltipDefaults(col), axisPointer: { type: 'shadow' } },
+      xAxis: { type: 'category', data: months.map(m => m.month), ...axis },
+      yAxis: { type: 'value', ...axis },
+      series: [
+        { name: 'New referring domains', type: 'bar', data: months.map(m => m.newDomains), itemStyle: { color: col.green } },
+        { name: 'Lost referring domains', type: 'bar', data: months.map(m => -m.lostDomains), itemStyle: { color: col.red } },
+      ],
+    });
+  } else {
+    trendCard.hidden = true;
+  }
+
+  const tbl = (head: string, body: string): string => `<div class="findings-table"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+  const rd = bp.referringDomains;
+  const rdHtml = rd
+    ? `<div class="hint">${fmtNum(rd.live)} live referring domains in the latest pull (${when(rd.snapshotAt)}), ${fmtNum(rd.lost)} lost. Top by DataForSEO domain rank.</div>` +
+      tbl('<tr><th>Domain</th><th class="num">Rank</th><th class="num">Backlinks</th><th class="num">Pages</th><th>Link</th><th class="num">Spam</th><th>First seen</th></tr>',
+        rd.top.map(d => `<tr><td>${esc(d.domain)}</td><td class="num">${d.rank ?? '–'}</td><td class="num">${fmtNum(d.backlinks)}</td><td class="num">${fmtNum(d.referringPages)}</td><td>${d.referringPages > 0 && d.nofollowPages >= d.referringPages ? 'nofollow' : 'follow'}</td><td class="num">${d.spamScore ?? '–'}</td><td>${d.firstSeen ? esc(d.firstSeen) : '–'}</td></tr>`).join(''))
+    : nc('Referring domains');
+  const an = bp.anchors;
+  const anTotal = an ? an.mix.reduce((a, m) => a + m.backlinks, 0) : 0;
+  const KIND_LABEL: Record<string, string> = { branded: 'Branded', keyword: 'Keyword / exact', url: 'URL', generic: 'Generic', empty: 'Empty / image' };
+  const anHtml = an
+    ? `<div class="hint">Live anchors in the latest pull (${when(an.snapshotAt)}), classified by text: branded (contains your name), URL, generic (“click here”), empty (image or no text), everything else keyword. Share is by backlinks.</div>` +
+      tbl('<tr><th>Anchor type</th><th class="num">Anchors</th><th class="num">Backlinks</th><th class="num">Share</th><th class="num">Ref. domains</th></tr>',
+        an.mix.map(m => `<tr><td>${esc(KIND_LABEL[m.kind] ?? m.kind)}</td><td class="num">${fmtNum(m.anchors)}</td><td class="num">${fmtNum(m.backlinks)}</td><td class="num">${anTotal ? Math.round(m.backlinks / anTotal * 100) : 0}%</td><td class="num">${fmtNum(m.referringDomains)}</td></tr>`).join('')) +
+      `<details><summary class="hint">Top ${an.top.length} anchors</summary>` +
+      tbl('<tr><th>Anchor</th><th>Type</th><th class="num">Backlinks</th><th class="num">Ref. domains</th></tr>',
+        an.top.map(t => `<tr><td>${t.anchor ? esc(t.anchor) : '<i>(empty)</i>'}</td><td>${esc(KIND_LABEL[t.kind] ?? t.kind)}</td><td class="num">${fmtNum(t.backlinks)}</td><td class="num">${fmtNum(t.referringDomains)}</td></tr>`).join('')) + '</details>'
+    : nc('Anchor mix');
+  const pagesHtml = bp.topPages.length
+    ? tbl('<tr><th>Page</th><th class="num">Ref. domains</th><th class="num">Backlinks</th><th class="num">Follow</th><th class="num">Live status</th>' + (bp.topPages.some(p => p.trustFlow != null) ? '<th class="num">Trust Flow</th>' : '') + '</tr>',
+        bp.topPages.map(p => `<tr><td class="url">${esc(p.url)}</td><td class="num">${fmtNum(p.referringDomains)}</td><td class="num">${fmtNum(p.backlinks)}</td><td class="num">${fmtNum(p.dofollow)}</td><td class="num">${p.status == null ? 'unchecked' : statusBadge(p.status)}</td>${bp.topPages.some(q => q.trustFlow != null) ? `<td class="num">${p.trustFlow ?? '–'}</td>` : ''}</tr>`).join(''))
+    : nc('Backlinked pages');
+  const brokenHtml = bp.brokenPages.length
+    ? `<div class="hint">${bp.brokenPages.length} backlinked page${bp.brokenPages.length === 1 ? '' : 's'} answer${bp.brokenPages.length === 1 ? 's' : ''} 4xx/5xx — equity arriving at a dead end. <code>triage_404s</code> proposes the 301 map; the audit reports <code>backlinks-to-404</code>.</div>` +
+      tbl('<tr><th>Page</th><th class="num">Status</th><th class="num">Ref. domains</th><th class="num">Backlinks</th></tr>',
+        bp.brokenPages.map(p => `<tr><td class="url">${esc(p.url)}</td><td class="num">${statusBadge(p.status)}</td><td class="num">${fmtNum(p.referringDomains)}</td><td class="num">${fmtNum(p.backlinks)}</td></tr>`).join(''))
+    : `<div class="hint">${bp.pagesTotal ? `No backlinked page answers 4xx/5xx${bp.pagesUnchecked ? ` (${fmtNum(bp.pagesUnchecked)} unchecked)` : ''}.` : 'Not collected.'}</div>`;
+  detail.innerHTML = `<div class="chart-card"><h3>Top referring domains</h3>${rdHtml}</div>
+    <div class="chart-card"><h3>Anchor mix</h3>${anHtml}</div>
+    <div class="chart-card"><h3>Most-linked pages</h3><div class="hint">Your pages by referring domains, with the live HTTP status pull_backlinks resolved.</div>${pagesHtml}</div>
+    <div class="chart-card"><h3>Broken backlinked pages</h3>${brokenHtml}</div>`;
+}
+
 // Links tab: render the stored link_prospects, or the DataForSEO upsell / a run-it prompt.
 function renderLinks(data: DashboardData): void {
+  renderBacklinkProfile(data);
   const el = document.getElementById('linksPanel');
   if (!el) return;
   if (data.apiKeys && !data.apiKeys.dataforseo) {

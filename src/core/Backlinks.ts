@@ -3,6 +3,7 @@ import { DataForSeoClient } from './DataForSeoClient.js';
 import { MajesticClient } from './MajesticClient.js';
 import { dbPathFor } from './paths.js';
 import { urlKey, hostFormForProperty } from './url-key.js';
+import { brandTokens, classifyAnchor } from './backlinkProfile.js';
 
 const n = (v: unknown): number => Number(v) || 0;
 const domainFromProperty = (siteUrl: string): string =>
@@ -27,6 +28,8 @@ export interface BacklinksResult {
   brokenBacklinks: number; brokenPages: number;
   nofollowPct: number | null;         // share of referring links marked nofollow (0–1)
   majesticEnriched: number;           // per-URL pages given Majestic Trust Flow (0 = tier off)
+  /** #47: the profile collection. A null count means that endpoint was not collected (see errors). */
+  profile: { referringDomains: number | null; lostDomains: number | null; anchors: number | null; historyDays: number | null; snapshotAt: string | null; errors: Record<string, string> };
   cached: boolean; cost: number;
 }
 
@@ -42,7 +45,7 @@ export class Backlinks {
 
   async run(
     siteUrl: string,
-    opts: { limit?: number; statusLimit?: number; userAgent?: string; majesticLimit?: number },
+    opts: { limit?: number; statusLimit?: number; userAgent?: string; majesticLimit?: number; profile?: boolean; domainLimit?: number; anchorLimit?: number; historyMonths?: number },
     update: (p: Record<string, unknown>) => void,
     signal: AbortSignal,
   ): Promise<BacklinksResult> {
@@ -151,14 +154,95 @@ export class Backlinks {
         } catch { /* Majestic optional — never fail the backlink pull on it */ }
       }
 
+      // 4. Backlink profile (#47): referring domains, anchors and the daily history, each its own
+      // paid call (cached like the rest) and each allowed to fail on its own — a 40204 or a quota
+      // error on one endpoint leaves the others collected and is reported, not hidden as zero.
+      const profile: BacklinksResult['profile'] = { referringDomains: null, lostDomains: null, anchors: null, historyDays: null, snapshotAt: null, errors: {} };
+      let profileCost = 0;
+      if (opts.profile !== false && !signal.aborted) {
+        const snapshotAt = new Date().toISOString();
+        const tokens = brandTokens(target);
+        const okTask = (r: { tasks: any[] }, what: string): any[] | null => {
+          const t = r.tasks[0];
+          if (!t || (t.status_code ?? 0) >= 40000) { profile.errors[what] = t?.status_message ?? 'no task returned'; return null; }
+          return (t.result?.[0]?.items ?? []) as any[];
+        };
+        // Referring domains — `all` so lost domains come back with lost_date (new vs lost needs them).
+        try {
+          update({ phase: 'referring-domains' });
+          const r = await this.dfs.referringDomains(target, opts.domainLimit ?? 1000, 'all');
+          profileCost += r.cost;
+          const items = okTask(r, 'referring_domains');
+          if (items) {
+            const ins = db.db.prepare(`INSERT OR REPLACE INTO referring_domains (snapshot_at, domain, rank, backlinks, referring_pages, nofollow_pages, spam_score, broken_backlinks, first_seen, lost_date)
+              VALUES (?,?,?,?,?,?,?,?,?,?)`);
+            let live = 0, lost = 0;
+            db.db.transaction(() => {
+              for (const it of items) {
+                const domain = String(it.domain ?? '').trim();
+                if (!domain) continue;
+                const lostDate = it.lost_date ? String(it.lost_date).slice(0, 10) : null;
+                if (lostDate) lost++; else live++;
+                ins.run(snapshotAt, domain, it.rank != null ? n(it.rank) : null, n(it.backlinks), n(it.referring_pages), n(it.referring_pages_nofollow ?? it.referring_links_attributes?.nofollow),
+                  it.backlinks_spam_score != null ? n(it.backlinks_spam_score) : null, n(it.broken_backlinks), it.first_seen ? String(it.first_seen).slice(0, 10) : null, lostDate);
+              }
+            })();
+            profile.referringDomains = live; profile.lostDomains = lost; profile.snapshotAt = snapshotAt;
+          }
+        } catch (e) { profile.errors.referring_domains = e instanceof Error ? e.message : String(e); }
+        // Anchors — live links only; classified branded / keyword / url / generic / empty at write time.
+        try {
+          update({ phase: 'anchors' });
+          const r = await this.dfs.backlinkAnchors(target, opts.anchorLimit ?? 500);
+          profileCost += r.cost;
+          const items = okTask(r, 'anchors');
+          if (items) {
+            const ins = db.db.prepare(`INSERT OR REPLACE INTO backlink_anchors (snapshot_at, anchor, kind, backlinks, referring_domains, nofollow_pages, first_seen, lost_date) VALUES (?,?,?,?,?,?,?,?)`);
+            let count = 0;
+            db.db.transaction(() => {
+              for (const it of items) {
+                const anchor = String(it.anchor ?? '').trim();
+                ins.run(snapshotAt, anchor, classifyAnchor(anchor, tokens, target), n(it.backlinks), n(it.referring_domains), n(it.referring_pages_nofollow ?? it.referring_links_attributes?.nofollow),
+                  it.first_seen ? String(it.first_seen).slice(0, 10) : null, it.lost_date ? String(it.lost_date).slice(0, 10) : null);
+                count++;
+              }
+            })();
+            profile.anchors = count; profile.snapshotAt = snapshotAt;
+          }
+        } catch (e) { profile.errors.anchors = e instanceof Error ? e.message : String(e); }
+        // History — daily, from `historyMonths` ago (default 12); rows are keyed by date so re-pulls update in place.
+        try {
+          update({ phase: 'history' });
+          const from = new Date(); from.setUTCMonth(from.getUTCMonth() - (opts.historyMonths ?? 12)); from.setUTCDate(1);
+          const r = await this.dfs.backlinksHistory(target, from.toISOString().slice(0, 10));
+          profileCost += r.cost;
+          const items = okTask(r, 'history');
+          if (items) {
+            const ins = db.db.prepare(`INSERT OR REPLACE INTO backlink_history (date, rank, backlinks, new_backlinks, lost_backlinks, referring_domains, new_referring_domains, lost_referring_domains, fetched_at)
+              VALUES (?,?,?,?,?,?,?,?,?)`);
+            let days = 0;
+            db.db.transaction(() => {
+              for (const it of items) {
+                const date = it.date ? String(it.date).slice(0, 10) : null;
+                if (!date) continue;
+                ins.run(date, it.rank != null ? n(it.rank) : null, n(it.backlinks), n(it.new_backlinks), n(it.lost_backlinks), n(it.referring_domains), n(it.new_referring_domains), n(it.lost_referring_domains), snapshotAt);
+                days++;
+              }
+            })();
+            profile.historyDays = days;
+          }
+        } catch (e) { profile.errors.history = e instanceof Error ? e.message : String(e); }
+        update({ phase: 'profile', referringDomains: profile.referringDomains, anchors: profile.anchors, historyDays: profile.historyDays, errors: Object.keys(profile.errors) });
+      }
+
       return {
         siteUrl, target, pages: rows.length, statusChecked: fetched.size,
         totalBacklinks: n(s.backlinks), referringDomains: n(s.referring_domains),
         domainRank: s.rank != null ? n(s.rank) : null,
         brokenBacklinks: n(s.broken_backlinks), brokenPages: n(s.broken_pages),
         nofollowPct: nofollowPct != null ? Math.round(nofollowPct * 1000) / 1000 : null,
-        majesticEnriched,
-        cached: sum.cached && res.cached, cost: sum.cost + res.cost,
+        majesticEnriched, profile,
+        cached: sum.cached && res.cached, cost: sum.cost + res.cost + profileCost,
       };
     } finally {
       db.close();

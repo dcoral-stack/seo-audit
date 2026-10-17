@@ -15,6 +15,8 @@ import { suggestPages } from '../dist/audit/opportunities.js';
 import { getDashboardData } from '../dist/core/dashboardData.js';
 import { dbPathFor } from '../dist/core/paths.js';
 import { crawlRate, fmtDuration } from '../dist/core/crawlProgress.js';
+import { brandTokens, classifyAnchor, monthlyFromHistory } from '../dist/core/backlinkProfile.js';
+import { buildBacklinkProfile } from '../dist/core/dashboardData.js';
 import { urlKey } from '../dist/core/url-key.js';
 
 const k = (u) => urlKey(u, { hostForm: 'apex' });
@@ -267,6 +269,47 @@ ok(Array.isArray(dash2?.freshness?.sources) && dash2.freshness.sources.length ==
   ok(emptyDash.empty === true && Array.isArray(emptyDash.freshness?.sources) && emptyDash.freshness.sources.some(s => s.kind === 'crawl' && s.state === 'completed'), 'empty (no GSC) payload still carries freshness');
   adb5.close();
   adb4.close();
+}
+
+// #47: backlink profile — anchor classification, monthly trend, and the payload builder.
+{
+  const tk = brandTokens('simracingcockpit.gg');
+  ok(tk.join() === 'simracingcockpit' && brandTokens('sc-domain:ehi.com.au').join() === 'ehi', `brandTokens strips TLD and public suffix (${tk}, ${brandTokens('sc-domain:ehi.com.au')})`);
+  const kinds = ['Sim Racing Cockpit', 'https://simracingcockpit.gg/guide', 'click here', '', 'best sim racing wheel', 'simracingcockpit.gg'].map(a => classifyAnchor(a, tk, 'simracingcockpit.gg'));
+  ok(kinds.join() === 'branded,url,generic,empty,keyword,url', `classifyAnchor: ${kinds.join()}`);
+  const months = monthlyFromHistory([
+    { date: '2026-08-30', backlinks: 100, referring_domains: 50, new_referring_domains: 2, lost_referring_domains: 1 },
+    { date: '2026-08-31', backlinks: 101, referring_domains: 51, new_referring_domains: 1, lost_referring_domains: 0 },
+    { date: '2026-09-01', backlinks: 99, referring_domains: 49, new_referring_domains: 0, lost_referring_domains: 2 },
+  ]);
+  ok(months.length === 2 && months[0].month === '2026-08' && months[0].newDomains === 3 && months[0].lostDomains === 1 && months[0].referringDomains === 51 && months[1].lostDomains === 2, `monthlyFromHistory sums new/lost and keeps the month-end stock (${JSON.stringify(months)})`);
+
+  const adb6 = new AuditDatabase(dbPathFor(dataDir, site));
+  const d6 = adb6.db;
+  const before = buildBacklinkProfile(d6, site);
+  ok(before && before.summary === null && before.pagesTotal === 2 && before.referringDomains === null, 'page rows without a summary: summary null, pages counted (fixture has 2)');
+  {
+    const freshSite = 'sc-domain:nopull.test';
+    const adbF = new AuditDatabase(dbPathFor(dataDir, freshSite));
+    adbF.upsertProperty(freshSite, 'asis');
+    ok(buildBacklinkProfile(adbF.db, freshSite) === null, 'backlinkProfile is null before any pull');
+    adbF.close();
+  }
+  d6.prepare(`UPDATE property_meta SET total_backlinks=1200, referring_domains=80, backlinks_rank=312, broken_backlinks=7, broken_pages=2, backlinks_nofollow_pct=0.25, backlinks_fetched_at=datetime('now') WHERE site_url=?`).run(site);
+  d6.prepare(`INSERT OR REPLACE INTO page_backlinks (url_key,url,backlinks,referring_domains,dofollow,status_code) VALUES ('smoke.test/','https://smoke.test/',900,60,800,200),('smoke.test/gone','https://smoke.test/gone',40,9,40,404),('smoke.test/unknown','https://smoke.test/unknown',3,1,3,NULL)`).run();
+  const p1 = buildBacklinkProfile(d6, site);
+  ok(p1 && p1.summary.domainRank === 312 && p1.pagesTotal === 5 && p1.pagesUnchecked === 1 && p1.brokenPages.length === 2 && p1.brokenPages.some(b => b.url.endsWith('/gone')) && p1.topPages[0].url === 'https://smoke.test/', `profile summary + pages from stored rows (${JSON.stringify({ s: p1?.summary, n: p1?.pagesTotal, broken: p1?.brokenPages.length })})`);
+  ok(p1.referringDomains === null && p1.anchors === null && p1.history === null, 'sections never collected are null, not zero');
+  d6.prepare(`INSERT INTO referring_domains (snapshot_at,domain,rank,backlinks,referring_pages,nofollow_pages,spam_score,first_seen,lost_date) VALUES ('2026-10-01T00:00:00Z','old.example',100,5,5,0,0,'2024-01-01',NULL),('2026-10-17T00:00:00Z','big.example',500,30,20,20,5,'2025-02-02',NULL),('2026-10-17T00:00:00Z','gone.example',200,1,1,0,0,'2023-01-01','2026-09-30')`).run();
+  d6.prepare(`INSERT INTO backlink_anchors (snapshot_at,anchor,kind,backlinks,referring_domains,nofollow_pages) VALUES ('2026-10-17T00:00:00Z','Smoke Test','branded',70,30,0),('2026-10-17T00:00:00Z','click here','generic',30,10,0),('2026-10-17T00:00:00Z','','empty',10,5,0)`).run();
+  d6.prepare(`INSERT INTO backlink_history (date,backlinks,referring_domains,new_referring_domains,lost_referring_domains,fetched_at) VALUES ('2026-09-15',100,50,3,1,'2026-10-17'),('2026-10-01',103,52,2,0,'2026-10-17')`).run();
+  const p2 = buildBacklinkProfile(d6, site);
+  ok(p2.referringDomains.snapshotAt === '2026-10-17T00:00:00Z' && p2.referringDomains.live === 1 && p2.referringDomains.lost === 1 && p2.referringDomains.top.length === 1 && p2.referringDomains.top[0].domain === 'big.example', `latest snapshot only; lost domains counted, not listed (${JSON.stringify(p2.referringDomains)})`);
+  ok(p2.anchors.mix.length === 3 && p2.anchors.mix[0].kind === 'branded' && p2.anchors.mix[0].backlinks === 70, `anchor mix grouped by kind (${JSON.stringify(p2.anchors.mix)})`);
+  ok(p2.history.months.length === 2 && p2.history.months[0].newDomains === 3 && p2.history.fetchedAt === '2026-10-17', 'history is monthly from the stored days');
+  const dashBp = getDashboardData(dataDir, site).backlinkProfile;
+  ok(dashBp && dashBp.summary?.backlinks === 1200, 'dashboard payload carries backlinkProfile (cache key sees the new tables)');
+  adb6.close();
 }
 
 // #52: crawl progress arithmetic.

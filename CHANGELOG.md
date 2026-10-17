@@ -11,6 +11,7 @@ Each release is tagged `vX.Y.Z` on the release commit (tagging lapsed between 0.
 ## [Unreleased]
 
 ### Added
+- **Backlink profile on the Links tab (#47).** `pull_backlinks` now also stores the referring domains (live and lost, with rank, spam score and first-seen date) in `referring_domains`, every anchor text classified branded / keyword / url / generic / empty in `backlink_anchors`, and twelve months of daily new/lost history in `backlink_history`, each a dated snapshot and each reported separately if its endpoint fails (`profile:false` skips them). The dashboard's Links tab opens with the profile: KPI strip, a new-vs-lost referring-domains chart per month, top referring domains, the anchor mix, your most-linked pages with their live status, and the backlinked pages that answer 4xx/5xx. Sections never collected say "not collected", never zero. All three tables are readable through `query_data`.
 - **Crawl progress a client can read (#52).** `check_crawl_status` on a running crawl now reports the stage (`fetching`, `writing-links`, `image-weights`, `resource-headers`, `link-graph`, `revalidation-probe`, `snapshot`, `external-links`), pages crawled against `maxPages`, the queue, pages/sec and an ETA for the fetch stage, as a readable line and as `progress` fields. A 10,000-page recipe is in `manual/tools.md` under `start_crawl`.
 
 ### Fixed

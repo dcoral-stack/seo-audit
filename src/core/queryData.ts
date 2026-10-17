@@ -11,6 +11,7 @@ import { matchPredicate, ftsIndexFor, ensureFtsSchema, ensureFtsBackfilled, type
 export const QUERYABLE_TABLES = [
   'pages', 'links', 'search_analytics', 'url_inspection', 'sitemap_urls',
   'findings', 'image_assets', 'page_backlinks', 'redirect_sources', 'probes', 'page_resources', 'resource_assets', 'external_link_status',
+  'referring_domains', 'backlink_anchors', 'backlink_history',
 ] as const;
 export type QueryTable = (typeof QUERYABLE_TABLES)[number];
 
@@ -55,6 +56,9 @@ const DEFAULT_ROW_COLUMNS: Record<QueryTable, string[]> = {
   findings: ['id', 'run_id', 'check_id', 'category', 'severity', 'url_key', 'priority'],
   image_assets: ['url', 'bytes', 'status', 'content_type', 'used_on'],
   page_backlinks: ['url', 'backlinks', 'referring_domains', 'dofollow', 'status_code'],
+  referring_domains: ['snapshot_at', 'domain', 'rank', 'backlinks', 'referring_pages', 'nofollow_pages', 'spam_score', 'first_seen', 'lost_date'],
+  backlink_anchors: ['snapshot_at', 'anchor', 'kind', 'backlinks', 'referring_domains', 'nofollow_pages', 'first_seen', 'lost_date'],
+  backlink_history: ['date', 'rank', 'backlinks', 'new_backlinks', 'lost_backlinks', 'referring_domains', 'new_referring_domains', 'lost_referring_domains'],
   redirect_sources: ['url', 'status', 'final_url', 'hops', 'chain'],
   probes: ['url', 'variant_type', 'status', 'final_url', 'final_status', 'canonical', 'verdict', 'probed_at'],
   page_resources: ['page_key', 'resource_url', 'type', 'party', 'position', 'is_async', 'is_defer', 'is_preload'],

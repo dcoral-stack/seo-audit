@@ -186,7 +186,7 @@ The bigger question: what should this site cover to be seen as expert in its spa
 > What topics should mysite.com cover? Compare against rival.com
 
 ### `pull_backlinks`
-Your backlink profile - summary metrics plus per-page backlink and referring-domain counts - with a live HTTP status check on each linked page, so backlinks pointing at 404s get caught (`backlinks-to-404` in the next audit). One gotcha: Backlinks is a **separate DataForSEO subscription** from SERP/Keywords/Labs; if it isn't activated the tool says so plainly. Runs as a background job.
+Your backlink profile - summary metrics plus per-page backlink and referring-domain counts - with a live HTTP status check on each linked page, so backlinks pointing at 404s get caught (`backlinks-to-404` in the next audit). It also fills the dashboard's Links tab: the referring domains (live and lost, with DataForSEO rank, spam score and first-seen date) go to `referring_domains`, every anchor text goes to `backlink_anchors` classified as branded, keyword, URL, generic or empty, and twelve months of daily new/lost history go to `backlink_history`. Those are three more cheap Backlinks calls, each cached 20 days and each reported on its own if it fails, so one missing endpoint never zeroes the others; `profile:false` skips them, and `domainLimit`, `anchorLimit` and `historyMonths` size them. Each pull is a dated snapshot, so re-pulling builds a trend. One gotcha: Backlinks is a **separate DataForSEO subscription** from SERP/Keywords/Labs; if it isn't activated the tool says so plainly. Runs as a background job.
 > Pull the backlinks for mysite.com
 
 ### `link_intersect`

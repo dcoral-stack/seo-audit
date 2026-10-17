@@ -117,7 +117,7 @@ GRAIN (one line per source):
 - pages / links: the LATEST crawl only, one row per url_key (history lives in page_snapshots, diffed by detect_changes). Carries title/H1/meta, canonical, schema (json_ld), body_chunks, iPR, click_depth, inlink_count.
 - url_inspection: one row per inspected URL — Google's own view (coverage_state, google_canonical vs user_canonical, last_crawl_time, crawled_as, rich_results).
 - rank_history: month × domain (DataForSEO rank distribution + ETV).
-- page_backlinks: one row per backlinked URL (counts + live HTTP status).
+- page_backlinks: one row per backlinked URL (counts + live HTTP status). referring_domains / backlink_anchors: one row per domain / anchor per pull (snapshot_at; anchors carry kind). backlink_history: one row per day (new/lost referring domains).
 - Labs tools: keyword × target, or month × target; cached 20 days; each call costs money — never loop them in bulk.
 
 ARCHETYPE CHAINS (compose along these lines):
@@ -154,6 +154,9 @@ This server's value is composition: joining Search Console, the crawl, URL Inspe
 | url_inspection | one row per inspected URL (top pages by clicks, quota-limited) | coverage_state, page_fetch_state, google_canonical, user_canonical, last_crawl_time, crawled_as, rich_results | url_key | inspect_urls | free (GSC quota) |
 | sitemap_urls | one row per sitemap URL | lastmod | url_key | captured at crawl time | free |
 | rank_history | month × domain | rank distribution (1–3/4–10/11–20/21–100), ETV | period | track_ranks | paid, 20-day cache |
+| referring_domains | one row per referring domain per pull (snapshot_at) | rank, backlinks, referring_pages, nofollow_pages, spam_score, first_seen, lost_date | domain | pull_backlinks | paid, 20-day cache |
+| backlink_anchors | one row per anchor text per pull (snapshot_at) | kind (branded/keyword/url/generic/empty), backlinks, referring_domains | anchor | pull_backlinks | paid, 20-day cache |
+| backlink_history | one row per day | backlinks, referring_domains, new_/lost_referring_domains | date | pull_backlinks (12 months) | paid, 20-day cache |
 | page_backlinks | one row per backlinked URL | backlinks, referring_domains, live status_code | url_key, domain | pull_backlinks (needs the DataForSEO Backlinks subscription) | paid, 20-day cache |
 | link_prospects | one row per prospect domain (links to competitors, not you) | intersections, domain_trust, spam_score, dofollow, trust_flow, topical_trust_flow | domain | link_intersect (needs the DataForSEO Backlinks subscription; Majestic optional) | paid, 20-day cache |
 | keyword_intent | one row per keyword | intent + probability | query | search_intent (pass siteUrl to persist) | paid (cheap), cached |
@@ -2564,12 +2567,20 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'pull_backlinks',
     {
       title: 'Pull backlink profile (DataForSEO)',
-      description: '[Paid: Backlinks subscription (separate - 40204 = not activated), cached 20d | Use for: authority + dead-backlink recovery] Fetch the property’s backlink profile (overall summary — total backlinks, referring domains, Domain Rank, broken backlinks/pages, nofollow share — plus per-page backlink/referring-domain counts) into page_backlinks, and resolve each backlinked page’s live HTTP status so run_audit can flag external backlinks pointing to dead (4xx/5xx) pages. Paid DataForSEO call, 20-day cached, on-demand only. Async job — poll check_sync_status. Grain: one row per backlinked URL. Joins: url_key → pages/GSC; domain → Labs tools.',
-      inputSchema: { siteUrl: z.string(), limit: z.number().int().min(1).max(1000).optional(), statusLimit: z.number().int().min(0).max(1000).optional() },
+      description: '[Paid: Backlinks subscription (separate - 40204 = not activated), cached 20d | Use for: authority + dead-backlink recovery] Fetch the property’s backlink profile (overall summary — total backlinks, referring domains, Domain Rank, broken backlinks/pages, nofollow share — plus per-page backlink/referring-domain counts) into page_backlinks, and resolve each backlinked page’s live HTTP status so run_audit can flag external backlinks pointing to dead (4xx/5xx) pages. Also collects the profile behind the dashboard\'s Links tab (#47): referring domains (live and lost, with rank, spam score, first seen) into referring_domains, anchor texts classified branded / keyword / url / generic / empty into backlink_anchors, and 12 months of daily new/lost history into backlink_history — three more cheap Backlinks calls, each reported separately if it fails (profile:false skips them). Paid DataForSEO calls, 20-day cached, on-demand only. Async job — poll check_sync_status. Grain: one row per backlinked URL (page_backlinks), per domain / anchor per pull (snapshot_at), per day (history). Joins: url_key → pages/GSC; domain → Labs tools.',
+      inputSchema: {
+        siteUrl: z.string(),
+        limit: z.number().int().min(1).max(1000).optional().describe('Backlinked pages to store (default 1000)'),
+        statusLimit: z.number().int().min(0).max(1000).optional().describe('Backlinked pages to live-check when the crawl has no status for them (default 150)'),
+        profile: z.boolean().optional().describe('Also collect referring domains, anchors and history (default true)'),
+        domainLimit: z.number().int().min(10).max(1000).optional().describe('Referring domains to store per pull (default 1000, best rank first)'),
+        anchorLimit: z.number().int().min(10).max(1000).optional().describe('Anchors to store per pull (default 500, most backlinks first)'),
+        historyMonths: z.number().int().min(1).max(36).optional().describe('Months of daily history to pull (default 12)'),
+      },
     },
-    async ({ siteUrl, limit, statusLimit }) => {
+    async ({ siteUrl, limit, statusLimit, profile, domainLimit, anchorLimit, historyMonths }) => {
       const bl = requireDfs(backlinks);
-      const jobId = startFor(siteUrl, 'backlinks', (update, signal) => bl.run(siteUrl, { limit, statusLimit }, update, signal));
+      const jobId = startFor(siteUrl, 'backlinks', (update, signal) => bl.run(siteUrl, { limit, statusLimit, profile, domainLimit, anchorLimit, historyMonths }, update, signal));
       return jobStarted({ jobId, status: 'running', siteUrl }, `Backlink pull started for ${siteUrl} (job ${jobId}). Poll check_sync_status, then run_audit for backlinks-to-404.`);
     },
   );

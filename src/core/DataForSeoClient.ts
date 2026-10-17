@@ -421,6 +421,25 @@ export class DataForSeoClient {
     ]);
   }
 
+  /** Backlinks (#47) — referring domains for a target, best rank first; `all` includes lost domains (lost_date set). */
+  async referringDomains(target: string, limit = 1000, status: 'live' | 'all' = 'all'): Promise<DfsResponse> {
+    return this.call('/v3/backlinks/referring_domains/live', [
+      { target, limit: Math.min(limit, 1000), order_by: ['rank,desc'], backlinks_status_type: status, exclude_internal_backlinks: true },
+    ]);
+  }
+
+  /** Backlinks (#47) — anchor texts pointing at a target, most backlinks first (live links only). */
+  async backlinkAnchors(target: string, limit = 500): Promise<DfsResponse> {
+    return this.call('/v3/backlinks/anchors/live', [
+      { target, limit: Math.min(limit, 1000), order_by: ['backlinks,desc'], backlinks_status_type: 'live', exclude_internal_backlinks: true },
+    ]);
+  }
+
+  /** Backlinks (#47) — daily backlink / referring-domain history (new and lost) for a target since `dateFrom` (YYYY-MM-DD). */
+  async backlinksHistory(target: string, dateFrom: string, dateTo?: string): Promise<DfsResponse> {
+    return this.call('/v3/backlinks/history/live', [{ target, date_from: dateFrom, ...(dateTo ? { date_to: dateTo } : {}) }]);
+  }
+
   /**
    * Backlinks — LINK INTERSECT: domains that link to a set of competitor `targets`, minus
    * anything already linking to `excludeTarget` (our own domain). Each returned item is a
