@@ -16,8 +16,10 @@ Each release is tagged `vX.Y.Z` on the release commit (tagging lapsed between 0.
   - The Overview is rebuilt: KPI strip, clicks / impressions / position as small multiples, findings by priority, crawl-health status mix, a site-network preview, top keywords and pages, and a jobs and data-freshness panel.
   - Crawl health gets a KPI strip and a canonical / redirect / 404 breakdown. The Network tab (formerly Architecture) leads with the full crawl graph, and Issues gets a by-area filter.
   - The two dual-axis charts (rank and clicks; DataForSEO keywords vs ETV) become small multiples.
+- Docs screenshots refreshed for the redesign, from the fictional demo property. `site-health.png`, `architecture.png` and `tab-arch.png` become `crawl-health.png`, `network.png` and `tab-network.png`, and the README and manual captions follow the tab renames (Crawl health, Network).
 
 ### Added
+- `npm run demo:property` (`scripts/demo-property.mjs`) builds a fully populated, fictional demo property (Larchmere Outfitters, `larchmere.example`): synthetic GSC history, a real crawl of a synthetic site, and a real audit. `npm run demo:screenshots` captures the docs screenshots from it, so no real property's data reaches the repo.
 - Dashboard payload: `freshness`, read from the property database on every load (outside the cache), so the standalone dashboard sidecar shows the same job status as the MCP. Also `crawlHealth.urlFlow`, the canonical / redirect / not-found buckets with the most-linked example URL per bucket.
 
 ### Fixed

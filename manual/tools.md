@@ -233,7 +233,7 @@ Diffs your two most recent crawls, per URL, severity-classified: a 200 that beca
 ## Dashboard and reporting
 
 ### `get_dashboard`
-The interactive dashboard, rendered right in the chat: eight tabs - overview, findings, site health, opportunities, search performance, architecture, links and content research. What each tab shows: [dashboard.md](dashboard.md). Needs synced data.
+The interactive dashboard, rendered right in the chat: eight tabs - overview, issues & fixes, crawl health, network, search performance, opportunities, links and content research. What each tab shows: [dashboard.md](dashboard.md). Needs synced data.
 > Show me the dashboard for mysite.com
 
 ### `serve_dashboard`

@@ -35,9 +35,9 @@ you  › run an SEO audit on mysite.com
 you  › generate the fix for #1 ▍
 ```
 
-[![The dashboard overview - the Site Health Score, a plain-language executive summary, critical issues and recoverable clicks](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/dashboard-overview.png)](https://github.com/houtini-ai/seo-audit)
+[![The dashboard overview - the KPI strip with the Site Health Score, search performance over time, findings by priority, crawl health and the site-network preview](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/dashboard-overview.png)](https://github.com/houtini-ai/seo-audit)
 
-[![The Architecture tab - the crawl-structure map of your internal link skeleton, the equity-vs-traffic flow, and the equity-vs-reality scatter](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/architecture.png)](https://github.com/houtini-ai/seo-audit)
+[![The Network tab - the site-network map of your internal link skeleton, equity vs traffic by template, and the folder-to-folder equity flow](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/network.png)](https://github.com/houtini-ai/seo-audit)
 
 ## The manual
 
@@ -53,7 +53,7 @@ This README is the story and the quick start. The detail lives in the manual:
 | [SEO Recon](manual/recon.md) | Why a page is losing: the live SERP + AI-Overview citation verdict, the competitor diff, and the trackable to-do ledger |
 | [DataForSEO functions](manual/dataforseo.md) | Every DataForSEO-backed tool grouped by API module - Keywords, SERP, Labs, Backlinks, OnPage - each with its endpoint and cost |
 | [Majestic functions](manual/majestic.md) | The optional Trust Flow tier - what it adds and how `link_intersect` uses it |
-| [Dashboard & reports](manual/dashboard.md) | The eight tabs, the report hub, what each chart shows, and the shareable export |
+| [Dashboard & reports](manual/dashboard.md) | The eight tabs, what each chart shows, and the shareable export |
 
 ## Surprisingly little has changed in twenty years
 
@@ -99,7 +99,7 @@ Yes. The crawl-plus-GSC merge is not a novelty; it's the method. On one property
 
 Every check is labelled **D** (deterministic - here are the bytes) or **N** (judgement - off by default, ask for *"the judgement findings"* to see them). In my view a wrong finding is worse than no finding at all, so the heuristic checks have to ask permission. The full registry, check by check, is in [the manual](manual/checks.md).
 
-And if you grew up on the classic desktop SEO crawlers, the dashboard's Site health tab will feel like home - response codes, indexability reasons, crawl depth, the heaviest images, server errors and slow pages, all as clean stat bars. Same diagnostics, except each one is sitting next to the Search Console numbers for the same URL. The tab-by-tab tour is in [dashboard.md](manual/dashboard.md).
+And if you grew up on the classic desktop SEO crawlers, the dashboard's Crawl health tab will feel like home - response codes, indexability reasons, crawl depth, the heaviest images, server errors and slow pages, all as clean stat bars. Same diagnostics, except each one is sitting next to the Search Console numbers for the same URL. The tab-by-tab tour is in [dashboard.md](manual/dashboard.md).
 
 ---
 
@@ -117,7 +117,7 @@ The crawl is where audits usually go wrong, so it's worth understanding what thi
 
 After the crawl it computes a real link graph: internal PageRank with nav and footer links down-weighted, click depth from the homepage counting body links only, in-degree per page. That graph powers the orphan, equity-leak and underlinked-page checks - and the donor rankings when the tool suggests internal links.
 
-[![The Site health tab - classic crawl diagnostics plus security-header, structured-data and redirect-chain coverage](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/site-health.png)](https://github.com/houtini-ai/seo-audit)
+[![The Crawl health tab - the canonical, redirect and not-found breakdown, then classic crawl diagnostics as stat bars](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/crawl-health.png)](https://github.com/houtini-ai/seo-audit)
 
 ---
 
@@ -139,7 +139,7 @@ Each of these is a real procedure I use, and each is one prompt. The expanded ve
 12. **Content recon - why is this page losing?** *"Run content recon on mysite.com"* takes your worst declining pages, pulls the live Google SERP for each, and reads whether the **AI Overview** cites you. The verdict is the honest bit: *rank but not cited* is a data-accuracy or freshness problem, not a rewrite. It transcribes the ranking videos (Supadata), reads the reachable competitors (Firecrawl, plus a free browser-profile fetch that even gets Reddit), and writes the gaps into a tracked to-do board you can annotate and re-measure. → [recon.md](manual/recon.md)
 13. **Link prospecting, sorted by authority that's real.** *"Link intersect for mysite.com vs rival1.com, rival2.com"* returns the domains linking to your rivals and not to you - the outreach list, followed-first and spam-filtered. Add a **Majestic** key and it re-sorts on **Trust Flow** and shows each prospect's **Topical Trust Flow**, so the directories drop out and what's left is authority that's on your topic. → [Majestic, below](#link-intersect-and-the-majestic-trust-flow-tier)
 
-[![Ranking distribution over time - impressions by position bucket](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/search-performance.png)](https://github.com/houtini-ai/seo-audit)
+[![The Search performance tab - branded vs non-branded, ranking distribution over time (impressions by position bucket) and search visibility over time](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/search-performance.png)](https://github.com/houtini-ai/seo-audit)
 
 [![Content architecture - your search demand grouped into topic clusters, each with a coverage score, striking-distance members and gaps](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/content-architecture.png)](https://github.com/houtini-ai/seo-audit)
 

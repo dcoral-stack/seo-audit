@@ -58,6 +58,8 @@ docs/
 # one-off diagnostics and property-specific QA harnesses stay local
 scripts/*
 !scripts/smoke.mjs
+!scripts/demo-property.mjs
+!scripts/demo-screenshots.mjs
 !scripts/qa-crawl.mjs
 !scripts/probe-crawl.mjs
 !scripts/probe-gsc.mjs
