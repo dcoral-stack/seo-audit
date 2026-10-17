@@ -8,6 +8,7 @@ import type { Backlinks } from './Backlinks.js';
 import type { Entities } from './Entities.js';
 import type { DataForSeoClient } from './DataForSeoClient.js';
 import type { CruxSync } from './CruxSync.js';
+import path from 'node:path';
 import type { FetchOptions } from './types.js';
 import type { FtsIndex } from './fts.js';
 import type { JobManager } from './JobManager.js';
@@ -74,7 +75,9 @@ export interface JobArgsByKind {
   duplicates: { siteUrl: string; threshold?: number; limit?: number };
   integrity: { siteUrl: string; mode: 'quick' | 'full' };
   repair: { siteUrl: string };
-  'fts-index': { siteUrl: string; dbFile: string; indexes: FtsIndex[] };
+  /** `dbName`: the property DB's FILE NAME (as the job scope), never an absolute path - the process
+   * that runs the job resolves it in its own data dir, which a runner may mount at another path. */
+  'fts-index': { siteUrl: string; dbName: string; indexes: FtsIndex[] };
   recon: ReconJobArgs;
   crux: { siteUrl: string } & Parameters<CruxSync['run']>[1];
 }
@@ -103,7 +106,8 @@ export const JOB_KINDS: { [K in JobKindName]: KindFn<K> } = {
     findNearDuplicates(deps.dataDir(), siteUrl, { ...(threshold != null ? { threshold } : {}), ...(limit != null ? { limit } : {}) }),
   integrity: ({ siteUrl, mode }, deps) => checkIntegrity(deps.dataDir(), siteUrl, mode),
   repair: ({ siteUrl }, deps) => repairIndexes(deps.dataDir(), siteUrl),
-  'fts-index': async ({ siteUrl, dbFile, indexes }, _deps, update, signal) => {
+  'fts-index': async ({ siteUrl, dbName, indexes }, deps, update, signal) => {
+    const dbFile = ftsDbFile(deps.dataDir(), dbName);
     update({ dbFile, siteUrl, indexes });
     return backfillInWorker(dbFile, indexes, signal);
   },
@@ -111,6 +115,14 @@ export const JOB_KINDS: { [K in JobKindName]: KindFn<K> } = {
   crux: ({ siteUrl, ...opts }, deps, update, signal) =>
     dataJob(deps, siteUrl, (u, s) => need(deps.cruxSync, NO_CRUX).run(siteUrl, opts, u, s))(update, signal),
 };
+
+/** The fts-index job's database, resolved in THIS process's data dir from the stored bare file name. */
+export function ftsDbFile(dataDir: string, dbName: string): string {
+  if (!dbName || path.basename(dbName) !== dbName || !dbName.endsWith('.db')) {
+    throw new Error(`fts-index: "${dbName}" is not a property database file name.`);
+  }
+  return path.join(dataDir, dbName);
+}
 
 export const isJobKind = (type: string): type is JobKindName => Object.prototype.hasOwnProperty.call(JOB_KINDS, type);
 

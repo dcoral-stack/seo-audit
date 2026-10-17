@@ -11,7 +11,7 @@ import Database from 'better-sqlite3';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { JobManager, jobsDbPath, liveJobTypes, RUNNER_INTERRUPTED_ERROR, RUNNER_STOPPED_ERROR, QUEUED_NOTE } from '../dist/core/JobManager.js';
-import { submitJob } from '../dist/core/jobKinds.js';
+import { submitJob, runJobKind, ftsDbFile } from '../dist/core/jobKinds.js';
 import { JobRunner } from '../dist/core/jobRunner.js';
 import { Crawler } from '../dist/core/Crawler.js';
 import { AuditDatabase } from '../dist/core/AuditDatabase.js';
@@ -299,6 +299,34 @@ try {
     const aborts = logs.filter(l => l.startsWith(`cancel requested for ${id}`)).length;
     check('a slow-to-stop cancelled job is aborted and logged once across many polls', !!done && aborts === 1, `${aborts} cancel log lines; ${JSON.stringify(done)}`);
     await runner.stop();
+  }
+
+  // ── fts-index stores the DB's bare file name; the process that runs it resolves its own path ──
+  {
+    const s = 'https://fts.example/';
+    const mcpDir = path.join(root, 'fts-mcp');
+    const runnerDir = path.join(root, 'fts-runner-mount'); // the same volume, mounted at another path
+    new AuditDatabase(dbPathFor(mcpDir, s)).close();
+    new AuditDatabase(dbPathFor(runnerDir, s)).close();
+    const dbName = path.basename(dbPathFor(mcpDir, s));
+    const mcp = JM({ dbPath: jobsDbPath(mcpDir), runner: 'external' });
+    const id = submitJob(mcp, 'fts-index', { siteUrl: s, dbName, indexes: ['links_fts'] }, noDeps, jobScopeFor(mcpDir, s));
+    const ro = new Database(jobsDbPath(mcpDir), { readonly: true });
+    const stored = JSON.parse(ro.prepare('SELECT args FROM jobs WHERE id = ?').get(id).args);
+    ro.close();
+    check('a queued fts-index job stores no path from the MCP process', stored.dbName === dbName && !JSON.stringify(stored).includes('fts-mcp') && !/[\\/]/.test(stored.dbName) && !('dbFile' in stored), JSON.stringify(stored));
+    const progress = {};
+    const res = await runJobKind('fts-index', stored, { dataDir: () => runnerDir }, p => Object.assign(progress, p), new AbortController().signal);
+    check('the runner builds the index in ITS data dir', progress.dbFile === path.join(runnerDir, dbName) && res?.indexes?.includes('links_fts'), JSON.stringify({ progress, res }));
+    mcp.cancel(id);
+    let threw = 0;
+    for (const bad of ['../x.db', path.join(mcpDir, dbName), 'notadb.txt', '']) { try { ftsDbFile(runnerDir, bad); } catch { threw++; } }
+    check('fts-index refuses anything but a bare .db file name', threw === 4, `${threw}/4 refused`);
+    // In-process: same file as before (dataDir + the property's DB file name).
+    const m = JM({ dbPath: jobsDbPath(path.join(root, 'fts-inproc')) });
+    const ipId = submitJob(m, 'fts-index', { siteUrl: s, dbName, indexes: ['links_fts'] }, { dataDir: () => mcpDir }, jobScopeFor(mcpDir, s));
+    const ip = await waitFor(() => settled(m, ipId), 15_000);
+    check('in-process fts-index builds the same DB the MCP resolved', ip?.state === 'completed' && ip.progress?.dbFile === dbPathFor(mcpDir, s), JSON.stringify(ip));
   }
 
   // ── In-process mode is unchanged: submit() runs the kind here, no queued row ────────────────

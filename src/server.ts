@@ -622,7 +622,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         if (big.length) {
           // One build per database: a running fts-index job for ANOTHER property must not be handed back.
           const running = jobs.list().find(j => j.type === 'fts-index' && (j.state === 'running' || j.state === 'queued') && j.scope === jobScope(siteUrl)); // scope is in the registry from the job's first write; progress.dbFile wasn't until the first heartbeat
-          const jobId = running?.id ?? startFor(siteUrl, 'fts-index', { siteUrl, dbFile, indexes: pending.map(p => p.index) });
+          const jobId = running?.id ?? startFor(siteUrl, 'fts-index', { siteUrl, dbName: path.basename(dbFile), indexes: pending.map(p => p.index) });
           return jobStarted({ jobId, status: 'running', siteUrl, building: pending.map(p => p.index) },
             `Building the full-text index for ${pending.map(p => p.index).join(', ')} (one-time, ~${big.reduce((a, p) => a + p.rows, 0).toLocaleString('en-US')} rows, in the background). Poll check_sync_status, then re-run this query. Meanwhile op "like" works, just slower.`);
         }
