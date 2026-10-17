@@ -7,6 +7,8 @@ import { dbPathFor, jobScopeFor } from './paths.js';
 import { gscFreshness } from './gscFreshness.js';
 import { expectedCtr } from './ctrModel.js';
 import { loadBrandQueries, brandPredicate } from './brand.js';
+import { TITLE_MAX_CHARS, TITLE_MIN_CHARS, META_DESC_MAX_CHARS, META_DESC_MIN_CHARS } from './onPageLimits.js';
+import { SMALL_BASE_MIN, QUICK_WIN_MIN_IMPRESSIONS, QUICK_WIN_MAX_POSITION, TRAPPED_MIN_REF_DOMAINS, TRAPPED_MIN_DEPTH } from './displayRules.js';
 import { HTML_CT } from './sql.js';
 import { gscMixedShape } from './gscRows.js';
 import { latestSerpFootprint, ensureFootprintTable, type SerpFootprint } from './serpFootprint.js';
@@ -56,7 +58,7 @@ export interface DashboardData {
   quickWins?: { query: string; position: number; impressions: number; clicks: number; ctr: number; expectedCtr: number; type: 'striking' | 'snippet' | 'serp' | 'ok'; potential: number }[];
   contentDecay?: { urlKey: string; prevClicks: number; clicks: number; lost: number; dropPct: number; impressions: number; position: number }[];
   cannibalisationTable?: { query: string; urlCount: number; totalImpressions: number; totalClicks: number; verdict: 'split' | 'dominant'; crossType: boolean; urls: { url: string; impressions: number; clicks: number; position: number; template: string }[] }[];
-  brandedSplit?: { brand: string; variants: string[]; brandedQueries: number; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
+  brandedSplit?: { brand: string; variants: string[]; brandedQueries: number; uncertain: import('./brand.js').UncertainBrand | null; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
   topKeywords?: {
     query: string;
     clicks: number;
@@ -67,7 +69,7 @@ export interface DashboardData {
   }[];
   deviceBreakdown?: { device: string; clicks: number; prevClicks: number; impressions: number; ctr: number; position: number }[];
   countryBreakdown?: { country: string; clicks: number; prevClicks: number; impressions: number }[];
-  pagePerformance?: { urlKey: string; clicks: number; prevClicks: number; clicksChangePct: number; impressions: number; position: number; category: string }[];
+  pagePerformance?: { urlKey: string; clicks: number; prevClicks: number; clicksChangePct: number | null; impressions: number; position: number; category: string }[];
   keywordMovement?: { query: string; firstPos: number; lastPos: number; delta: number; firstDate: string; lastDate: string; category: string }[];
   // Equity vs reality: per-page internal PageRank (x) vs GSC impressions (y), bucketed by template.
   equityScatter?: { x: number; y: number; t: string; u: string }[];
@@ -113,6 +115,9 @@ export interface DashboardData {
     nodes: { id: string; ipr: number; depth: number | null; status: number | null; indexable: boolean }[];
     edges: { source: string; target: string }[];
     totalPages: number;
+    /** Mapped pages with no in-content link to or from another mapped page (they float free in the
+     *  force layout): their internal links in, and how many of those sit in content. */
+    isolated?: { id: string; inlinks: number; bodyInlinks: number }[];
   };
   findings?: {
     runId: string;
@@ -218,7 +223,9 @@ interface Totals { clicks: number; impressions: number; position: number }
 // 26: backlinkProfile (#47), merged onto the summary stack (its branch numbered it 24).
 // 27: crawlHealth.responseCodes gains the rate-limited bucket (#54; its branch numbered it 25).
 // (#65 changed where segment rows live, not the payload; the version probe reads both tables.)
-const PAYLOAD_VERSION = '27';
+// 28: the real-data dashboard fixes (#68 follow-up): small-base clicksChangePct, cwvField detail, brand on exact-match domains.
+// 29: structureGraph.isolated (mapped pages with no in-content link, named in the Network tab).
+const PAYLOAD_VERSION = '29';
 
 /** Build the dashboard payload for a property from its synced GSC history. */
 export function getDashboardData(dataDir: string, siteUrl: string): DashboardData {
@@ -313,6 +320,8 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         brand: brand.token,
         variants: brand.variants,
         brandedQueries: brand.queries,
+        // Exact-match domain: the spaced spellings counted as non-brand, shown as uncertain.
+        uncertain: brand.uncertain,
         branded: { clicks: splitRow.bClk, impressions: splitRow.bImp },
         nonBranded: { clicks: splitRow.tClk - splitRow.bClk, impressions: splitRow.tImp - splitRow.bImp },
         priorBrandedClicks: priorRow.bClk,
@@ -385,7 +394,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const quickWins = (db.db.prepare(
       `SELECT query, SUM(impressions) impr, SUM(clicks) clicks, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
        FROM gsc_rows WHERE query IS NOT NULL AND ${UB} AND date > date(?, '-28 days')
-       GROUP BY query HAVING SUM(impressions) >= 50 AND pos <= 20
+       GROUP BY query HAVING SUM(impressions) >= ${QUICK_WIN_MIN_IMPRESSIONS} AND pos <= ${QUICK_WIN_MAX_POSITION}
        ORDER BY SUM(impressions) DESC LIMIT 300`).all(maxDate) as { query: string; impr: number; clicks: number; pos: number }[])
       .map(r => {
         const ctr = r.impr ? r.clicks / r.impr : 0;
@@ -423,8 +432,9 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const pagePrior = new Map((db.db.prepare(`SELECT page_key, SUM(clicks) clicks, SUM(impressions) impressions FROM gsc_rows WHERE page_key IS NOT NULL AND date > date(?, '-56 days') AND date <= date(?, '-28 days') GROUP BY page_key`).all(maxDate, maxDate) as any[]).map(p => [p.page_key, p]));
     const pagePerformance = (db.db.prepare(`SELECT page_key, SUM(clicks) clicks, SUM(impressions) impressions, AVG(position) position FROM gsc_rows WHERE page_key IS NOT NULL AND ${UB} AND date > date(?, '-28 days') GROUP BY page_key ORDER BY clicks DESC LIMIT 40`).all(maxDate) as any[]).map(p => {
       const prev = (pagePrior.get(p.page_key) as any) ?? { clicks: 0, impressions: 0 };
-      const pct = prev.clicks ? ((p.clicks - prev.clicks) / prev.clicks) * 100 : (p.clicks > 0 ? 100 : 0);
-      return { urlKey: p.page_key, clicks: p.clicks, prevClicks: prev.clicks, clicksChangePct: Math.round(pct), impressions: p.impressions, position: Math.round(p.position * 10) / 10, category: pageCategory(p, prev) };
+      // The small-base rule (displayRules): no % on a prior under SMALL_BASE_MIN clicks (0 -> 1 is not +100%).
+      const pct = prev.clicks >= SMALL_BASE_MIN ? Math.round(((p.clicks - prev.clicks) / prev.clicks) * 100) : null;
+      return { urlKey: p.page_key, clicks: p.clicks, prevClicks: prev.clicks, clicksChangePct: pct, impressions: p.impressions, position: Math.round(p.position * 10) / 10, category: pageCategory(p, prev) };
     });
 
     // Content decay & refresh ROI — pages that earned ≥10 clicks last period and have since fallen
@@ -676,10 +686,17 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         ).all(thr, thr, MAX_EDGES) as { s: string; t: string; w: number }[];
         const ids = new Set(nodeRows.map(n => n.url_key));
         const keptEdges = edges.filter(e => ids.has(e.s) && ids.has(e.t)).map(e => ({ source: e.s, target: e.t }));
+        const linked = new Set(keptEdges.flatMap(e => [e.source, e.target]));
+        const inl = db.db.prepare(`SELECT COUNT(DISTINCT source_key) n, COUNT(DISTINCT CASE WHEN placement='body' THEN source_key END) body FROM links WHERE is_internal=1 AND target_key=? AND source_key <> target_key`);
+        const isolated = nodeRows.filter(n => !linked.has(n.url_key)).slice(0, 20).map(n => {
+          const r = inl.get(n.url_key) as { n: number; body: number };
+          return { id: n.url_key, inlinks: r.n, bodyInlinks: r.body };
+        });
         structureGraph = {
           nodes: nodeRows.map(n => ({ id: n.url_key, ipr: Math.round(n.ipr), depth: n.click_depth, status: n.status_code, indexable: !!n.indexable })),
           edges: keptEdges,
           totalPages,
+          isolated,
         };
       }
     }
@@ -717,11 +734,11 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
           FROM pages`).get() as Record<string, unknown>;
         const g2 = db.db.prepare(`SELECT
             SUM(CASE WHEN title IS NULL OR TRIM(title)='' THEN 1 ELSE 0 END) tMissing,
-            SUM(CASE WHEN title_length > 60 THEN 1 ELSE 0 END) tLong,
-            SUM(CASE WHEN title_length BETWEEN 1 AND 29 THEN 1 ELSE 0 END) tShort,
+            SUM(CASE WHEN title_length > ${TITLE_MAX_CHARS} THEN 1 ELSE 0 END) tLong,
+            SUM(CASE WHEN title_length BETWEEN 1 AND ${TITLE_MIN_CHARS - 1} THEN 1 ELSE 0 END) tShort,
             SUM(CASE WHEN meta_description IS NULL OR TRIM(meta_description)='' THEN 1 ELSE 0 END) mMissing,
-            SUM(CASE WHEN meta_description_length > 155 THEN 1 ELSE 0 END) mLong,
-            SUM(CASE WHEN meta_description_length BETWEEN 1 AND 69 THEN 1 ELSE 0 END) mShort,
+            SUM(CASE WHEN meta_description_length > ${META_DESC_MAX_CHARS} THEN 1 ELSE 0 END) mLong,
+            SUM(CASE WHEN meta_description_length BETWEEN 1 AND ${META_DESC_MIN_CHARS - 1} THEN 1 ELSE 0 END) mShort,
             SUM(CASE WHEN h1 IS NULL OR TRIM(h1)='' THEN 1 ELSE 0 END) h1Missing,
             SUM(CASE WHEN h1_count > 1 THEN 1 ELSE 0 END) h1Multi,
             SUM(CASE WHEN images_without_alt > 0 THEN 1 ELSE 0 END) noAlt,
@@ -766,14 +783,14 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         const titles = stats([
           { label: 'Missing', count: num(g2.tMissing), tone: 'warn' },
           { label: 'Duplicate', count: dupCount('title'), tone: 'warn' },
-          { label: 'Over 60 characters', count: num(g2.tLong), tone: 'warn' },
-          { label: 'Under 30 characters', count: num(g2.tShort), tone: 'warn' },
+          { label: `Over ${TITLE_MAX_CHARS} characters`, count: num(g2.tLong), tone: 'warn' },
+          { label: `Under ${TITLE_MIN_CHARS} characters`, count: num(g2.tShort), tone: 'warn' },
         ]);
         const metas = stats([
           { label: 'Missing', count: num(g2.mMissing), tone: 'warn' },
           { label: 'Duplicate', count: dupCount('meta_description'), tone: 'warn' },
-          { label: 'Over 155 characters', count: num(g2.mLong), tone: 'warn' },
-          { label: 'Under 70 characters', count: num(g2.mShort), tone: 'warn' },
+          { label: `Over ${META_DESC_MAX_CHARS} characters`, count: num(g2.mLong), tone: 'warn' },
+          { label: `Under ${META_DESC_MIN_CHARS} characters`, count: num(g2.mShort), tone: 'warn' },
         ]);
         const onPage = stats([
           { label: 'Missing H1', count: num(g2.h1Missing), tone: 'warn' },
@@ -934,8 +951,8 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
                 COALESCE(b.referring_domains,0) rd, COALESCE(b.backlinks,0) bl,
                 b.trust_flow tf, b.topical_trust_flow ttf
          FROM page_backlinks b JOIN pages p ON p.url_key = b.url_key
-         WHERE p.status_code = 200 AND COALESCE(b.referring_domains,0) >= 2
-           AND (p.click_depth IS NULL OR p.click_depth >= 3)`,
+         WHERE p.status_code = 200 AND COALESCE(b.referring_domains,0) >= ${TRAPPED_MIN_REF_DOMAINS}
+           AND (p.click_depth IS NULL OR p.click_depth >= ${TRAPPED_MIN_DEPTH})`,
       ).all() as { url: string; ipr: number; cd: number | null; rd: number; bl: number; tf: number | null; ttf: string | null }[];
       trappedAuthority = taRows
         .map(r => {

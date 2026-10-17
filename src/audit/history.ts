@@ -10,8 +10,9 @@
 // `snapshotCrawl` copies `pages` verbatim, so the two sets mean the same thing.
 import { readFileSync } from 'node:fs';
 import type Database from 'better-sqlite3';
+import { capHealth } from '../core/displayRules.js';
 
-export const HEALTH_DEFINITION = 'Share of crawled internal pages with no critical or high finding.';
+export const HEALTH_DEFINITION = 'Share of crawled internal pages with no critical or high finding (never 100 while any page has one).';
 
 /** Product-convention bands (not an industry benchmark). */
 export function healthBand(score: number): 'Excellent' | 'Good' | 'Fair' | 'Weak' {
@@ -37,7 +38,9 @@ export function computeHealth(db: Database.Database, runId: string, crawlId?: st
     `SELECT COUNT(DISTINCT f.url_key) n FROM findings f JOIN (${set.sql}) p ON p.url_key = f.url_key
      WHERE f.run_id = ? AND f.severity IN ('crit','high') AND f.url_key IS NOT NULL`,
   ).get(...set.args, runId) as { n: number }).n;
-  const score = Math.max(0, Math.min(100, Math.round((1 - errorPages / totalPages) * 100)));
+  // Never 100 while any page carries a crit/high finding (1 of 495 rounds to 100 otherwise):
+  // capHealth is the one display rule the dashboard applies to stored scores too.
+  const score = capHealth(Math.max(0, Math.min(100, Math.round((1 - errorPages / totalPages) * 100))), errorPages);
   return { score, errorPages, totalPages };
 }
 

@@ -8,9 +8,11 @@
 //   - samples say "n of M"; thresholds are stated product rules, shown where they apply;
 //   - every number carries class "n" so redact mode (?redact=1) blurs it, and charts drop their
 //     numeric axes and tooltips when redacted.
-import { esc, fmtNum, fmtCompact, sparkline, delta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
+import { esc, fmtNum, fmtCompact, sparkline, countDelta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
+import { shareText, capHealth, runLabels } from '../core/displayRules.js';
 import { buildVerdict, direction } from '../core/summaryVerdict.js';
-import { ago, SEV_LABEL } from './panels.js';
+import { ago, SEV_LABEL, freshVerdict } from './panels.js';
+import { cwvTile, cwvCoverage } from './cwv.js';
 
 const fmt = fmtNum;
 
@@ -25,10 +27,6 @@ export interface SummaryCtx {
   catLabel: Record<string, string>;
 }
 
-// Stated product rules (not benchmarks), shown in the freshness tooltips.
-const GSC_STALE_DAYS = 7;
-const CRAWL_AUDIT_STALE_DAYS = 30;
-const DAY = 86_400_000;
 
 const set = (id: string, html: string): void => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
 const show = (id: string, on: boolean): void => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
@@ -38,7 +36,6 @@ const parseAt = (at: string | null | undefined): number => {
   if (/^\d{4}-\d{2}-\d{2}$/.test(at)) return Date.parse(`${at}T00:00:00Z`);
   return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(' ', 'T')}Z`);
 };
-const daysSince = (at: string | null | undefined): number | null => { const t = parseAt(at); return Number.isFinite(t) ? (Date.now() - t) / DAY : null; };
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monthLabel = (ym: string): string => `${MONTHS[Number(ym.slice(5, 7)) - 1]} ${ym.slice(2, 4)}`;
 const dayLabel = (at: string | null | undefined): string => {
@@ -60,27 +57,11 @@ function freshness(d: any): string {
   for (const kind of ['sync', 'crawl', 'audit', 'inspect', 'ranks']) {
     const s = src.find(r => r.kind === kind);
     if (!s) continue;
-    let flag = '', rule = '';
     let line = s.state === 'never' ? 'never' : s.state === 'running' ? 'running now' : s.state === 'completed' ? ago(s.at) : `${s.state} ${ago(s.at)}`;
-    if (kind === 'sync' && s.state !== 'never') {
-      const end = d.dateRange?.rawMaxDate ?? d.coverage?.gsc?.maxDate;
-      const behind = daysSince(end);
-      if (end) line += ` · to ${dayLabel(end)}`;
-      if (behind != null && behind > GSC_STALE_DAYS) flag = 'stale';
-      rule = `Stale when the latest Search Console day is more than ${GSC_STALE_DAYS} days old (a product rule).` +
-        (d.dateRange?.trimmedDays ? ` The last ${d.dateRange.trimmedDays} unfinalised day${d.dateRange.trimmedDays > 1 ? 's are' : ' is'} left out of every figure.` : '');
-    }
-    if ((kind === 'crawl' || kind === 'audit') && s.state !== 'never') {
-      const age = daysSince(s.at);
-      if (age != null && age > CRAWL_AUDIT_STALE_DAYS) flag = 'stale';
-      rule = `Stale when older than ${CRAWL_AUDIT_STALE_DAYS} days (a product rule).`;
-    }
-    if (kind === 'audit' && d.freshness?.auditVsCrawl?.predatesCrawl) {
-      flag = 'older than crawl';
-      rule += ' The latest audit ran before the latest completed crawl, so its findings describe the previous crawl: run run_audit.';
-    }
-    const bad = s.state === 'failed' || s.state === 'interrupted';
-    const dot = bad ? 'dot-bad' : flag ? 'dot-high' : s.state === 'never' ? 'dot-never' : s.state === 'running' || s.state === 'queued' ? 'dot-run' : 'dot-ok';
+    const end = d.dateRange?.rawMaxDate ?? d.coverage?.gsc?.maxDate;
+    if (kind === 'sync' && s.state !== 'never' && end) line += ` · to ${dayLabel(end)}`;
+    // The same verdict the sidebar shows (panels.ts freshVerdict): one rule, one dot.
+    const { dot, flag, rule } = freshVerdict(d, kind, s);
     const tip = [s.detail, rule].filter(Boolean).join(' ');
     cells.push(`<div class="sf-cell" title="${esc(tip)}"><div class="sf-k"><span class="dot ${dot}"></span>${esc(LABEL[kind])}</div>` +
       `<div class="sf-v">${esc(line)}${flag ? ` <span class="sf-flag">${esc(flag)}</span>` : ''}</div></div>`);
@@ -134,19 +115,19 @@ function tiles(d: any): string {
     } else if (yoy) yoyTxt = 'year-on-year needs 13 months';
     out.push(tile({
       label: 'Organic clicks · 28d', value: `<span class="n">${fmtCompact(c)}</span>`,
-      foot: `${p ? `<span class="n">${delta(((c - p) / p) * 100)}</span>` : '<span class="chg flat">no prior clicks</span>'}${months.length >= 2 ? sparkline(months) : ''}`,
+      foot: `${p ? `<span class="n">${countDelta(c, p)}</span>` : '<span class="chg flat">no prior clicks</span>'}${months.length >= 2 ? sparkline(months) : ''}`,
       sub: yoyTxt, title: `Last 28 days to ${d.dateRange?.maxDate ?? ''} vs the prior 28.${yoy?.available ? ` Year-on-year: the same 28 days 52 weeks earlier (${yoy.priorWindow.start} to ${yoy.priorWindow.end}).` : ''}${months.length >= 2 ? ` Sparkline: ${months.length} complete months.` : ''}`,
     }));
     const bs = d.brandedSplit;
     if (bs) {
       const tot = bs.branded.clicks + bs.nonBranded.clicks;
-      const share = tot ? Math.round((bs.nonBranded.clicks / tot) * 100) : null;
-      const nb = bs.priorNonBrandedClicks ? ((bs.nonBranded.clicks - bs.priorNonBrandedClicks) / bs.priorNonBrandedClicks) * 100 : null;
+      const share = tot ? shareText(bs.nonBranded.clicks, tot) : null;
       out.push(tile({
         label: 'Non-brand share', value: share == null ? '–' : `<span class="n">${share}%</span>`,
-        foot: nb != null ? `<span class="n">${delta(nb)}</span><span class="tile-note">non-brand clicks</span>` : undefined,
-        sub: `of clicks · brand "${esc(bs.brand)}"`,
-        title: `Non-brand = queries that don't spell "${bs.brand}" in whole words, detected from the domain (a heuristic)${bs.variants?.length ? `. Counted as brand: ${bs.variants.map((v: string) => `"${v}"`).join(', ')}` : ''}.`,
+        foot: bs.priorNonBrandedClicks || bs.nonBranded.clicks ? `<span class="n">${countDelta(bs.nonBranded.clicks, bs.priorNonBrandedClicks)}</span><span class="tile-note">non-brand clicks</span>` : undefined,
+        sub: `of clicks · brand "${esc(bs.brand)}"${bs.uncertain ? ' <span class="brand-uncertain">uncertain (exact-match domain)</span>' : ''}`,
+        title: `Non-brand = queries that don't spell "${bs.brand}" in whole words, detected from the domain (a heuristic)${bs.variants?.length ? `. Counted as brand: ${bs.variants.map((v: string) => `"${v}"`).join(', ')}` : ''}.` +
+          (bs.uncertain ? ` Uncertain (exact-match domain): ${bs.uncertain.spellings.map((v: string) => `"${v}"`).join(', ')} counted as non-brand. On an exact-match domain the spaced spelling is also the generic search, so it counts as brand only when people also search the brand as one word: spaced spellings are set aside when they draw more impressions than the one-word brand and the one-word brand has earned no click.` : ''),
       }));
     } else {
       out.push(tile({ label: 'Non-brand share', value: '–', sub: 'brand not detected from the domain' }));
@@ -154,14 +135,18 @@ function tiles(d: any): string {
   }
 
   const hs = d.healthScore;
-  const hist = (d.healthHistory ?? []).map((h: any) => h.score).filter((v: any) => v != null);
+  const hist = (d.healthHistory ?? []).filter((h: any) => h.score != null).map((h: any) => capHealth(h.score, h.errorPages));
   if (hs) {
     const tone = hs.band === 'Excellent' || hs.band === 'Good' ? 'var(--intent-success)' : hs.band === 'Fair' ? 'var(--intent-warning)' : 'var(--intent-danger)';
+    const score = capHealth(hs.score, hs.errorPages);
+    const capNote = hs.errorPages > 0 ? ` Never shown as 100 while any page carries a critical or high issue: ${hs.errorPages} of ${hs.totalPages} ${hs.errorPages === 1 ? 'page does' : 'pages do'}${(1 - hs.errorPages / hs.totalPages) * 100 >= 99.5 ? ', so the score is capped at 99 rather than rounded up to 100' : ''}.` : '';
     out.push(tile({
-      label: 'Site health', value: `<span class="n" style="color:${tone}">${hs.score}</span><span class="kpi-of">/100</span>`,
-      foot: `<span class="tile-band" title="Bands are a product convention, not an industry benchmark">${esc(hs.band)}</span>${hist.length >= 2 ? sparkline(hist, false, [0, 100]) : ''}`,
-      sub: 'pages with no critical or high issue',
-      title: `${hs.definition} ${hs.totalPages - hs.errorPages} of ${hs.totalPages} pages. Bands (Weak under 31, Fair, Good from 71, Excellent from 91) are a product convention, not an industry benchmark.${hist.length >= 2 ? ` Sparkline: ${hist.length} audits.` : ''}`,
+      label: 'Site health', value: `<span class="n" style="color:${tone}">${score}</span><span class="kpi-of">/100</span>`,
+      foot: `<span class="tile-band" title="Bands are a product convention, not an industry benchmark">${esc(hs.band)}</span>${hist.length >= 2 && new Set(hist).size > 1 ? sparkline(hist, false, [0, 100]) : ''}`,
+      // A sparkline over identical scores is a stray flat line: say "unchanged" instead.
+      sub: (hs.errorPages ? `<span class="n">${fmt(hs.errorPages)}</span> ${hs.errorPages === 1 ? 'page has' : 'pages have'} a critical or high issue` : 'no page has a critical or high issue') +
+        (hist.length >= 2 && new Set(hist).size === 1 ? ` · unchanged over ${hist.length} audits` : ''),
+      title: `${hs.definition} ${hs.totalPages - hs.errorPages} of ${hs.totalPages} pages.${capNote} Bands (Weak under 31, Fair, Good from 71, Excellent from 91) are a product convention, not an industry benchmark.${hist.length >= 2 ? ` Sparkline: ${hist.length} audits.` : ''}`,
     }));
   } else {
     out.push(tile({ label: 'Site health', value: '–', sub: (d.coverage?.crawlPages ?? 0) > 0 ? 'run <code>run_audit</code>' : 'run a crawl, then <code>run_audit</code>' }));
@@ -171,6 +156,8 @@ function tiles(d: any): string {
   out.push(ic
     ? tile({ label: 'Indexed', value: `<span class="n">${fmt(ic.indexed)}</span><span class="kpi-of"> of <span class="n">${fmt(ic.total)}</span></span>`, sub: 'inspected URLs (a sample)', title: 'From URL Inspection, which is quota-bound: a sample of URLs, never a share of the whole site.' })
     : tile({ label: 'Indexed', value: '–', sub: 'run <code>inspect_urls</code>' }));
+
+  out.push(cwvTile(d));
 
   const ar = d.agentReadiness;
   out.push(ar
@@ -287,17 +274,25 @@ function health(d: any, ctx: SummaryCtx): void {
   const histAll: any[] = d.healthHistory ?? [];
   const deltas: any[] = d.auditDeltas ?? [];
   const MAX = 12;
-  const hist = histAll.slice(-MAX);
+  // The same cap as the tile: never 100 while a page carries a critical or high issue.
+  const hist = histAll.slice(-MAX).map(h => ({ ...h, score: h.score == null ? null : capHealth(h.score, h.errorPages) }));
   if (!hist.length) {
     ctx.wrap('sumHealthChart').setEmpty((d.coverage?.crawlPages ?? 0) > 0 ? 'No audit yet - run run_audit' : 'Run a crawl, then run_audit', col);
     set('sumHealthNotes', ''); set('sumHealthSrc', '');
     return;
   }
   const byRun = new Map(deltas.map(a => [a.runId, a]));
-  const labels = hist.map(h => dayLabel(h.at));
+  // Same-day runs get their time ("17 Oct 16:20", "17 Oct 16:21"), never two identical labels.
+  const labels = runLabels(hist.map(h => h.at));
   const comparable = hist.map(h => { const a = byRun.get(h.runId); return a && !a.skipped ? a : null; });
   const nComparable = comparable.filter(Boolean).length;
+  // The opened / resolved panel only when there is something to draw: no comparable pair, or
+  // pairs that changed nothing, would be an empty 0-1 axis. The note says which instead.
+  const bars = comparable.some(a => a && (a.opened || a.resolved));
+  const chartEl = document.getElementById('sumHealthChart');
+  chartEl?.classList.toggle('chart-health-only', !bars);
   const ax = axisDefaults(col);
+  const xLabel = { color: col.axisText, fontSize: 10, fontFamily: monoFont(), hideOverlap: true };
   ctx.wrap('sumHealthChart').setOption({
     aria: { enabled: true }, animation: false,
     tooltip: ctx.redacted ? { show: false } : {
@@ -309,22 +304,24 @@ function health(d: any, ctx: SummaryCtx): void {
         return `${labels[i]}<br/>${hs}<br/>${dl}`;
       },
     },
-    legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 8, textStyle: { color: col.text, fontSize: 11 }, data: ['Health', 'Opened', 'Resolved'] },
+    legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 8, textStyle: { color: col.text, fontSize: 11 }, data: bars ? ['Health', 'Opened', 'Resolved'] : ['Health'] },
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
     // Fixed pixel heights: the axis titles keep a constant gap at any chart height.
-    grid: [{ left: 34, right: 10, top: 46, height: 64 }, { left: 34, right: 10, top: 152, bottom: 24 }],
+    grid: bars ? [{ left: 34, right: 10, top: 46, height: 64 }, { left: 34, right: 10, top: 152, bottom: 24 }] : [{ left: 34, right: 10, top: 46, bottom: 26 }],
     xAxis: [
-      { type: 'category', gridIndex: 0, data: labels, axisLabel: { show: false }, axisTick: { show: false }, axisLine: { lineStyle: { color: col.border } } },
-      { type: 'category', gridIndex: 1, data: labels, axisTick: { show: false }, axisLine: { lineStyle: { color: col.border } }, axisLabel: { color: col.axisText, fontSize: 10, fontFamily: monoFont(), hideOverlap: true } },
+      { type: 'category', gridIndex: 0, data: labels, axisTick: { show: false }, axisLine: { lineStyle: { color: col.border } }, axisLabel: bars ? { show: false } : xLabel },
+      ...(bars ? [{ type: 'category', gridIndex: 1, data: labels, axisTick: { show: false }, axisLine: { lineStyle: { color: col.border } }, axisLabel: xLabel }] : []),
     ],
     yAxis: [
       { type: 'value', gridIndex: 0, min: 0, max: 100, splitNumber: 2, name: 'health /100', nameGap: 14, nameTextStyle: { ...ax.nameTextStyle, align: 'left', fontSize: 10, padding: [0, 0, 0, -30] }, ...{ axisLabel: { ...ax.axisLabel, show: !ctx.redacted }, axisLine: { show: false }, splitLine: ax.splitLine } },
-      { type: 'value', gridIndex: 1, splitNumber: 2, minInterval: 1, name: 'issues', nameGap: 14, nameTextStyle: { ...ax.nameTextStyle, align: 'left', fontSize: 10, padding: [0, 0, 0, -30] }, ...{ axisLabel: { ...ax.axisLabel, show: !ctx.redacted }, axisLine: { show: false }, splitLine: ax.splitLine } },
+      ...(bars ? [{ type: 'value', gridIndex: 1, splitNumber: 2, minInterval: 1, name: 'issues', nameGap: 14, nameTextStyle: { ...ax.nameTextStyle, align: 'left', fontSize: 10, padding: [0, 0, 0, -30] }, ...{ axisLabel: { ...ax.axisLabel, show: !ctx.redacted }, axisLine: { show: false }, splitLine: ax.splitLine } }] : []),
     ],
     series: [
       { name: 'Health', type: 'line', step: 'end', xAxisIndex: 0, yAxisIndex: 0, connectNulls: false, data: hist.map(h => h.score), symbol: 'circle', symbolSize: 5, lineStyle: { width: 1.75, color: col.accent }, itemStyle: { color: col.accent } },
-      { name: 'Opened', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, barMaxWidth: 10, data: comparable.map(a => a ? a.opened : null), itemStyle: { color: col.amber, borderRadius: [2, 2, 0, 0] } },
-      { name: 'Resolved', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, barMaxWidth: 10, data: comparable.map(a => a ? a.resolved : null), itemStyle: { color: col.green, borderRadius: [2, 2, 0, 0] } },
+      ...(bars ? [
+        { name: 'Opened', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, barMaxWidth: 10, data: comparable.map(a => a ? a.opened : null), itemStyle: { color: col.amber, borderRadius: [2, 2, 0, 0] } },
+        { name: 'Resolved', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, barMaxWidth: 10, data: comparable.map(a => a ? a.resolved : null), itemStyle: { color: col.green, borderRadius: [2, 2, 0, 0] } },
+      ] : []),
     ],
   });
   const notes: string[] = ['Only audits with the same scope and check set are compared.'];
@@ -335,6 +332,10 @@ function health(d: any, ctx: SummaryCtx): void {
   const nullScores = hist.filter(h => h.score == null).length;
   if (nullScores) notes.push(`<span class="n">${nullScores}</span> past audit${nullScores > 1 ? 's have' : ' has'} no score: the page set couldn't be rebuilt from crawl snapshots, so it isn't estimated.`);
   if (nComparable === 0) notes.push(hist.length < 2 ? 'Opened vs resolved needs two comparable audits.' : 'No comparable pair yet, so no opened / resolved bars.');
+  else if (!bars) {
+    const carried = comparable.filter(Boolean).reduce((n: number, a: any) => n + (a.carried ?? 0), 0);
+    notes.push(`No issue opened or resolved between the ${nComparable === 1 ? 'two comparable audits' : `${nComparable + 1} comparable audits`}${carried ? ` (<span class="n">${fmt(carried)}</span> carried over)` : ''}, so there are no bars to draw.`);
+  }
   if (histAll.length > MAX || d.auditHistoryTruncated) notes.push(`The last <span class="n">${hist.length}</span> of <span class="n">${d.auditHistoryTruncated?.totalRuns ?? histAll.length}</span> audits.`);
   set('sumHealthNotes', `<div class="sum-note">${notes.join(' ')}</div>`);
   set('sumHealthSrc', `Audit · ${hist.length} run${hist.length > 1 ? 's' : ''}`);
@@ -402,7 +403,7 @@ function actions(d: any, ctx: SummaryCtx): string {
     const risk = b.clicksAtRisk != null && d.summary
       ? ` · <span class="n">${fmt(b.clicksAtRisk)}</span> clicks (28d) on affected pages` : '';
     return `<li class="df-row" data-check="${esc(f.check_id)}" tabindex="0" role="button" title="Show this check's findings">` +
-      `<span class="df-n">${i + 1}</span><div class="df-main"><div class="df-title">${esc(rec.title || f.check_id)}</div>` +
+      `<span class="df-n">${i + 1}</span><div class="df-main"><div class="df-title" title="${esc(rec.title || f.check_id)}">${esc(rec.title || f.check_id)}</div>` +
       `<div class="df-sub">${pages ? `<span class="n">${fmt(pages)}</span> ${pages === 1 ? 'page' : 'pages'}` : 'site-wide'}${risk}</div></div>` +
       `<span class="df-chips"><span class="impact impact-${(sz || 's').toLowerCase()}" title="Impact band ${esc(sz)}: XL 50-100, L 20-49, M 5-19, S under 5">${esc(sz)}</span>` +
       `<span class="tag-badge ${judgement ? 'tag-warning' : 'tag-neutral'}" title="${esc(evidenceTitle(labels))}">${esc(evidenceLabel(labels))}</span></span>` +
@@ -448,9 +449,10 @@ function rankingMix(d: any): string {
     { k: 'Pos 1-3', c: 'var(--chart-categorical-3)' }, { k: 'Pos 4-10', c: 'var(--chart-categorical-1)' },
     { k: 'Pos 11-20', c: 'var(--chart-categorical-2)' }, { k: 'Pos 21+', c: 'var(--chart-context)' },
   ];
-  const pct = (v: number[], i: number): number => { const t = v.reduce((a, b) => a + b, 0); return t ? Math.round((v[i] / t) * 100) : 0; };
+  const tot = (v: number[]): number => v.reduce((a, b) => a + b, 0);
+  const pct = (v: number[], i: number): string => shareText(v[i], tot(v));
   const bar = (v: number[]): string => `<div class="mix">${v.map((x, i) => (x ? `<span style="flex:${x};background:${B[i].c}" title="${B[i].k}: ${pct(v, i)}%"></span>` : '')).join('')}</div>`;
-  const top10 = (v: number[]): number => pct(v, 0) + pct(v, 1);
+  const top10 = (v: number[]): string => shareText(v[0] + v[1], tot(v));
   return `<div class="mix-row"><span class="mix-lbl">Last 28 days</span><span class="mix-val"><span class="n">${top10(cur)}%</span> in the top 10</span></div>${bar(cur)}` +
     (prior ? `<div class="mix-row"><span class="mix-lbl">Prior 28 days</span><span class="mix-val"><span class="n">${top10(prior)}%</span> in the top 10</span></div>${bar(prior)}` : '<div class="sum-note">The prior 28 days aren\'t held yet.</div>') +
     `<div class="mix-legend">${B.map((b, i) => `<span><span class="dot" style="background:${b.c}"></span>${b.k} <b class="n">${pct(cur, i)}%</b></span>`).join('')}</div>` +
@@ -523,7 +525,8 @@ function coverageFooter(d: any): string {
       `A quota-bound sample: ${cv.inspected} URLs inspected in all, ${cv.inspectedIndexable ?? 0} of them indexable crawled pages.`),
     chip(cv.cwvPages > 0, 'Lab CWV', cv.cwvPages ? `<span class="n">${fmt(cv.cwvPages)}</span> pages` : 'none', 'Lighthouse lab data (page_lighthouse), not field data.'),
     chip(cv.backlinkPages > 0, 'Backlinks', cv.backlinkPages ? `<span class="n">${fmt(cv.backlinkPages)}</span> pages` : (d.apiKeys && !d.apiKeys.dataforseo ? 'no DataForSEO key' : 'none')),
-    chip(false, 'Field CWV', 'not collected', 'Chrome UX Report field data is not collected yet.'),
+    // Derived from the payload (cwvField), never hard-coded.
+    ((c) => chip(c.on, 'Field CWV', c.value, c.title))(cwvCoverage(d)),
     chip(false, 'Server logs', 'not collected', 'Log analysis is out of scope.'),
   ];
   return `<span class="cov-title">Data coverage</span>${chips.join('')}`;

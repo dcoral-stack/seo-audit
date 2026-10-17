@@ -4,7 +4,8 @@
 // the Summary tab (summary.ts) replaced the Overview as the landing view and they moved to the tabs
 // they belong to. Pure HTML-string + ECharts builders; dashboard.ts owns the data load, the chart
 // registry and the tab shell, and passes them in.
-import { esc, fmtNum, fmtCompact, fmtDate, delta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
+import { esc, fmtNum, fmtCompact, fmtDate, countDelta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
+import { shareText, sharePct, sourceFreshness, freshnessDot } from '../core/displayRules.js';
 
 const fmt = fmtNum;
 import type { DashboardData } from './dashboard.js';
@@ -47,8 +48,25 @@ export function ago(at: string | null | undefined, now = Date.now()): string {
   return fmtDate(at);
 }
 
-const stateDot = (state: string): string =>
-  state === 'completed' ? 'dot-ok' : state === 'running' || state === 'queued' ? 'dot-run' : state === 'never' ? 'dot-never' : 'dot-bad';
+/**
+ * One freshness verdict per data source, shared by the Summary strip and the sidebar so the two
+ * never disagree: the staleness rule (core/displayRules.ts sourceFreshness), the audit-predates-
+ * crawl flag, and the dot that follows from them.
+ */
+export function freshVerdict(d: Dash, kind: string, s: { state: string; at: string | null }): { dot: string; flag: string; rule: string } {
+  const gscEnd = x(d).dateRange?.rawMaxDate ?? x(d).coverage?.gsc?.maxDate ?? null;
+  const f = sourceFreshness(kind, s, { gscEnd });
+  let flag = f.stale ? 'stale' : '', rule = f.rule;
+  if (kind === 'sync' && s.state !== 'never' && x(d).dateRange?.trimmedDays) {
+    const n = x(d).dateRange.trimmedDays;
+    rule += ` The last ${n} unfinalised day${n > 1 ? 's are' : ' is'} left out of every figure.`;
+  }
+  if (kind === 'audit' && x(d).freshness?.auditVsCrawl?.predatesCrawl) {
+    flag = 'older than crawl';
+    rule += ' The latest audit ran before the latest completed crawl, so its findings describe the previous crawl: run run_audit.';
+  }
+  return { dot: freshnessDot(s.state, !!flag), flag, rule };
+}
 const KIND_LABEL: Record<string, string> = { sync: 'Sync', crawl: 'Crawl', audit: 'Audit', inspect: 'Inspect', ranks: 'Ranks', sitemap: 'Sitemap' };
 
 // ── KPI tile (the crawl-health strip) ──
@@ -117,7 +135,7 @@ function crawlCard(d: Dash): string {
     { k: '5xx / failed', n: byCls(/^5xx|Fetch failed/), c: 'var(--intent-danger)' },
   ].filter(m => m.n > 0);
   const tot = mix.reduce((s, m) => s + m.n, 0) || 1;
-  const p = (n: number): string => { const v = (n / tot) * 100; return v > 0 && v < 1 ? '<1' : String(Math.round(v)); };
+  const p = (n: number): string => shareText(n, tot);
   const bar = `<div class="mix" role="img" aria-label="Response status mix">${mix.map(m => `<span style="flex:${m.n};background:${m.c}" title="${m.k}: ${m.n}"></span>`).join('')}</div>`;
   const legend = `<div class="mix-legend">${mix.map(m => `<span><span class="dot" style="background:${m.c}"></span>${m.k} <b>${p(m.n)}%</b></span>`).join('')}</div>`;
   const total = ch.totalPages as number;
@@ -132,10 +150,16 @@ function crawlCard(d: Dash): string {
   ];
   const statRows = rows.map(r => {
     const w = total ? Math.max(r.n ? 1 : 0, (r.n / total) * 100) : 0;
-    return `<div class="stat-row"><div class="sr-top"><span>${r.label}</span><span><b>${fmt(r.n)}</b><em>${total ? Math.round((r.n / total) * 100) : 0}%</em></span></div><div class="stat-track"><span style="width:${w.toFixed(1)}%;background:${r.c}"></span></div></div>`;
+    return `<div class="stat-row"><div class="sr-top"><span>${r.label}</span><span><b>${fmt(r.n)}</b><em>${sharePct(r.n, total)}</em></span></div><div class="stat-track"><span style="width:${w.toFixed(1)}%;background:${r.c}"></span></div></div>`;
   }).join('');
   return bar + legend + `<div class="stat-rows">${statRows}</div>`;
 }
+
+/** Why a mapped page has no in-content link: an orphan, or linked only from navigation / footer. */
+export const isolatedText = (n: { inlinks: number; bodyInlinks: number }): string =>
+  n.inlinks === 0 ? 'Orphan: no internal link points to it.'
+    : n.bodyInlinks === 0 ? `Linked only from navigation or the footer (${fmt(n.inlinks)} internal links in, none in content), so it has no in-content link in this map.`
+      : `${fmt(n.bodyInlinks)} in-content links in, none from the other mapped pages.`;
 
 /** The network force graph - shared by the Overview preview (compact) and the Network tab (full). */
 export function drawNetwork(d: Dash, ctx: OverviewCtx, id: string, opts: { compact: boolean }): boolean {
@@ -149,17 +173,24 @@ export function drawNetwork(d: Dash, ctx: OverviewCtx, id: string, opts: { compa
   // Label only the highest-PageRank hubs (the rest are in the tooltip): more labels overlap.
   const narrow = (document.getElementById(id)?.clientWidth ?? 800) < 500;
   const labelled = new Set([...nodes].sort((a: any, b: any) => b.ipr - a.ipr).slice(0, opts.compact || narrow ? 6 : 10).map((n: any) => n.id));
+  // Pages with no in-content link inside the map float free in a force layout: always label them
+  // and draw them hollow, so a detached dot reads as a finding, not a rendering glitch.
+  const isolated = new Map<string, any>((sg.isolated ?? []).map((n: any) => [n.id, n]));
+  const isoIndex = new Map<string, number>([...isolated.keys()].map((id, i) => [id, i]));
+  const H = document.getElementById(id)?.clientHeight || 560;
   const gnodes = nodes.map((n: any) => ({
     id: n.id, name: n.id, value: n.ipr, category: catOf(n),
     symbolSize: (opts.compact ? 4 : 5) + Math.round((n.ipr / maxIpr) * (opts.compact ? 18 : 26)),
-    label: (labelled.has(n.id) && !ctx.redacted)
-      ? { show: true, formatter: ctx.shortPath(n.id, 22), color: col.muted, fontSize: 10, fontFamily: monoFont() } : { show: false },
-    _s: n.status, _d: n.depth,
+    label: ((labelled.has(n.id) || isolated.has(n.id)) && !ctx.redacted)
+      ? { show: true, formatter: isolated.has(n.id) ? `${ctx.shortPath(n.id, 22)} (no in-content link)` : ctx.shortPath(n.id, 22), color: col.muted, fontSize: 10, fontFamily: monoFont() } : { show: false },
+    // Pinned in a column at the bottom left, so they never drift to (and clip at) the canvas edge.
+    ...(isolated.has(n.id) ? { itemStyle: { color: col.surface, borderColor: catOf(n) === 0 ? col.green : catOf(n) === 1 ? col.amber : col.red, borderWidth: 2, borderType: 'dashed' }, fixed: true, x: 28, y: H - 26 - isoIndex.get(n.id)! * 28 } : {}),
+    _s: n.status, _d: n.depth, _iso: isolated.get(n.id),
   }));
   const edgeColor = getComputedStyle(document.documentElement).getPropertyValue('--chart-edge').trim() || col.border;
   ctx.wrap(id).setOption({
     aria: { enabled: true },
-    tooltip: { ...tooltipDefaults(col, 'item'), formatter: (p: any) => p.dataType === 'edge' ? '' : `${esc(ctx.shortPath(p.data.id, 48))}<br/>iPR ${p.data.value} · status ${p.data._s ?? '-'} · depth ${p.data._d ?? '-'}` },
+    tooltip: { ...tooltipDefaults(col, 'item'), formatter: (p: any) => p.dataType === 'edge' ? '' : `${esc(ctx.shortPath(p.data.id, 48))}<br/>iPR ${p.data.value} · status ${p.data._s ?? '-'} · depth ${p.data._d ?? '-'}${p.data._iso ? `<br/>${isolatedText(p.data._iso)}` : ''}` },
     // No in-canvas legend: force-placed nodes ignore the layout box and ran under it. The card's
     // hint names the three colours.
     legend: undefined,
@@ -187,18 +218,17 @@ export function drawNetwork(d: Dash, ctx: OverviewCtx, id: string, opts: { compa
 // ── Top keywords / pages ──
 function kwTable(d: Dash): string {
   const kw = (d.topKeywords ?? []).slice().sort((a: any, b: any) => b.clicks - a.clicks).slice(0, 8);
-  if (!kw.length) return '<div class="empty-state">No keyword data yet - run <code>sync_gsc</code>.</div>';
+  if (!kw.length) return `<div class="empty-state">${d.summary ? 'No query appears in Search Console in the last 28 days.' : 'No keyword data yet - run <code>sync_gsc</code>.'}</div>`;
   const rows = kw.map((k: any) => {
-    const ch = k.prevClicks ? ((k.clicks - k.prevClicks) / k.prevClicks) * 100 : (k.clicks ? 100 : 0);
-    return `<tr><td class="q" title="${esc(k.query)}">${esc(k.query)}</td><td class="num">${fmt(k.clicks)}</td><td class="num">${delta(ch)}</td><td class="num">${Number(k.position).toFixed(1)}</td></tr>`;
+    return `<tr><td class="q" title="${esc(k.query)}">${esc(k.query)}</td><td class="num">${fmt(k.clicks)}</td><td class="num">${countDelta(k.clicks, k.prevClicks)}</td><td class="num">${Number(k.position).toFixed(1)}</td></tr>`;
   }).join('');
   return `<table><thead><tr><th>Query</th><th class="num">Clicks</th><th class="num">Change</th><th class="num">Pos</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 function pageTable(d: Dash, ctx: OverviewCtx): string {
   const pp = (d.pagePerformance ?? []).slice().sort((a: any, b: any) => b.clicks - a.clicks).slice(0, 8);
-  if (!pp.length) return '<div class="empty-state">No page data yet - run <code>sync_gsc</code>.</div>';
+  if (!pp.length) return `<div class="empty-state">${d.summary ? 'No page appears in Search Console in the last 28 days.' : 'No page data yet - run <code>sync_gsc</code>.'}</div>`;
   const rows = pp.map((p: any) =>
-    `<tr><td class="url" title="${esc(p.urlKey)}">${esc(ctx.shortPath(p.urlKey, 40))}</td><td class="num">${fmt(p.clicks)}</td><td class="num">${delta(p.clicksChangePct)}</td><td class="num">${Number(p.position).toFixed(1)}</td></tr>`).join('');
+    `<tr><td class="url" title="${esc(p.urlKey)}">${esc(ctx.shortPath(p.urlKey, 40))}</td><td class="num">${fmt(p.clicks)}</td><td class="num">${countDelta(p.clicks, p.prevClicks)}</td><td class="num">${Number(p.position).toFixed(1)}</td></tr>`).join('');
   return `<table><thead><tr><th>Page</th><th class="num">Clicks</th><th class="num">Change</th><th class="num">Pos</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
@@ -208,7 +238,10 @@ export function renderSideFreshness(d: Dash): void {
   const src: any[] = (d.freshness?.sources ?? []).filter((s: any) => ['sync', 'crawl', 'audit'].includes(s.kind));
   el.innerHTML = src.length
     ? `<div class="side-fresh-title">Data freshness</div>` + src.map(s =>
-      `<div class="fresh-row" title="${esc(s.detail)}"><span class="dot ${stateDot(s.state)}"></span><span class="fr-k">${esc(KIND_LABEL[s.kind])}</span><span class="fr-v">${s.state === 'never' ? 'never' : esc(ago(s.at))}</span></div>`).join('')
+{
+        const v = freshVerdict(d, s.kind, s);
+        return `<div class="fresh-row${v.flag ? ' fr-flag' : ''}" title="${esc([s.detail, v.flag ? `${v.flag}.` : '', v.rule].filter(Boolean).join(' '))}"><span class="dot ${v.dot}"></span><span class="fr-k">${esc(KIND_LABEL[s.kind])}</span><span class="fr-v">${s.state === 'never' ? 'never' : esc(ago(s.at))}</span></div>`;
+      }).join('')
     : '';
 }
 
@@ -243,7 +276,7 @@ export function renderHealthTop(d: Dash, ctx: OverviewCtx): void {
   const depthRows: any[] = ch.depth ?? [];
   const depthN = depthRows.reduce((s, r) => s + r.count, 0);
   const depthAvg = depthN ? depthRows.reduce((s, r) => s + (parseInt(String(r.label).replace(/\D/g, ''), 10) || 0) * r.count, 0) / depthN : 0;
-  const share = (n: number): string => `${Math.round((n / ch.totalPages) * 100)}% of crawled`;
+  const share = (n: number): string => `${sharePct(n, ch.totalPages)} of crawled`;
   if (k) k.innerHTML = ([
     { label: 'Pages crawled', value: fmt(ch.totalPages), sub: 'internal URLs, latest crawl' },
     { label: 'Indexable', value: fmt(idx), sub: share(idx), color: 'var(--intent-success)' },
@@ -256,7 +289,7 @@ export function renderHealthTop(d: Dash, ctx: OverviewCtx): void {
   if (flowEl && flow.length) {
     const tone: Record<string, string> = { bad: 'dot-bad', warn: 'dot-high', muted: 'dot-never' };
     flowEl.innerHTML = `<table><thead><tr><th>Type</th><th class="num">URLs</th><th class="num">Share</th><th>Most-linked example</th></tr></thead><tbody>${flow.map(r =>
-      `<tr><td><span class="lbl-dot"><span class="dot ${tone[r.tone] ?? 'dot-never'}"></span>${esc(r.label)}</span></td><td class="num">${fmt(r.count)}</td><td class="num">${Math.round((r.count / ch.totalPages) * 100)}%</td><td class="url" title="${esc(r.example ?? '')}">${esc(r.example ? ctx.shortPath(r.example, 60) : '-')}</td></tr>`).join('')}</tbody></table>`;
+      `<tr><td><span class="lbl-dot"><span class="dot ${tone[r.tone] ?? 'dot-never'}"></span>${esc(r.label)}</span></td><td class="num">${fmt(r.count)}</td><td class="num">${sharePct(r.count, ch.totalPages)}</td><td class="url" title="${esc(r.example ?? '')}">${esc(r.example ? ctx.shortPath(r.example, 60) : '-')}</td></tr>`).join('')}</tbody></table>`;
   }
 }
 

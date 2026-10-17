@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SEO Audit Console</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='%2310946b'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
@@ -133,9 +134,22 @@
             <div><h4>HTML size (est. transfer)</h4><div id="sfSize"></div></div>
             <div><h4>Crawl depth</h4><div id="sfDepth"></div></div>
             <div><h4>On-page</h4><div id="sfOnPage"></div></div>
-            <div><h4>Page titles</h4><div id="sfTitles"></div></div>
-            <div><h4>Meta descriptions</h4><div id="sfMetas"></div></div>
+            <div><h4>Page titles</h4><div id="sfTitles"></div><div class="sf-rule" id="sfTitlesRule"></div></div>
+            <div><h4>Meta descriptions</h4><div id="sfMetas"></div><div class="sf-rule" id="sfMetasRule"></div></div>
           </div>
+        </div>
+        <div class="chart-card" id="fieldCwvCard">
+          <div class="card-head"><div><h3>Core Web Vitals - real Chrome users</h3><div class="hint">Chrome UX Report (CrUX) field data for the whole origin: the 75th percentile of real Chrome visits over 28 days, per device, against Google's thresholds (LCP 2.5 s, INP 200 ms, CLS 0.1). The bars are the share of visits that were good, needed improvement or were poor.</div></div><span class="src" id="fieldCwvSrc"></span></div>
+          <div id="fieldCwvNote"></div>
+          <div id="fieldCwv" class="fcwv-grid"></div>
+          <div class="chart chart-fcwv" id="fieldCwvTrend" role="img" aria-label="Field Core Web Vitals p75 per 28-day window, phone and desktop"></div>
+          <div class="sum-note" id="fieldCwvTrendNote"></div>
+        </div>
+        <div class="chart-card" id="cwvCard" style="display:none">
+          <h3>Core Web Vitals - lab (Lighthouse)</h3>
+          <div class="hint">Lab Core Web Vitals from Lighthouse - the lowest-scoring pages first. Pass thresholds: LCP under 2.5s, CLS under 0.1, TBT under 200ms.</div>
+          <p class="sr-only" id="cwvSummary"></p>
+          <div id="cwvTable" class="findings-table"></div>
         </div>
         <div class="chart-card" id="sfServerErrorsCard">
           <h3>Server errors (5xx)</h3>
@@ -153,12 +167,6 @@
           <div id="sfImages" class="findings-table"></div>
         </div>
 
-        <div class="chart-card" id="cwvCard" style="display:none">
-          <h3>Core Web Vitals</h3>
-          <div class="hint">Lab Core Web Vitals from Lighthouse - the lowest-scoring pages first. Pass thresholds: LCP under 2.5s, CLS under 0.1, TBT under 200ms.</div>
-          <p class="sr-only" id="cwvSummary"></p>
-          <div id="cwvTable" class="findings-table"></div>
-        </div>
         <div class="chart-card" id="securityCard" style="display:none">
           <h3>Security &amp; HTTPS</h3>
           <div class="hint">Share of your crawled pages carrying each response-security header. <span style="color:var(--intent-danger)">Red</span> = largely missing, <span style="color:var(--intent-warning)">amber</span> = partial, <span style="color:var(--intent-success)">green</span> = covered.</div>
@@ -198,7 +206,7 @@
           <div class="hint">Every query plotted by average position (x) and click-through rate (y) against Google's expected-CTR curve (dashed). <span style="color:var(--intent-warning)">Amber</span> = striking distance (page 2, push to page 1); <span style="color:var(--intent-info)">blue</span> = ranks page 1 but under-clicked (rewrite the snippet). Bubble size = impressions.</div>
           <div class="chart" id="quickWinsChart" role="img" aria-label="Quick-wins matrix: CTR versus position"></div>
         </div>
-        <div class="chart-card">
+        <div class="chart-card" id="quickWinsTableCard">
           <h3>Biggest quick wins - ranked by recoverable clicks</h3>
           <div class="hint">The highest-opportunity queries, scored by clicks you could recover by closing the CTR gap or reaching page 1. Every row is grounded in real Search Console data.</div>
           <div id="quickWinsTable" class="findings-table"></div>
@@ -315,6 +323,7 @@
           <div class="hint">The top pages by internal PageRank and the in-content links between them. Node size = internal PageRank; <span style="color:var(--intent-success)">green</span> = healthy and indexable, <span style="color:var(--intent-warning)">amber</span> = indexable: no (noindex / canonicalised), <span style="color:var(--intent-danger)">red</span> = broken or redirected. Drag to explore; scroll to zoom.</div>
           <p class="sr-only" id="structureSummary"></p>
           <div class="chart chart-network" id="structureChart" role="img" aria-label="Force-directed map of the internal link structure"></div>
+          <div class="sum-note" id="structureNote"></div>
         </div>
         <div class="chart-card">
           <h3>Where your link equity flows vs where traffic comes from</h3>

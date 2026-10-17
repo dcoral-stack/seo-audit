@@ -1,10 +1,13 @@
 // StatBlock + KpiGrid - label + tabular number + delta + optional sparkline.
 import { icons } from './icons.js';
+import { fmtNum } from './h.js';
+import { countChange, rankChange, SMALL_BASE_MIN } from '../../core/displayRules.js';
 
 export interface StatBlockOpts {
   label: string;
   value: string;           // pre-formatted (caller controls units/decimals)
   change?: number;         // % change vs prior; omit for no delta
+  changeHtml?: string;     // a pre-rendered change (countDelta / rankDelta) instead of `change`
   lowerIsBetter?: boolean; // e.g. avg position
   spark?: number[];        // series behind the number
 }
@@ -23,17 +26,43 @@ export function sparkline(series: number[], lowerIsBetter = false, domain?: [num
   return `<svg class="metric-spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" preserveAspectRatio="none" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 
+/**
+ * A count's change under the small-base rule (core/displayRules.ts): a % on a prior of
+ * SMALL_BASE_MIN or more, else the signed difference ("+1 click"), so 0 -> 1 never reads +100%.
+ */
+export function countDelta(current: number, prior: number, unit = 'click', lowerIsBetter = false): string {
+  const c = countChange(current, prior);
+  if (c.mode === 'pct') return delta(c.value, lowerIsBetter);
+  if (!c.diff) return `<span class="chg flat" title="${fmtNum(prior)} → ${fmtNum(current)}">flat</span>`;
+  const better = lowerIsBetter ? c.diff < 0 : c.diff > 0;
+  const n = Math.abs(c.diff);
+  const title = `${fmtNum(prior)} → ${fmtNum(current)} ${unit}s. Under ${SMALL_BASE_MIN} in the prior period, so the change is shown as a count, not a percentage.`;
+  return `<span class="chg ${better ? 'up' : 'down'}" title="${title}">${c.diff > 0 ? icons.triangleUp : icons.triangleDown} ${c.diff > 0 ? '+' : '−'}${fmtNum(n)} ${n === 1 ? unit : `${unit}s`}</span>`;
+}
+
+/**
+ * An average-position change in positions, never a % of a rank. The arrow points the way the RANK
+ * moved (up = better, the position number fell), and the colour says better or worse.
+ */
+export function rankDelta(current: number, prior: number, opts: { short?: boolean } = {}): string {
+  const r = rankChange(current, prior);
+  const title = `Average position ${prior.toFixed(1)} → ${current.toFixed(1)}: ${r.flat ? 'no change' : `${r.positions.toFixed(1)} position${r.positions === 1 ? '' : 's'} ${r.better ? 'better' : 'worse'}`} (lower is better).`;
+  if (r.flat) return `<span class="chg flat" title="${title}">flat</span>`;
+  const unit = opts.short ? '' : ` position${r.positions === 1 ? '' : 's'}`;
+  return `<span class="chg ${r.better ? 'up' : 'down'}" title="${title}">${r.better ? icons.triangleUp : icons.triangleDown} ${r.positions.toFixed(1)}${unit}</span>`;
+}
+
 /** Signed delta with triangle glyph; colour reflects better/worse, not up/down. */
 export function delta(change: number, lowerIsBetter = false): string {
   if (!change) return `<span class="chg flat">flat</span>`;
   const better = lowerIsBetter ? change < 0 : change > 0;
   const arrow = change > 0 ? icons.triangleUp : icons.triangleDown;
-  return `<span class="chg ${better ? 'up' : 'down'}">${arrow} ${Math.abs(Math.round(change))}%</span>`;
+  return `<span class="chg ${better ? 'up' : 'down'}">${arrow} ${Math.abs(change) < 0.5 ? "<1" : Math.abs(Math.round(change))}%</span>`;
 }
 
 export const statBlock = (o: StatBlockOpts): string =>
   `<div class="metric-card"><div class="label">${o.label}</div><div class="value">${o.value}</div>` +
-  `<div class="metric-foot">${o.change !== undefined ? delta(o.change, o.lowerIsBetter) : ''}${o.spark ? sparkline(o.spark, o.lowerIsBetter) : ''}</div></div>`;
+  `<div class="metric-foot">${o.changeHtml ?? (o.change !== undefined ? delta(o.change, o.lowerIsBetter) : '')}${o.spark ? sparkline(o.spark, o.lowerIsBetter) : ''}</div></div>`;
 
 export const kpiGrid = (blocks: StatBlockOpts[]): string =>
   `<div class="metrics">${blocks.map(statBlock).join('')}</div>`;

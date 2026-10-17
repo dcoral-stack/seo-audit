@@ -807,3 +807,77 @@ select, select.sel, #cannSelect {
 .redacted [data-panel="summary"] .sf-v,
 .redacted [data-panel="summary"] .metric-sub,
 .redacted #healthMix .mix-legend b { filter: blur(5px); user-select: none; }
+
+/* ── Field Core Web Vitals (CrUX): Summary tile + Crawl health section ─────────────────── */
+.sum-tiles { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@media (max-width: 1280px) { .sum-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .sum-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.fc-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-right: auto; }
+.fc-chip { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--bg-inset); color: var(--text-secondary); white-space: nowrap; }
+.fc-chip.fc-ok { color: var(--intent-success); background: var(--intent-success-bg); }
+.fc-chip.fc-bad { color: var(--intent-danger); background: var(--intent-danger-bg); }
+.fcwv-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; margin-top: 10px; }
+.fcwv-col { min-width: 0; }
+.fcwv-col + .fcwv-col { border-left: 1px solid var(--border-subtle); padding-left: 28px; }
+.fcwv-h { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+.fcwv-h h4 { margin: 0; }
+.fcwv-win { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); margin-left: auto; }
+.fm-note { font-size: 11.5px; color: var(--text-muted); margin-bottom: 6px; line-height: 1.45; }
+.fm-rows { display: flex; flex-direction: column; }
+.fm-row { display: grid; grid-template-columns: 44px 64px auto minmax(0, 1fr); align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border-subtle); }
+.fm-row:first-child { border-top: 0; }
+.fm-k { font-family: var(--font-mono); font-size: 11.5px; font-weight: 600; color: var(--text-primary); cursor: help; }
+.fm-v { font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.fm-none { grid-column: 2 / -1; font-size: 12px; color: var(--text-muted); font-style: italic; }
+.fm-sep { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-faint); padding: 10px 0 2px; border-top: 1px solid var(--border-subtle); }
+.fm-sep + .fm-row { border-top: 0; }
+.fband { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--bg-inset); color: var(--text-secondary); white-space: nowrap; }
+.fband-good { color: var(--intent-success); background: var(--intent-success-bg); }
+.fband-ni { color: var(--intent-warning); background: var(--intent-warning-bg); }
+.fband-poor { color: var(--intent-danger); background: var(--intent-danger-bg); }
+.fm-dist { min-width: 0; }
+.fdist { display: flex; height: 7px; border-radius: 4px; overflow: hidden; background: var(--bg-inset); gap: 1px; }
+.fdist span { display: block; min-width: 2px; }
+.fd-good { background: var(--intent-success); }
+.fd-ni { background: var(--intent-warning); }
+.fd-poor { background: var(--intent-danger); }
+.fdist-key { display: flex; gap: 10px; font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); margin-top: 3px; }
+.fdist-key span, .fb-key span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.fdist-key i, .fb-key i { display: inline-block; width: 7px; height: 7px; border-radius: 2px; }
+.fb { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-subtle); }
+.fb-h { font-size: 11.5px; color: var(--text-secondary); margin-bottom: 5px; }
+.fb-bar { display: flex; height: 9px; border-radius: 4px; overflow: hidden; gap: 1px; }
+.fb-key { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--text-muted); margin-top: 5px; }
+.fb-key b { font-family: var(--font-mono); font-weight: 500; color: var(--text-primary); }
+.fb-0 { background: var(--chart-categorical-1); }
+.fb-1 { background: var(--chart-categorical-2); }
+.fb-2 { background: var(--chart-categorical-3); }
+.fb-3 { background: var(--chart-categorical-4); }
+.fb-none { display: block; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-subtle); }
+#fieldCwvNote:not(:empty) { margin: 8px 0 4px; }
+.chart.chart-fcwv { height: 240px; margin-top: 14px; }
+@media (max-width: 760px) {
+  .fcwv-grid { grid-template-columns: minmax(0, 1fr); }
+  .fcwv-col + .fcwv-col { border-left: 0; padding-left: 0; border-top: 1px solid var(--border-subtle); margin-top: 14px; padding-top: 12px; }
+}
+
+/* An empty chart collapses to its message (EChartWrapper.setEmpty) instead of a tall blank canvas. */
+.chart.chart-is-empty { height: 120px !important; }
+.brand-uncertain { color: var(--intent-warning); cursor: help; }
+.sf-rule { font-size: 11px; color: var(--text-faint); margin-top: 4px; line-height: 1.4; }
+.fresh-row.fr-flag .fr-v { color: var(--intent-warning); }
+/* Health and audit change with nothing to draw in the issues panel: the health line alone. */
+.chart.chart-health.chart-health-only { height: 170px; }
+/* Long names wrap (two lines at most) with the full text in the tooltip, instead of a mid-word ellipsis. */
+.side-property .site { white-space: normal; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.35; }
+.df-title { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+#structureNote:not(:empty) { margin-top: 10px; }
+#structureNote code { font-size: 11px; }
+@media (max-width: 560px) {
+  /* The freshness line wraps on a phone, so the "stale" flag is never cut off by an ellipsis. */
+  .sf-v { white-space: normal; }
+}
+/* Five backlink KPIs sit on one row (not four and a stray fifth); 3 + 2 on a tablet. */
+.metrics.metrics-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .metrics.metrics-5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .metrics.metrics-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metrics.metrics-5 > :last-child { grid-column: 1 / -1; } }
