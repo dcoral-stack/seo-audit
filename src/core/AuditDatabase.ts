@@ -11,6 +11,7 @@
  */
 import { ensureFtsSchema } from './fts.js';
 import { ensureExternalSchema } from './externalLinks.js';
+import { ensureRobotsTxtSchema } from './robotsStore.js';
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -634,6 +635,7 @@ export class AuditDatabase {
     if (!(this.db.prepare(`PRAGMA table_info(redirect_sources)`).all() as { name: string }[]).some(c => c.name === 'chain')) this.db.exec('ALTER TABLE redirect_sources ADD COLUMN chain TEXT');
     ensureFtsSchema(this.db); // after migrate: triggers reference columns migrate may add
     ensureExternalSchema(this.db);
+    ensureRobotsTxtSchema(this.db); // robots.txt bytes per origin, written by the crawl (#55)
   }
 
   /** Idempotent column additions for DBs created before a column existed. */

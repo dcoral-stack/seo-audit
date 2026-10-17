@@ -6,6 +6,7 @@ import { parseJsonLdNodes, nodeType } from './templates.js';
 import { expectedCtr } from '../core/ctrModel.js';
 import { latestTwoCrawls } from './drift.js';
 import { HTML_CT } from '../core/sql.js';
+import { SIGNAL_CHECKS } from './checks-signals.js';
 
 /**
  * Check registry. Each check is a pure read over the AuditDatabase (crawl + GSC +
@@ -1527,6 +1528,8 @@ export const CHECKS: CheckDef[] = [
   // check (title + first two body chunks, capped) — a dedicated discover-intro check duplicated it,
   // tested chunks[0] (which is the byline/author block on most themes) and triple-flagged one symptom.
   // Deliberately not added here; see plan/google-discover.md.
+  // #55 group A: site-wide indexing alarm, AI-search controls, CrUX field data, non-brand decline.
+  ...SIGNAL_CHECKS,
 ];
 
 // ── Google Discover helpers (article-eligibility + directive/schema parsing) ──
