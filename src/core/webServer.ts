@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { readdirSync } from 'node:fs';
+import { readdirSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 
@@ -38,6 +38,48 @@ function isLocalHostHeader(host: string | undefined): boolean {
   if (!host) return false;
   const bare = host.replace(/:\d+$/, '').toLowerCase();
   return bare === '127.0.0.1' || bare === 'localhost' || bare === '[::1]';
+}
+
+/** The one-line standalone dashboard container (README "Opening the dashboard"), on the same volume. */
+export const DASHBOARD_SIDECAR_CMD =
+  'docker run -d --name seo-audit-dashboard --restart unless-stopped -p 127.0.0.1:8788:8788 -e SAC_DATA_DIR=/data -e SAC_DASHBOARD_BIND=0.0.0.0 -e SAC_DASHBOARD_PORT=8788 -v seo-audit-data:/data node:22-slim npx -y -p @houtini/seo-audit-console seo-audit-dashboard';
+
+export interface ContainerProbe { env: NodeJS.ProcessEnv; exists: (p: string) => boolean; read: (p: string) => string | null }
+const realProbe = (): ContainerProbe => ({
+  env: process.env,
+  exists: (p) => { try { return existsSync(p); } catch { return false; } },
+  read: (p) => { try { return readFileSync(p, 'utf8'); } catch { return null; } },
+});
+
+/** True when this process runs inside a container: /.dockerenv, a container cgroup for PID 1, or
+ * the image convention SAC_DATA_DIR=/data (the Docker MCP gateway's worker sets it). */
+export function inContainer(probe: ContainerProbe = realProbe()): boolean {
+  if (probe.exists('/.dockerenv')) return true;
+  const cg = probe.read('/proc/1/cgroup');
+  if (cg && /docker|containerd|kubepods|libpod|lxc/i.test(cg)) return true;
+  return (probe.env.SAC_DATA_DIR ?? '').replace(/\/+$/, '') === '/data';
+}
+
+/**
+ * Can the user's browser open the advertised dashboard URL? On bare metal, always (it is the host's
+ * own 127.0.0.1). Inside a container, only when the operator published a fixed port: bound to
+ * 0.0.0.0 (SAC_DASHBOARD_BIND) on SAC_DASHBOARD_PORT, or named the reachable host explicitly
+ * (SAC_DASHBOARD_URL_HOST). Otherwise the server sits on a random port inside the container (the
+ * Docker MCP gateway's worker), and 127.0.0.1:<port> on the host reaches nothing.
+ */
+export function dashboardReachable(probe: ContainerProbe = realProbe()): boolean {
+  if (!inContainer(probe)) return true;
+  const e = probe.env;
+  if (e.SAC_DASHBOARD_URL_HOST) return true;
+  return e.SAC_DASHBOARD_BIND === '0.0.0.0' && Number(e.SAC_DASHBOARD_PORT) > 0;
+}
+
+/** What to say instead of an openable link when the dashboard runs where the host can't reach it. */
+export function containerDashboardNote(siteUrl?: string, containerUrl?: string | null): string {
+  const inner = containerUrl ? ` (${containerUrl})` : '';
+  const target = siteUrl ? ` for ${siteUrl}` : '';
+  const open = `http://127.0.0.1:8788/dashboard${siteUrl ? `?siteUrl=${encodeURIComponent(siteUrl)}` : ''}`;
+  return `Running in a container: this link only works inside it${inner}. Run the dashboard sidecar on the same data volume (use your volume's name), then open ${open}:\n${DASHBOARD_SIDECAR_CMD}\nOr run get_dashboard${target} to see the dashboard in chat.`;
 }
 
 const CACHE_DBS = new Set(['dataforseo-cache.db']);
