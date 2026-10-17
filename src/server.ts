@@ -677,7 +677,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   // and models read only the text content.
   // #38: a job that wrote property data starts the dashboard server when it finishes and carries
   // the link in its result, so the completion reply can offer it (refresh_property already did).
-  const DATA_JOBS = new Set(['sync', 'crawl', 'inspect', 'refresh']);
+  const DATA_JOBS = new Set(['sync', 'crawl', 'inspect', 'refresh', 'crux']);
   const withDashboard = (siteUrl: string, fn: (update: (p: Record<string, unknown>) => void, signal: AbortSignal) => Promise<unknown>) =>
     async (update: (p: Record<string, unknown>) => void, signal: AbortSignal): Promise<unknown> => {
       const r = await fn(update, signal);
@@ -1096,11 +1096,12 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         headResources: z.boolean().optional().describe('Also run a header-only pass over the CSS/JS/font subresources pages load (status, size, cache-control) into resource_assets. Off by default; bodies are never downloaded.'),
         checkExternal: z.boolean().optional().describe('Check every distinct outbound link target after the crawl (default true). false skips it.'),
         externalCacheDays: z.number().int().min(0).max(90).optional().describe('Reuse outbound-link results younger than this many days (default 7; 0 re-checks everything).'),
-        chromeFallback: z.boolean().optional().describe('When a request is bot-blocked (403, 999, a WAF challenge) under the crawler\'s own user agent, retry it once as desktop Chrome; after 3 pages in a row need it, the rest of the crawl goes out as Chrome. Default true; always off when userAgent is set.'),
+        chromeFallback: z.boolean().optional().describe('When a request is bot-blocked (403, 999, a WAF challenge) under the crawler\'s own user agent, retry it once as desktop Chrome; once at least 3 pages have needed it, and they are at least half the pages tried under the bot user agent, the rest of the crawl goes out as Chrome. Default true; always off when userAgent is set.'),
+        siteProbes: z.boolean().optional().describe('End the crawl with at most 5 site probes (two URLs that cannot exist, and the http/https and www/apex twins of the homepage and of the most-linked deep page), read by soft-404-handling and host-variant-split. Default true; false skips them.'),
       },
     },
-    async ({ siteUrl, maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources, checkExternal, externalCacheDays, chromeFallback }) => {
-      const jobId = startFor(siteUrl, 'crawl', { siteUrl, maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources, checkExternal, externalCacheDays, chromeFallback });
+    async ({ siteUrl, maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources, checkExternal, externalCacheDays, chromeFallback, siteProbes }) => {
+      const jobId = startFor(siteUrl, 'crawl', { siteUrl, maxPages, maxDepth, maxConcurrency, delayMs, userAgent, excludePatterns, headResources, checkExternal, externalCacheDays, chromeFallback, siteProbes });
       return jobStarted({ jobId, status: 'running', siteUrl }, `Crawl started for ${siteUrl} (job ${jobId}). Poll check_crawl_status.`);
     },
   );
@@ -1216,7 +1217,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'check_crawl_status',
     {
       title: 'Check crawl status',
-      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A running crawl reports its stage (fetching, writing-links, image-weights, resource-headers, link-graph, revalidation-probe, snapshot, external-links), pages crawled vs the cap, pages/sec and an ETA for the fetch stage, so a long crawl is never mistaken for a stalled one; poll every 60-120 s. A failed job\'s reason is in the text reply as well as in structuredContent.error. A job whose server process exited before it finished reads as "interrupted" (see README, Docker).',
+      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A running crawl reports its stage (fetching, writing-links, image-weights, resource-headers, link-graph, revalidation-probe, snapshot, site-probes, external-links), pages crawled vs the cap, pages/sec and an ETA for the fetch stage, so a long crawl is never mistaken for a stalled one; poll every 60-120 s. A failed job\'s reason is in the text reply as well as in structuredContent.error. A job whose server process exited before it finished reads as "interrupted" (see README, Docker).',
       inputSchema: { jobId: z.string().optional() },
     },
     jobStatus,
@@ -1387,7 +1388,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'trend_categories',
     {
       title: 'Google Trends category codes (DataForSEO)',
-      description: '[Free | Use before topic_trend with categoryCode] Search the Google Trends category tree (~1,400 categories) by name and get the codes topic_trend takes, with each match\'s parent so you can pick the right level. Omit query to list the top-level categories.',
+      description: '[Free endpoint; needs DataForSEO credentials | Use before topic_trend with categoryCode] Search the Google Trends category tree (~1,400 categories) by name and get the codes topic_trend takes, with each match\'s parent so you can pick the right level. Omit query to list the top-level categories.',
       inputSchema: { query: z.string().optional(), limit: z.number().int().min(1).max(100).optional() },
     },
     async ({ query, limit }) => {
