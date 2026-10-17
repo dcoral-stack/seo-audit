@@ -5,6 +5,7 @@ import { finalizeLinkGraph } from '../core/linkGraph.js';
 import { gscFreshness } from '../core/gscFreshness.js';
 import { brandToken } from '../core/url-key.js';
 import { snapshotCrawl } from './drift.js';
+import { checkIdsJson, computeHealth, serverVersion } from './history.js';
 import { CHECKS, expectedCtr, type CheckContext, type CheckDef } from './checks.js';
 
 const MAX_PER_CHECK = 500; // bound findings/check so a huge site can't balloon the table
@@ -72,11 +73,13 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
     const maxDate = gscFreshness(db.db).effectiveMax;
     const pageCount = (db.db.prepare('SELECT COUNT(*) c FROM pages').get() as { c: number }).c;
 
+    let crawlId: string | null = null; // the crawl this run reads (recorded on the run row)
     // Self-heal: if the latest crawl's link-graph was left unpopulated (e.g. the crawl process
     // was killed before finalizing), recompute inlink_count/iPR/click_depth so graph-dependent
     // checks (deep-pages, orphans, iPR-bleed, underlinked-high-demand…) aren't silently no-op.
     if (pageCount > 0) {
       const cr = db.db.prepare('SELECT crawl_id FROM pages LIMIT 1').get() as { crawl_id: string } | undefined;
+      crawlId = cr?.crawl_id ?? null;
       if (cr) {
         const g = db.db.prepare('SELECT MAX(ipr) mi, MAX(inlink_count) mc FROM pages WHERE crawl_id=?').get(cr.crawl_id) as { mi: number | null; mc: number | null };
         if ((g.mi ?? 0) === 0 && (g.mc ?? 0) === 0) finalizeLinkGraph(db.db, cr.crawl_id, null);
@@ -191,7 +194,15 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
     });
     tx();
 
-    db.db.prepare(`UPDATE audit_runs SET finished_at=datetime('now'), finding_count=?, status='completed' WHERE run_id=?`).run(total, runId);
+    // Health (the dashboard's formula, against the page set this run read) + the check set + the
+    // code version, written in the same completion UPDATE so a completed row always carries them.
+    const health = computeHealth(db.db, runId);
+    db.db.prepare(
+      `UPDATE audit_runs SET finished_at=datetime('now'), finding_count=?, status='completed', crawl_id=?,
+         health_score=?, health_error_pages=?, health_total_pages=?, health_basis=?, check_ids=?, server_version=?
+       WHERE run_id=?`,
+    ).run(total, crawlId, health?.score ?? null, health?.errorPages ?? null, health?.totalPages ?? null,
+      health ? 'audit' : 'none:no-pages', checkIdsJson(checks.map(c => c.id)), serverVersion(), runId);
     startedRunId = null;
 
     // Stored counts, annotated with the true total wherever the per-check cap bit — a bare

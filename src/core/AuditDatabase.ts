@@ -608,6 +608,15 @@ export class AuditDatabase {
     ensure('pages', 'fetched_as', 'fetched_as TEXT'); // bot | chrome (Chrome fallback after a bot block)
     ensure('audit_runs', 'status', 'status TEXT');   // running | completed | failed (NULL on old rows: infer from finished_at)
     ensure('audit_runs', 'error', 'error TEXT');
+    // Audit history (summary page): health per run, the check set it ran, and the code version.
+    // NULL on runs before this migration; backfillAuditHealth (src/audit/history.ts) rebuilds health
+    // only where page_snapshots hold that run's crawl, and records why not in health_basis.
+    ensure('audit_runs', 'health_score', 'health_score INTEGER');
+    ensure('audit_runs', 'health_error_pages', 'health_error_pages INTEGER');
+    ensure('audit_runs', 'health_total_pages', 'health_total_pages INTEGER');
+    ensure('audit_runs', 'health_basis', 'health_basis TEXT');   // audit | snapshot:<crawlId> | none:<reason>
+    ensure('audit_runs', 'check_ids', 'check_ids TEXT');         // JSON array of the check ids that ran (sorted)
+    ensure('audit_runs', 'server_version', 'server_version TEXT');
     ensure('pages', 'images_missing_dimensions', 'images_missing_dimensions INTEGER DEFAULT 0');
     ensure('pages', 'canonical_count', 'canonical_count INTEGER DEFAULT 0');
     ensure('pages', 'canonical_relative', 'canonical_relative INTEGER DEFAULT 0');
