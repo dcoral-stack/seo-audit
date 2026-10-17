@@ -63,7 +63,7 @@ import { MajesticClient } from './core/MajesticClient.js';
 import { fetchGoogleNews } from './core/googleNews.js';
 import { WikidataClient } from './core/WikidataClient.js';
 import { Entities } from './core/Entities.js';
-import { JobManager, corruptionHint, type Job } from './core/JobManager.js';
+import { JobManager, corruptionHint, jobsDbPath, type Job } from './core/JobManager.js';
 import { checkIntegrity, repairIndexes, propertyDbFile } from './core/integrity.js';
 import { probeUrls, urlVariants, judgeVariants, type ProbeResult } from './core/probeUrls.js';
 import { triage404s, verifyLive } from './core/triage404.js';
@@ -281,7 +281,9 @@ _Composing your own analysis? Call \`composition_cookbook\` first — the data-s
 
 export function createServer(): { server: McpServer; run: () => Promise<void> } {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION }, { instructions: SERVER_INSTRUCTIONS });
-  const jobs = new JobManager();
+  // Durable registry in the data dir (#9): a later process can still report a finished job, or an
+  // interrupted one whose process died. Falls back to memory-only if the file can't be opened.
+  const jobs = new JobManager({ dbPath: jobsDbPath(dataDir()) });
 
   const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   const gsc = credPath ? new GscClient(credPath) : null;
@@ -677,6 +679,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   const oneLineJob = (job: Job, detail = false): string => {
     const head = `Job ${job.id} (${job.type}): ${job.state}`;
     if (job.state === 'failed') return `${head}: ${job.error ?? 'unknown error'}${corruptionHint(job.error)}`;
+    if (job.state === 'interrupted') return `${head}: ${job.error ?? 'the process running it exited before it finished.'}`;
     const prog = Object.keys(job.progress).length ? ` ${JSON.stringify(job.progress).slice(0, 300)}` : '';
     if (!detail || job.state !== 'completed' || !DATA_JOBS.has(job.type)) return head + prog;
     const link = (job.result as { dashboard?: string } | undefined)?.dashboard;
@@ -691,7 +694,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   const jobStatus = async ({ jobId }: { jobId?: string }) => {
     if (jobId) {
       const job = jobs.get(jobId);
-      if (!job) return { content: [{ type: 'text' as const, text: `No job ${jobId}. Jobs live in the server process, so a job is lost if that process restarted.` }], structuredContent: { error: 'not_found', jobId } };
+      if (!job) return { content: [{ type: 'text' as const, text: `No job ${jobId}. It is not in this process or in the job registry (${jobs.durable ? 'the id may be wrong, or it was pruned' : "the registry could not be opened, so only this process's jobs are known"}). If this server runs under a per-call container setup (the Docker MCP gateway without longLived: true, or a data directory that is not a persistent volume), jobs can't be tracked between calls; see README, Docker.` }], structuredContent: { error: 'not_found', jobId } };
       return { content: [{ type: 'text' as const, text: oneLineJob(job, true) }], structuredContent: job as unknown as Record<string, unknown> };
     }
     const all = jobs.list();
@@ -1025,7 +1028,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'check_sync_status',
     {
       title: 'Check sync status',
-      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A failed job\'s reason is in the text reply as well as in structuredContent.error.',
+      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A failed job\'s reason is in the text reply as well as in structuredContent.error. A job whose server process exited before it finished reads as "interrupted" (see README, Docker).',
       inputSchema: { jobId: z.string().optional() },
     },
     jobStatus,
@@ -1184,7 +1187,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'check_crawl_status',
     {
       title: 'Check crawl status',
-      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A failed job\'s reason is in the text reply as well as in structuredContent.error.',
+      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A failed job\'s reason is in the text reply as well as in structuredContent.error. A job whose server process exited before it finished reads as "interrupted" (see README, Docker).',
       inputSchema: { jobId: z.string().optional() },
     },
     jobStatus,
