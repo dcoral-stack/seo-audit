@@ -27,6 +27,10 @@ export interface DataFreshness {
   /** The crawl whose pages are on screen: the newest run that wrote pages (the crawler wipes the
    *  previous snapshot on its first write, so a failed run that wrote anything IS what's shown). */
   shownCrawl?: { crawlId: string; status: string; at: string | null; partial: boolean };
+  /** The latest audit vs the latest completed crawl (summary panel 0): `auditCrawlId` is the crawl the
+   *  audit read (NULL on runs before it was recorded); `predatesCrawl` = a completed crawl finished
+   *  after the audit, so the findings on screen describe an older crawl. Absent with no audit or crawl. */
+  auditVsCrawl?: { auditCrawlId: string | null; latestCrawlId: string; predatesCrawl: boolean };
 }
 
 const fmtN = (n: number): string => n.toLocaleString('en-US');
@@ -126,6 +130,19 @@ export function getDataFreshness(db: Database.Database, liveJobs?: Set<string> |
       : { kind: 'audit', state: 'never', at: null, detail: 'No audit yet - run run_audit' });
   }
 
+  // Does the latest audit predate the latest completed crawl? Compared by time (julianday copes with
+  // both stored formats), so it also works for legacy audit rows that never recorded their crawl.
+  let auditVsCrawl: DataFreshness['auditVsCrawl'];
+  if (tableExists(db, 'audit_runs') && tableExists(db, 'crawl_metadata')) {
+    const hasCrawlCol = (db.prepare(`PRAGMA table_info(audit_runs)`).all() as { name: string }[]).some(c => c.name === 'crawl_id');
+    const a = db.prepare(`SELECT ${hasCrawlCol ? 'crawl_id' : 'NULL crawl_id'}, COALESCE(finished_at, started_at) at FROM audit_runs ORDER BY started_at DESC LIMIT 1`).get() as { crawl_id: string | null; at: string | null } | undefined;
+    const c = db.prepare(`SELECT crawl_id, finished_at FROM crawl_metadata WHERE status='completed' AND finished_at IS NOT NULL ORDER BY julianday(finished_at) DESC LIMIT 1`).get() as { crawl_id: string; finished_at: string } | undefined;
+    if (a?.at && c) {
+      const later = (db.prepare(`SELECT julianday(?) > julianday(?) later`).get(c.finished_at, a.at) as { later: number | null }).later;
+      auditVsCrawl = { auditCrawlId: a.crawl_id, latestCrawlId: c.crawl_id, predatesCrawl: a.crawl_id ? a.crawl_id !== c.crawl_id && !!later : !!later };
+    }
+  }
+
   // URL inspection: how many URLs, when last inspected.
   if (tableExists(db, 'url_inspection')) {
     const i = db.prepare(`SELECT COUNT(*) n, MAX(inspected_at) at FROM url_inspection`).get() as { n: number; at: string | null };
@@ -144,5 +161,5 @@ export function getDataFreshness(db: Database.Database, liveJobs?: Set<string> |
     if (s.n) sources.push({ kind: 'sitemap', state: 'completed', at: s.at, detail: `${fmtN(s.n)} sitemap URLs` });
   }
 
-  return { sources, crawlRuns, ...(shownCrawl ? { shownCrawl } : {}) };
+  return { sources, crawlRuns, ...(shownCrawl ? { shownCrawl } : {}), ...(auditVsCrawl ? { auditVsCrawl } : {}) };
 }
