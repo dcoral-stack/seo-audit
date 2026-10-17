@@ -88,7 +88,7 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
         snapshotCrawl(db.db, cr.crawl_id, at);
       }
     }
-    const ctx: CheckContext = { db: db.db, gscMaxDate: maxDate, brand: brandToken(siteUrl) };
+    const ctx: CheckContext = { db: db.db, gscMaxDate: maxDate, brand: brandToken(siteUrl), siteUrl };
     const runId = randomUUID().slice(0, 8);
 
     let checks = CHECKS;
@@ -102,14 +102,14 @@ export function runAudit(dataDir: string, siteUrl: string, opts: AuditOptions = 
       for (const row of db.db.prepare(
         `SELECT page_key, COALESCE(SUM(clicks),0) clicks, COALESCE(SUM(impressions),0) impressions,
                 COALESCE(SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0), 0) position
-         FROM search_analytics WHERE page_key IS NOT NULL AND date <= '${maxDate}' AND date > date(?, '-28 days') GROUP BY page_key`,
+         FROM gsc_rows WHERE page_key IS NOT NULL AND date <= '${maxDate}' AND date > date(?, '-28 days') GROUP BY page_key`,
       ).all(maxDate) as (Traffic & { page_key: string })[]) {
         trafficMap.set(row.page_key, { clicks: row.clicks, impressions: row.impressions, position: row.position });
       }
     }
     // Total site clicks in the window — the baseline for site-wide (null-url) findings (6e).
     const siteClicks = maxDate
-      ? (db.db.prepare(`SELECT COALESCE(SUM(clicks),0) c FROM search_analytics WHERE date <= '${maxDate}' AND date > date(?, '-28 days')`).get(maxDate) as { c: number }).c
+      ? (db.db.prepare(`SELECT COALESCE(SUM(clicks),0) c FROM gsc_rows WHERE date <= '${maxDate}' AND date > date(?, '-28 days')`).get(maxDate) as { c: number }).c
       : 0;
     const insert = db.db.prepare(
       `INSERT INTO findings (run_id, check_id, category, severity, labels, certainty, url_key, evidence, traffic_at_risk, effort, priority, recommendation)
@@ -248,7 +248,7 @@ export function runSingleCheck(dataDir: string, siteUrl: string, checkId: string
   const db = new AuditDatabase(dbPathFor(dataDir, siteUrl));
   try {
     const maxDate = gscFreshness(db.db).effectiveMax;
-    const all = chk.run({ db: db.db, gscMaxDate: maxDate, brand: brandToken(siteUrl) });
+    const all = chk.run({ db: db.db, gscMaxDate: maxDate, brand: brandToken(siteUrl), siteUrl });
     return { check: checkId, findings: all.slice(offset, offset + limit), total: all.length };
   } finally {
     db.close();

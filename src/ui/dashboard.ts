@@ -24,7 +24,7 @@ export interface DashboardData {
   quickWins?: { query: string; position: number; impressions: number; clicks: number; ctr: number; expectedCtr: number; type: 'striking' | 'snippet' | 'serp' | 'ok'; potential: number }[];
   contentDecay?: { urlKey: string; prevClicks: number; clicks: number; lost: number; dropPct: number; impressions: number; position: number }[];
   cannibalisationTable?: { query: string; urlCount: number; totalImpressions: number; totalClicks: number; verdict: 'split' | 'dominant'; crossType: boolean; urls: { url: string; impressions: number; clicks: number; position: number; template: string }[] }[];
-  brandedSplit?: { brand: string; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
+  brandedSplit?: { brand: string; variants?: string[]; branded: { clicks: number; impressions: number }; nonBranded: { clicks: number; impressions: number }; priorBrandedClicks: number; priorNonBrandedClicks: number };
   topKeywords?: { query: string; clicks: number; prevClicks: number; clicksChange: number; position: number; prevPosition: number }[];
   rankHistory?: { period: string; pos_1_3: number; pos_4_10: number; pos_11_20: number; pos_21_100: number; etv: number; keyword_count: number }[];
   dateAlignment?: { note: string };
@@ -313,7 +313,7 @@ function renderBrandedSplit(data: DashboardData): void {
   const b = data.brandedSplit;
   if (!b) { el.innerHTML = '<p class="muted">Brand could not be auto-detected from this property.</p>'; return; }
   const hint = $('brandedHint');
-  if (hint) hint.innerHTML = `Branded = queries containing <strong>“${esc(b.brand)}”</strong> (auto-detected from the domain). How much of your demand is people looking for you vs discovering you - last 28 days.`;
+  if (hint) hint.innerHTML = `Branded = queries that spell <strong>“${esc(b.brand)}”</strong> in whole words (auto-detected from the domain${b.variants?.length ? `; matched: ${b.variants.map(v => `“${esc(v)}”`).join(', ')}` : ''}). How much of your demand is people looking for you vs discovering you - last 28 days.`;
   const bc = b.branded.clicks, nc = b.nonBranded.clicks, tc = bc + nc;
   const bpct = tc ? Math.round(bc / tc * 100) : 0, npct = 100 - bpct;
   const dpc = (cur: number, prev: number): number => prev ? Math.round((cur - prev) / prev * 100) : (cur > 0 ? 100 : 0);

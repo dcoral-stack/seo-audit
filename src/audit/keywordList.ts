@@ -49,7 +49,7 @@ export function clusterKeywordList(db: Database.Database, keywordsIn: string[] |
 
   // No list supplied → derive the demand list from the site's own GSC queries (top by impressions).
   const keywords: string[] = derived
-    ? (db.prepare(`SELECT query FROM search_analytics WHERE query IS NOT NULL AND date > date('now', '-90 days') ${ub}
+    ? (db.prepare(`SELECT query FROM gsc_rows WHERE query IS NOT NULL AND date > date('now', '-90 days') ${ub}
                    GROUP BY query ORDER BY SUM(impressions) DESC LIMIT ?`).all(Math.min(cap, 500)) as { query: string }[]).map(r => r.query)
     : [...new Set(keywordsIn!.map(k => k.trim().toLowerCase()).filter(Boolean))].slice(0, cap);
 
@@ -57,7 +57,7 @@ export function clusterKeywordList(db: Database.Database, keywordsIn: string[] |
   const stmt = db.prepare(`
     SELECT page_key url, SUM(impressions) imp, SUM(clicks) clk,
            SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
-    FROM search_analytics
+    FROM gsc_rows
     WHERE query = ? AND page_key IS NOT NULL AND date > date('now', '-90 days') ${ub}
     GROUP BY page_key ORDER BY imp DESC LIMIT 1`);
 

@@ -22,7 +22,7 @@ export class UrlInspector {
   private targetUrls(db: AuditDatabase, limit: number): string[] {
     const byClicks = db.db
       .prepare(
-        `SELECT page AS url FROM search_analytics WHERE page IS NOT NULL
+        `SELECT page AS url FROM gsc_rows WHERE page IS NOT NULL
          GROUP BY page ORDER BY SUM(clicks) DESC LIMIT ?`,
       )
       .all(limit) as { url: string }[];

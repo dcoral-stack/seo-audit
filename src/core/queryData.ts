@@ -7,6 +7,7 @@
  */
 import Database from 'better-sqlite3';
 import { matchPredicate, ftsIndexFor, ensureFtsSchema, ensureFtsBackfilled, type FtsIndex } from './fts.js';
+import { ensureGscRows, hasGscRows, GSC_ROWS, GSC_COUNTRY_ROWS, GSC_DEVICE_ROWS } from './gscRows.js';
 
 export const QUERYABLE_TABLES = [
   'pages', 'links', 'search_analytics', 'url_inspection', 'sitemap_urls',
@@ -90,11 +91,17 @@ export function runQueryData(dbPath: string, input: QueryDataInput): QueryDataRe
     if (!idx) matchPredicate(input.table, f.column); // throws the "works on …" explanation
     else needed.add(idx);
   }
-  if (needed.size) {
+  // search_analytics reads go through the gsc_rows views (each GSC day counted once, #61); make sure
+  // they exist and match the data, on the same short-lived writable handle.
+  const wantsGsc = input.table === 'search_analytics';
+  if (needed.size || wantsGsc) {
     try {
       const w = new Database(dbPath, { fileMustExist: true });
       w.pragma('busy_timeout = 10000'); // small inline backfill: wait out a running job's write lock
-      try { ensureFtsSchema(w); for (const idx of needed) ensureFtsBackfilled(w, idx); } finally { w.close(); }
+      try {
+        ensureFtsSchema(w); for (const idx of needed) ensureFtsBackfilled(w, idx);
+        if (wantsGsc) ensureGscRows(w);
+      } finally { w.close(); }
     } catch (e) {
       if (!/unable to open|no such file|SQLITE_CANTOPEN/i.test(String(e))) throw e; // missing DB falls through to the message below
     }
@@ -165,7 +172,8 @@ function execute(db: Database.Database, input: QueryDataInput): QueryDataResult 
     }
   }
   const where = whereParts.length ? ` WHERE ${whereParts.join(' AND ')}` : '';
-  const from = `FROM ${quoteIdent(table)}${where}`;
+  const { source, note } = gscSource(db, table, input);
+  const from = `FROM ${quoteIdent(source)}${where}`;
 
   const mode = input.mode ?? 'aggregate';
   const orderDir = input.orderDir === 'asc' ? 'ASC' : 'DESC';
@@ -223,8 +231,10 @@ function execute(db: Database.Database, input: QueryDataInput): QueryDataResult 
       : `Total: ${rowsTotal.toLocaleString('en-US')} rows (no groupBy — single aggregate).`;
     const markdown = out.length ? `${header}\n${body}\n\n${totalLine}` : `No rows match. ${totalLine}`;
     return {
-      markdown,
-      structured: { table, mode, groupBy, metrics: metrics.map(({ fn, column }) => ({ fn, column })), groups: out, groupsTotal, groupsReturned: out.length, rowsTotal },
+      markdown: note ? `${markdown}
+
+${note}` : markdown,
+      structured: { table, ...(source !== table ? { source } : {}), mode, groupBy, metrics: metrics.map(({ fn, column }) => ({ fn, column })), groups: out, groupsTotal, groupsReturned: out.length, rowsTotal },
     };
   }
 
@@ -255,6 +265,28 @@ function execute(db: Database.Database, input: QueryDataInput): QueryDataResult 
   const markdown = rows.length ? `${header}\n${body}\n\n${footer}` : `No rows match (${rowsTotal} total in ${table} for these filters).`;
   return {
     markdown,
-    structured: { table, mode, columns: cols, rows, rowsReturned: rows.length, rowsTotal, offset, nextOffset, cellsTruncated: truncated },
+    structured: { table, ...(source !== table ? { source } : {}), mode, columns: cols, rows, rowsReturned: rows.length, rowsTotal, offset, nextOffset, cellsTruncated: truncated },
   };
+}
+
+/**
+ * Where a search_analytics query reads from. A day can be stored in two GSC row shapes (all-country
+ * and segmented rows), so a plain read would count it twice (#61): totals read `gsc_rows`; a query
+ * that names `country` reads `gsc_country_rows`; one that names `device` (alone or with `country`)
+ * reads `gsc_device_rows`, where a day read from device-only rows shows country ''. Other tables
+ * read themselves.
+ */
+function gscSource(db: Database.Database, table: QueryTable, input: QueryDataInput): { source: string; note: string | null } {
+  if (table !== 'search_analytics') return { source: table, note: null };
+  if (!hasGscRows(db)) {
+    return { source: table, note: 'Note: read straight from search_analytics (the gsc_rows view is missing on this database): days stored in two row shapes count twice.' };
+  }
+  const named = new Set<string>([
+    ...(input.groupBy ?? []), ...(input.filters ?? []).map(f => f.column), ...(input.metrics ?? []).map(m => m.column),
+    ...(input.columns ?? []), ...(input.orderBy ? [input.orderBy] : []),
+  ]);
+  const country = named.has('country'), device = named.has('device');
+  if (country && !device) return { source: GSC_COUNTRY_ROWS, note: null };
+  if (device) return { source: GSC_DEVICE_ROWS, note: null };
+  return { source: GSC_ROWS, note: null };
 }

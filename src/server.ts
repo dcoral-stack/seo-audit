@@ -118,7 +118,7 @@ JOIN KEYS (memorise these):
 - domain — a bare host (no scheme, no www). Joins the Labs tools (ranked_keywords, domain_visibility, top_pages, competitors_domain, topic_gaps) ↔ backlinks summary.
 
 GRAIN (one line per source):
-- search_analytics: date × query × page (plus device/country when synced with segments). Rows are additive; position must be impression-weighted when aggregated.
+- search_analytics: date × query × page (plus device/country when synced with segments). Rows are additive; position must be impression-weighted when aggregated. A day can be stored in two row shapes (all-country and segmented rows), so never SUM the raw table: totals read the gsc_rows view (one shape per day), breakdowns gsc_country_rows / gsc_device_rows. query_data on search_analytics already does this.
 - pages / links: the LATEST crawl only, one row per url_key (history lives in page_snapshots, diffed by detect_changes). Carries title/H1/meta, canonical, schema (json_ld), body_chunks, iPR, click_depth, inlink_count.
 - url_inspection: one row per inspected URL — Google's own view (coverage_state, google_canonical vs user_canonical, last_crawl_time, crawled_as, rich_results).
 - rank_history: month × domain (DataForSEO rank distribution + ETV).
@@ -1493,7 +1493,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
             for (const u of urls) {
               const key = urlKey(u, { hostForm });
               const row = db.db.prepare(`SELECT query, SUM(impressions) imp, SUM(clicks) clk, SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
-                FROM search_analytics WHERE page_key=? AND query IS NOT NULL AND date > date(?, '-28 days') AND date <= ? GROUP BY query ORDER BY imp DESC LIMIT 1`)
+                FROM gsc_rows WHERE page_key=? AND query IS NOT NULL AND date > date(?, '-28 days') AND date <= ? GROUP BY query ORDER BY imp DESC LIMIT 1`)
                 .get(key, fresh.effectiveMax, fresh.effectiveMax) as { query: string; imp: number; clk: number; pos: number } | undefined;
               if (row?.query) targets.push({ urlKey: key, query: row.query, impressions: row.imp, clicks: row.clk, position: Math.round(row.pos * 10) / 10, priorPosition: null, slipped: false, competingUrls: 0 });
             }

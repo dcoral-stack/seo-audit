@@ -49,7 +49,7 @@ export function buildVerdict(v: VerdictInput): Verdict {
       const nb = direction(v.nonBrand.current, v.nonBrand.prior);
       if (nb.dir === 'flat') seg.push({ text: ' (non-brand flat)' });
       else if (nb.pct != null) seg.push({ text: ` (non-brand ${nb.dir} ` }, { text: `${Math.abs(Math.round(nb.pct))}%`, n: true }, { text: ')' });
-      tips.push(`Non-brand = queries without the brand token "${v.nonBrand.brand}", detected from the domain (a heuristic).`);
+      tips.push(`Non-brand = queries that don't spell the brand "${v.nonBrand.brand}" in whole words (spaced spellings count), detected from the domain (a heuristic).`);
     }
     clauses.push(seg);
     chips.push({ key: 'clicks', label: d.dir === 'flat' ? 'Clicks flat' : d.pct == null ? 'Clicks up' : `Clicks ${d.dir === 'up' ? '+' : '-'}${Math.abs(Math.round(d.pct))}%`, direction: d.dir });

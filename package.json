@@ -49,7 +49,7 @@
     "build:mcpb": "npm run build && node scripts/build-mcpb.mjs",
     "dev": "tsc -p tsconfig.server.json --watch",
     "start": "node dist/index.js",
-    "test": "npm run build:server && npm run smoke && npm run probe:jobs && npm run probe:fts && npm run probe:review-0-15 && npm run probe:summary",
+    "test": "npm run build:server && npm run smoke && npm run probe:jobs && npm run probe:fts && npm run probe:review-0-15 && npm run probe:summary && npm run probe:gsc-rows && npm run probe:brand",
     "smoke": "node scripts/smoke.mjs",
     "demo:property": "node scripts/demo-property.mjs",
     "demo:screenshots": "node scripts/demo-screenshots.mjs",
@@ -89,7 +89,9 @@
     "clean": "rimraf dist",
     "prepublishOnly": "npm run clean && npm run build",
     "probe:review-0-15": "node scripts/probe-review-0-15.mjs",
-    "probe:summary": "node scripts/probe-summary.mjs"
+    "probe:summary": "node scripts/probe-summary.mjs",
+    "probe:gsc-rows": "node scripts/probe-gsc-rows.mjs",
+    "probe:brand": "node scripts/probe-brand.mjs"
   },
   "engines": {
     "node": ">=20.0.0"
