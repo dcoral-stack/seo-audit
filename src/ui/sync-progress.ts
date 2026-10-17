@@ -83,7 +83,7 @@ function render(job: Job): void {
   badge.className = `status-badge ${state}`;
   if (startedAt) $('elapsed').textContent = formatDuration(Date.now() - startedAt);
 
-  const done = state === 'completed' || state === 'failed' || state === 'cancelled';
+  const done = state === 'completed' || state === 'failed' || state === 'cancelled' || state === 'interrupted';
   const curIdx = done ? PHASES.length : Math.max(0, PHASES.findIndex(ph => ph.key === p.phase));
 
   // Phase stepper
@@ -120,8 +120,8 @@ function render(job: Job): void {
     stopPolling();
     sum.style.display = 'block';
     const r = job.result ?? {};
-    if (state === 'failed') {
-      sum.innerHTML = `<div class="summary-error">Sync failed${job.error ? `: ${escapeHtml(job.error)}` : ''}</div>`;
+    if (state === 'failed' || state === 'interrupted') {
+      sum.innerHTML = `<div class="summary-error">Sync ${state}${job.error ? `: ${escapeHtml(job.error)}` : ''}</div>`;
     } else {
       const rows = [
         r.gsc ? ['Search Console', `${formatNumber(r.gsc.rowsFetched ?? 0)} rows · ${r.gsc.startDate}–${r.gsc.endDate}`] : null,

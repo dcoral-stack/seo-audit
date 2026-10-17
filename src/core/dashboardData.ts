@@ -1,5 +1,6 @@
 import { AuditDatabase } from './AuditDatabase.js';
 import { getDataFreshness, type DataFreshness } from './dataFreshness.js';
+import { liveJobTypes } from './JobManager.js';
 import { dbPathFor } from './paths.js';
 import { gscFreshness } from './gscFreshness.js';
 import { expectedCtr } from './ctrModel.js';
@@ -172,7 +173,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const version = `${PAYLOAD_VERSION}|${ver.sa ?? 'none'}|${ver.run ?? 'none'}|${ver.pg}|${ver.ar ?? ''}|${ver.rh ?? ''}|${ver.sf}|${ver.ms}|${ver.pb ?? ''}|${ver.lp ?? ''}`;
     const hit = db.db.prepare('SELECT payload FROM dashboard_cache WHERE id=1 AND version=?').get(version) as { payload: string } | undefined;
     // A corrupt/truncated cache row must fall through to a rebuild, not throw forever.
-    if (hit) { try { return { ...(JSON.parse(hit.payload) as DashboardData), freshness: getDataFreshness(db.db) }; } catch { /* rebuild below */ } }
+    if (hit) { try { return { ...(JSON.parse(hit.payload) as DashboardData), freshness: getDataFreshness(db.db, liveJobTypes(dataDir)) }; } catch { /* rebuild below */ } }
 
     // Use the finalised date (trailing partial GSC days trimmed) for ALL windows + charts, so the
     // dashboard never shows the "traffic tanking" cliff of unfinalised data.
@@ -964,7 +965,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         .run(version, JSON.stringify(payload));
     } catch { /* cache is an optimisation, never block the dashboard on it */ }
     // Freshness is read live on every load (outside the cache) - see dataFreshness.ts.
-    return { ...payload, freshness: getDataFreshness(db.db) };
+    return { ...payload, freshness: getDataFreshness(db.db, liveJobTypes(dataDir)) };
   } finally {
     db.close();
   }

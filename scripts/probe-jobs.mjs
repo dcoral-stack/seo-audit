@@ -1,9 +1,13 @@
-// Regression test for async-job reporting, data_storage lastCrawl and incremental GSC replace.
+// Regression test for async-job reporting, the durable job registry (#9), data_storage lastCrawl and incremental GSC replace.
 // Run: node scripts/probe-jobs.mjs   (after npm run build:server)
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { JobManager, corruptionHint } from '../dist/core/JobManager.js';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
+import { JobManager, corruptionHint, jobsDbPath, liveJobTypes, JOBS_DB_NAME } from '../dist/core/JobManager.js';
+import { getDataFreshness } from '../dist/core/dataFreshness.js';
 import { AuditDatabase } from '../dist/core/AuditDatabase.js';
 import { GscSync } from '../dist/core/GscSync.js';
 import { storageSummary } from '../dist/core/dataStorage.js';
@@ -91,6 +95,138 @@ const site = 'https://example.com/';
   // Empty response: stored days are not wiped.
   await new GscSync({ fetchSearchAnalytics: async () => {} }, dir).run(site2, { startDate: '2026-10-01', endDate: '2026-10-16' }, () => {}, new AbortController().signal);
   check('an empty response never wipes stored days', JSON.stringify(stored()) === before, JSON.stringify(stored()));
+}
+
+// ── Durable job registry (#9) ────────────────────────────────────────────────────────────────
+{
+  const jdir = path.join(dir, 'jobs');
+  const jdb = jobsDbPath(jdir);
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  // Every durable manager is closed at the end: Windows can't delete an open SQLite file.
+  const opened = [];
+  const JM = (o) => { const m = new JobManager(o); opened.push(m); return m; };
+  const quiet = async (fn) => { const o = console.error; console.error = () => {}; try { return await fn(); } finally { console.error = o; } };
+
+  // (b) A completed job's result survives a restart (a new JobManager = a new process).
+  {
+    const a = JM({ dbPath: jdb });
+    check('registry opens', a.durable, 'durable=false');
+    const id = a.start('crawl', async (update) => { update({ crawled: 3 }); return { siteUrl: site, crawled: 3 }; });
+    await sleep(30);
+    const b = JM({ dbPath: jdb });
+    const job = b.get(id);
+    check('completed job result survives a restart', job?.state === 'completed' && job.result?.crawled === 3 && job.progress?.crawled === 3, JSON.stringify(job));
+    check('list() merges registry rows from the earlier process', b.list().some(j => j.id === id), JSON.stringify(b.list()));
+    check('unknown id is still not found', b.get('nope1234') === undefined, '');
+    const fid = await quiet(async () => { const f = a.start('sync', async () => { throw new Error('boom'); }); await sleep(30); return f; });
+    check('failed job error survives a restart', JM({ dbPath: jdb }).get(fid)?.error === 'boom', '');
+  }
+
+  // (a1) A stale "running" row from another process reads as interrupted.
+  {
+    const raw = new Database(jdb);
+    const ins = raw.prepare('INSERT INTO jobs (id,type,state,started_at,updated_at,heartbeat_at,progress,instance_id) VALUES (?,?,?,?,?,?,?,?)');
+    const old = new Date(Date.now() - 5 * 60_000).toISOString();
+    ins.run('stale001', 'crawl', 'running', old, old, old, '{"crawled":12}', 'some-other-process');
+    const fresh = new Date().toISOString();
+    ins.run('fresh001', 'sync', 'running', fresh, fresh, fresh, '{}', 'another-live-process');
+    raw.close();
+    const b = JM({ dbPath: jdb });
+    const st = b.get('stale001');
+    check('stale running row reads as interrupted', st?.state === 'interrupted' && /exited before it finished/.test(st.error ?? '') && /longLived: true/.test(st.error ?? '') && st.progress.crawled === 12, JSON.stringify(st));
+    check('a live process\'s running row stays running', b.get('fresh001')?.state === 'running', JSON.stringify(b.get('fresh001')));
+    const ro = new Database(jdb, { readonly: true });
+    check('the stale row is not rewritten on read', ro.prepare("SELECT state FROM jobs WHERE id='stale001'").get().state === 'running', '');
+    ro.close();
+    const live = liveJobTypes(jdir);
+    check('liveJobTypes sees only fresh running jobs', !!live && live.has('sync') && !live.has('crawl'), JSON.stringify(live && [...live]));
+    check('liveJobTypes is null without a registry', liveJobTypes(path.join(dir, 'no-such-dir')) === null, '');
+  }
+
+  // (a2) A real process killed mid-job: running while its heartbeat is fresh, interrupted once stale.
+  {
+    const modUrl = pathToFileURL(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/core/JobManager.js')).href;
+    const code = [
+      `import { JobManager } from ${JSON.stringify(modUrl)};`,
+      `const jm = new JobManager({ dbPath: ${JSON.stringify(jdb)}, heartbeatMs: 100000 });`,
+      `const id = jm.start('crawl', (update) => { update({ phase: 'crawl' }); return new Promise(() => {}); });`,
+      'console.log(id); setInterval(() => {}, 1000);',
+    ].join('\n');
+    const child = spawn(process.execPath, ['--input-type=module', '-e', code], { stdio: ['ignore', 'pipe', 'inherit'] });
+    let exited = false;
+    const exitP = new Promise(r => child.once('exit', () => { exited = true; r(); }));
+    const id = await Promise.race([
+      new Promise(r => child.stdout.once('data', d => r(String(d).trim()))),
+      exitP.then(() => null),
+      sleep(15_000).then(() => null),
+    ]);
+    check('child process started a job', !!id, `exited=${exited}`);
+    if (id) {
+      const b = JM({ dbPath: jdb, staleMs: 400 });
+      check('another process\'s live job reads as running', b.get(id)?.state === 'running', JSON.stringify(b.get(id)));
+      child.kill('SIGKILL');
+      await exitP;
+      await sleep(500);
+      const dead = b.get(id);
+      check('a killed process\'s job reads as interrupted once its heartbeat is stale', dead?.state === 'interrupted' && /longLived/.test(dead.error ?? ''), JSON.stringify(dead));
+      check('list() reports it as interrupted too', b.list().find(j => j.id === id)?.state === 'interrupted', '');
+    } else child.kill('SIGKILL');
+  }
+
+  // Heartbeat + throttled progress reach the registry while the job runs.
+  {
+    const a = JM({ dbPath: jdb, heartbeatMs: 50, progressThrottleMs: 20 });
+    let release; const gate = new Promise(r => { release = r; });
+    const id = a.start('crawl', async (update) => { update({ n: 1 }); await sleep(40); update({ n: 2 }); await gate; return {}; });
+    const firstBeat = JM({ dbPath: jdb }).get(id)?.heartbeatAt;
+    await sleep(150);
+    const mid = JM({ dbPath: jdb }).get(id);
+    check('heartbeat refreshes while running', mid?.state === 'running' && mid.heartbeatAt > firstBeat, JSON.stringify({ firstBeat, mid }));
+    check('throttled progress is written', mid?.progress?.n === 2, JSON.stringify(mid?.progress));
+    release(); await sleep(20);
+  }
+
+  // (c) Memory-only fallback when the registry path isn't writable (its parent is a file).
+  {
+    const blocker = path.join(dir, 'not-a-dir');
+    writeFileSync(blocker, 'x');
+    const origErr = console.error; const logged = []; console.error = (...a) => logged.push(a.join(' '));
+    const m = JM({ dbPath: path.join(blocker, JOBS_DB_NAME) });
+    const id = m.start('sync', async () => ({ ok: true }));
+    await sleep(20);
+    console.error = origErr;
+    check('unwritable registry falls back to memory-only', !m.durable && m.get(id)?.state === 'completed', JSON.stringify(m.get(id)));
+    check('fallback warns once on stderr', logged.filter(l => l.includes('[jobs]')).length === 1 && /memory only/.test(logged[0] ?? ''), JSON.stringify(logged));
+  }
+
+  // Pruning keeps the newest rows and never drops a live job.
+  {
+    const pdir = path.join(dir, 'prune');
+    const a = JM({ dbPath: jobsDbPath(pdir), maxRetained: 3 });
+    let release; const gate = new Promise(r => { release = r; });
+    const live = a.start('crawl', () => gate);
+    for (let i = 0; i < 5; i++) { await sleep(5); a.start('sync', async () => i); }
+    await sleep(10);
+    const ro = new Database(jobsDbPath(pdir), { readonly: true });
+    const rows = ro.prepare('SELECT id, state FROM jobs').all();
+    ro.close();
+    check('registry pruned to the newest rows, live job kept', rows.length <= 4 && rows.some(r => r.id === live), JSON.stringify(rows));
+    release(); await sleep(10);
+  }
+  for (const m of opened) m.close();
+}
+
+// ── Dashboard freshness: a 'running' crawl with no live owner reads as interrupted (#9) ───────
+{
+  const fdb = new AuditDatabase(path.join(dir, 'fresh.db'));
+  fdb.db.prepare("INSERT INTO crawl_metadata (crawl_id, base_url, base_domain, status, started_at) VALUES ('c9', ?, 'example.com', 'running', '2026-10-16T17:45:45.414Z')").run(site);
+  const crawlState = (live) => getDataFreshness(fdb.db, live).sources.find(s => s.kind === 'crawl')?.state;
+  check('orphaned running crawl reads as interrupted', crawlState(new Set()) === 'interrupted', crawlState(new Set()));
+  const orphanErr = getDataFreshness(fdb.db, new Set()).sources.find(s => s.kind === 'crawl')?.error;
+  check('orphaned crawl uses the shared interrupted wording', orphanErr === 'The server process running this crawl exited before it finished.', orphanErr);
+  check('running crawl with a live crawl job stays running', crawlState(new Set(['crawl'])) === 'running', crawlState(new Set(['crawl'])));
+  check('no registry: crawl state left as stored', crawlState(null) === 'running', crawlState(null));
+  fdb.close();
 }
 
 rmSync(dir, { recursive: true, force: true });
