@@ -147,9 +147,19 @@ export async function runSiteProbes(db: Database.Database, siteUrl: string, opts
   const baseHost = new URL(home).hostname;
   const deadline = Date.now() + (opts.budgetMs ?? 60_000);
   const done: { p: SiteProbePlan; r: ProbeResult; verdict: string; detail: string }[] = [];
-  for (const p of plan) {
+  let twinHostUnresolved = false;
+  for (let p of plan) {
     if (opts.signal?.aborted) break;
     if (Date.now() > deadline - 2000) { skipped.push(`${p.kind}: time budget reached`); continue; }
+    // The www/apex twin doesn't resolve (no DNS record: nothing to split). Spend the deep probe on the
+    // scheme twin alone rather than on a host that can't answer.
+    if (p.kind === 'host-deep' && twinHostUnresolved) {
+      const x = new URL(p.expected);
+      if (x.port) { skipped.push('host-deep: the twin host does not resolve and the host has a port'); continue; }
+      x.protocol = x.protocol === 'https:' ? 'http:' : 'https:';
+      p = { ...p, url: x.toString() };
+      skipped.push('host-deep: the twin host does not resolve, so the deep URL was probed on the other scheme only');
+    }
     if (done.length && opts.delayMs) await new Promise(r => setTimeout(r, opts.delayMs));
     const [r] = await probeUrls([{ url: p.url, variantType: p.kind }], baseHost, {
       userAgent: opts.userAgent, chromeFallback: opts.chromeFallback, preferChrome: opts.preferChrome, concurrency: 1,
@@ -157,6 +167,7 @@ export async function runSiteProbes(db: Database.Database, siteUrl: string, opts
     });
     const j = p.kind.startsWith('soft404') ? judgeSoft404(r, home) : judgeHostVariant(r, p.expected);
     done.push({ p, r, ...j });
+    if (p.kind === 'host-home-host' && /ENOTFOUND|EAI_AGAIN/.test(r.error ?? '')) twinHostUnresolved = true;
   }
   if (done.length) {
     const ins = db.prepare(`INSERT INTO probes (url, variant_of, variant_type, status, redirect_chain, final_url, final_status, canonical, meta_robots, x_robots_tag, title, content_hash, cache, verdict, error, source, crawl_id)

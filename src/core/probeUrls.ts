@@ -129,7 +129,10 @@ async function probeOne(url: string, o: ResolvedProbeOptions, deadline: number, 
     }
     if (out.finalUrl == null) out.error = 'more than 10 redirects';
   } catch (e) {
-    out.error = e instanceof Error ? (e.name === 'TimeoutError' ? 'timed out' : e.message) : String(e);
+    // undici's "fetch failed" hides the reason in `cause` (ENOTFOUND for a host that doesn't resolve,
+    // ECONNREFUSED, a TLS error); name it, so an unknown probe says why.
+    const cause = e instanceof Error ? ((e as { cause?: { code?: string; message?: string } }).cause) : undefined;
+    out.error = e instanceof Error ? (e.name === 'TimeoutError' ? 'timed out' : `${e.message}${cause?.code ? ` (${cause.code})` : cause?.message ? ` (${cause.message})` : ''}`) : String(e);
   }
   out.ms = Date.now() - t0;
   return out;

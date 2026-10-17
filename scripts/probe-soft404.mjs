@@ -112,6 +112,7 @@ try {
       const page = (title) => send(200, {}, `<html><head><title>${title}</title></head><body><p>${title}</p></body></html>`);
       const p = orig.pathname;
       const known = ['/', '/blog/post-1', '/blog/post-2'];
+      if (orig.hostname === 'nowww.test') return orig.protocol === 'http:' ? send(301, { location: `https://nowww.test${p}` }) : known.includes(p) ? page(p) : send(404, {}, 'nope');
       if (orig.hostname.endsWith('bad.test')) {
         // Bad: http://www 302s to https://www (temporary); http://apex 301s to https://apex, which 301s deep paths on to
         // https://www (a chain) but serves its own homepage (a split); unknown root paths serve 200; unknown /blog/ paths 302 home.
@@ -161,6 +162,17 @@ try {
       check('good site: no site-setup finding (the not-found-titled page is still listed); no host-variant findings',
         same(g4.map(f => f.evidence.kind), ['not-found-text']) && runCheck(good.adb.db, 'host-variant-split').length === 0);
       good.adb.close();
+
+      // No www DNS record: the twin is unknown, and the deep probe falls back to the scheme twin alone.
+      const nowww = fixture('sc-domain:nowww.test', 'https://nowww.test');
+      const noDns = (url, init) => (new URL(url).hostname.startsWith('www.') ? Promise.reject(new TypeError('fetch failed', { cause: { code: 'ENOTFOUND' } })) : fetchImpl(url, init));
+      const nw = await runSiteProbes(nowww.adb.db, 'sc-domain:nowww.test', { crawlId: 'c1', delayMs: 0, fetchImpl: noDns });
+      const nwRows = nowww.adb.db.prepare(`SELECT url, variant_type k, verdict v, error FROM probes WHERE source = 'site-probe' ORDER BY id`).all();
+      check('twin host without DNS: unknown (ENOTFOUND named); the deep probe uses the scheme twin only; no host finding',
+        nwRows.find(r => r.k === 'host-home-host')?.v === 'unknown' && /ENOTFOUND/.test(nwRows.find(r => r.k === 'host-home-host')?.error ?? '')
+        && nwRows.find(r => r.k === 'host-deep')?.url === 'http://nowww.test/blog/post-1' && nwRows.find(r => r.k === 'host-deep')?.v === 'ok'
+        && nw.skipped.some(x => /scheme only/.test(x)) && runCheck(nowww.adb.db, 'host-variant-split').length === 0 && noteOf(nowww.adb.db, 'host-variant-split') === null, JSON.stringify(nwRows));
+      nowww.adb.close();
 
       // Every request fails (a twin host that doesn't resolve): unknown, never a finding, and reported as not collected.
       const dead = fixture('sc-domain:dead.test', 'https://www.dead.test');
