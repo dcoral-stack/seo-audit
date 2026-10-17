@@ -140,11 +140,11 @@ Add this to `claude_desktop_config.json` (Settings → Developer → Edit Config
       "args": ["C:/path/to/seo-audit-console/dist/index.js"],
       "env": {
         "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json",
-        "SAC_DATA_DIR": "C:/path/to/where/audits/are/stored",
-        "DATAFORSEO_USERNAME": "you@example.com",
-        "DATAFORSEO_PASSWORD": "your-dataforseo-password",
+        "SAC_DATA_DIR": "",
+        "DATAFORSEO_USERNAME": "",
+        "DATAFORSEO_PASSWORD": "",
         "DATAFORSEO_CACHE_DAYS": "20",
-        "MAJESTIC_API_KEY": "your-majestic-api-key",
+        "MAJESTIC_API_KEY": "",
         "MAJESTIC_CACHE_DAYS": "30",
         "CRUX_API_KEY": ""
       }
