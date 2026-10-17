@@ -52,20 +52,25 @@ It's on npm, so there's nothing to clone or build. You need Node.js 20 or newer 
       "command": "npx",
       "args": ["-y", "@houtini/seo-audit-console"],
       "env": {
-        "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json"
+        "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json",
+        "DATAFORSEO_USERNAME": "",
+        "DATAFORSEO_PASSWORD": "",
+        "MAJESTIC_API_KEY": ""
       }
     }
   }
 }
 ```
 
-**Claude Code** - one command:
+The first line is required. The other three are optional paid tiers: paste your key between the quotes, or **leave them empty to switch the tier off**. Don't leave template text such as `your-key-here` in a value, because it gets read as a real key and every call to that service fails.
+
+**Claude Code** - one command (add `--env DATAFORSEO_USERNAME=…` and the others the same way if you use them):
 
 ```bash
 claude mcp add seo-audit-console --env GOOGLE_APPLICATION_CREDENTIALS=C:/path/to/service-account.json -- npx -y @houtini/seo-audit-console
 ```
 
-That one env var is the whole core audit. The step everyone misses: the JSON key belongs to a Google Cloud service account, and that account's email has to be **added as a user on your property** in Search Console, or the tool can't see any of your data. [Getting started](manual/getting-started.md) walks through it with screenshots, plus the one-click Claude Desktop extension and the build-from-source route.
+`GOOGLE_APPLICATION_CREDENTIALS` alone is the whole core audit. The step everyone misses: the JSON key belongs to a Google Cloud service account, and that account's email has to be **added as a user on your property** in Search Console, or the tool can't see any of your data. [Getting started](manual/getting-started.md) walks through it with screenshots, plus the one-click Claude Desktop extension and the build-from-source route.
 
 Then ask Claude: *"list properties"*, *"refresh mysite.com"*, *"run an SEO audit"*.
 
@@ -227,7 +232,7 @@ Three steps - the [quick start](#quick-start) above is the short version, and th
 2. **Connect Search Console:** create a Google Cloud service account, download its JSON key, and - the step everyone misses - **add the service account's email as a user on your property** in Search Console. Prefer a walkthrough with pictures? [Setting it up from scratch](https://houtini.com/articles/better-search-console/#setting-it-up-from-scratch) covers the whole flow.
 3. **Point your MCP client at it** with `GOOGLE_APPLICATION_CREDENTIALS` set: `npx -y @houtini/seo-audit-console` for the published package, or `node /path/to/seo-audit-console/dist/index.js` if you built from source. Works in Claude Desktop and Claude Code; only the one env var is required.
 
-Every environment variable the server reads, in one block - the first is required and everything below it is optional, so delete the lines for services you don't use:
+Every environment variable the server reads, in one block. The first is required and everything below it is optional: fill in the ones you use and leave the rest as empty strings (or delete them). An empty value switches that service off. Template text such as `your-key-here` does not: it's read as a real key and every call to that service fails.
 
 ```json
 {
@@ -237,11 +242,11 @@ Every environment variable the server reads, in one block - the first is require
       "args": ["-y", "@houtini/seo-audit-console"],
       "env": {
         "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json",
-        "SAC_DATA_DIR": "C:/path/to/where/audits/are/stored",
-        "DATAFORSEO_USERNAME": "you@example.com",
-        "DATAFORSEO_PASSWORD": "your-dataforseo-password",
+        "SAC_DATA_DIR": "",
+        "DATAFORSEO_USERNAME": "",
+        "DATAFORSEO_PASSWORD": "",
         "DATAFORSEO_CACHE_DAYS": "20",
-        "MAJESTIC_API_KEY": "your-majestic-api-key",
+        "MAJESTIC_API_KEY": "",
         "MAJESTIC_CACHE_DAYS": "30"
       }
     }
@@ -259,7 +264,7 @@ Then: *"list properties"* to check it's connected, *"refresh"*, *"run an SEO aud
 
 Crawls, syncs and refreshes run as background jobs: the tool returns a job id at once and the work carries on inside the server process while you poll `check_crawl_status`. So the process has to stay alive between calls.
 
-The Docker MCP gateway, by default, starts a fresh container for each tool call and removes it afterwards. The job dies with that container. To keep the server alive:
+The Docker MCP gateway runs the server in a worker container that it can remove and replace (when a client disconnects, when the gateway is recreated, or when it reaps idle workers), and a job running in that worker dies with it. To keep the server alive:
 
 - set `longLived: true` on this server's entry in your gateway catalog, or start the gateway with `--long-lived`;
 - mount named volumes for the data directory and the credentials, so audits and the job list survive a container restart: for example `-v seo-audit-data:/data -e SAC_DATA_DIR=/data` and `-v seo-audit-creds:/creds:ro -e GOOGLE_APPLICATION_CREDENTIALS=/creds/service-account.json`.
