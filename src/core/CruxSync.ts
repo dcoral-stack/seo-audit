@@ -217,6 +217,11 @@ export class CruxSync {
 export interface CwvFieldMetric { p75: number | null; good: number | null; ni: number | null; poor: number | null; band: CwvBand | null }
 export interface CwvFieldFormFactor {
   period: { first: string; last: string };
+  /** Where the latest window came from: 'record' = the current 28 days, 'history' = a weekly
+   *  history window only (no current record: CrUX had too little recent traffic). */
+  source: 'record' | 'history';
+  /** Distinct 28-day windows held for LCP / INP / CLS (they overlap: a trend, never a sum). */
+  windows: number;
   metrics: { lcp: CwvFieldMetric | null; inp: CwvFieldMetric | null; cls: CwvFieldMetric | null; fcp: CwvFieldMetric | null; ttfb: CwvFieldMetric | null; rtt: { p75: number | null } | null };
   /** LCP sub-parts at p75 (ms): which part of LCP to fix. Null when CrUX had no value. */
   lcpBreakdown: { ttfb: number | null; loadDelay: number | null; loadDuration: number | null; renderDelay: number | null };
@@ -231,6 +236,9 @@ export interface CwvField {
   fetchedAt: string;
   thresholds: typeof CWV_THRESHOLDS;
   formFactors: Partial<Record<'PHONE' | 'DESKTOP', CwvFieldFormFactor>>;
+  /** When the origin was last asked, per form factor (crux_targets), so the UI can say how old the
+   *  newest window is relative to the last check. */
+  lastChecked: string | null;
 }
 
 const tableExists = (db: Database.Database, name: string): boolean =>
@@ -241,13 +249,19 @@ export function cwvFieldPayload(db: Database.Database): CwvField | null {
   if (!tableExists(db, 'crux_metrics')) return null;
   const o = db.prepare(`SELECT target, MAX(fetched_at) at FROM crux_metrics WHERE scope='origin' GROUP BY target ORDER BY at DESC LIMIT 1`).get() as { target: string; at: string } | undefined;
   if (!o) return null;
-  const out: CwvField = { origin: o.target, fetchedAt: o.at, thresholds: CWV_THRESHOLDS, formFactors: {} };
+  const checked = tableExists(db, 'crux_targets')
+    ? (db.prepare(`SELECT MAX(last_checked) at FROM crux_targets WHERE scope='origin' AND target=?`).get(o.target) as { at: string | null }).at
+    : null;
+  const out: CwvField = { origin: o.target, fetchedAt: o.at, thresholds: CWV_THRESHOLDS, formFactors: {}, lastChecked: checked };
+  const CORE = `metric IN ('largest_contentful_paint','interaction_to_next_paint','cumulative_layout_shift')`;
   const rowAt = db.prepare(`SELECT p75, good, ni, poor, period_first FROM crux_metrics WHERE scope='origin' AND target=? AND form_factor=? AND metric=? AND period_last=?`);
   const frac = db.prepare(`SELECT bucket, fraction FROM crux_fractions WHERE scope='origin' AND target=? AND form_factor=? AND metric=? AND period_last=?`);
   const series = db.prepare(`SELECT period_last periodLast, p75 FROM crux_metrics WHERE scope='origin' AND target=? AND form_factor=? AND metric=? ORDER BY period_last`);
   for (const ff of ['PHONE', 'DESKTOP'] as const) {
-    const latest = db.prepare(`SELECT MAX(period_last) last FROM crux_metrics WHERE scope='origin' AND target=? AND form_factor=? AND metric IN ('largest_contentful_paint','interaction_to_next_paint','cumulative_layout_shift')`).get(o.target, ff) as { last: string | null };
+    const latest = db.prepare(`SELECT MAX(period_last) last FROM crux_metrics WHERE scope='origin' AND target=? AND form_factor=? AND ${CORE}`).get(o.target, ff) as { last: string | null };
     if (!latest.last) continue;
+    const src = db.prepare(`SELECT MAX(CASE WHEN source='record' THEN 1 ELSE 0 END) rec, COUNT(DISTINCT period_last) n FROM crux_metrics WHERE scope='origin' AND target=? AND form_factor=? AND ${CORE}`).get(o.target, ff) as { rec: number; n: number };
+    const latestSrc = db.prepare(`SELECT MAX(CASE WHEN source='record' THEN 1 ELSE 0 END) rec FROM crux_metrics WHERE scope='origin' AND target=? AND form_factor=? AND period_last=?`).get(o.target, ff, latest.last) as { rec: number };
     const at = (metric: string): { p75: number | null; good: number | null; ni: number | null; poor: number | null; period_first: string } | undefined => rowAt.get(o.target, ff, metric, latest.last) as any;
     const m = (metric: CwvMetric): CwvFieldMetric | null => {
       const r = at(metric);
@@ -265,6 +279,8 @@ export function cwvFieldPayload(db: Database.Database): CwvField | null {
     const rtt = at('round_trip_time');
     out.formFactors[ff] = {
       period: { first, last: latest.last },
+      source: latestSrc.rec ? 'record' : 'history',
+      windows: src.n,
       metrics: {
         lcp: m('largest_contentful_paint'), inp: m('interaction_to_next_paint'), cls: m('cumulative_layout_shift'),
         fcp: m('first_contentful_paint'), ttfb: m('experimental_time_to_first_byte'), rtt: rtt ? { p75: rtt.p75 } : null,

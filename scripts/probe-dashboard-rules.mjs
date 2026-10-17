@@ -9,7 +9,9 @@ import path from 'node:path';
 import { rmSync } from 'node:fs';
 import {
   countChange, shareText, sharePct, capHealth, rankChange, SMALL_BASE_MIN,
+  assessField, fieldValue, fieldWindowLagDays,
 } from '../dist/core/displayRules.js';
+import { cwvFieldPayload } from '../dist/core/CruxSync.js';
 import { AuditDatabase } from '../dist/core/AuditDatabase.js';
 import { computeHealth } from '../dist/audit/history.js';
 import { dbPathFor } from '../dist/core/paths.js';
@@ -67,6 +69,37 @@ console.log('health cap');
   adb.db.prepare(`INSERT INTO findings (run_id,check_id,category,severity,url_key,labels,evidence,recommendation) VALUES ('r1','x','onpage','high','https://health.test/p3','[]','{}','{}')`).run();
   const h = computeHealth(adb.db, 'r1');
   ok(h.score === 99 && h.errorPages === 1, `1 high page of 495: stored health is 99, not 100 (${JSON.stringify(h)})`);
+  adb.close();
+}
+
+// ── 5. Field CWV: thin CrUX data is shown honestly ────────────────────────────────────────────
+console.log('field CWV (CrUX)');
+{
+  const good = (p75) => ({ p75, band: 'good' });
+  const thin = assessField({ lcp: good(722), inp: null, cls: good(0) });
+  ok(thin.status === 'pass' && thin.missing.join() === 'INP', `LCP + CLS good, no INP: pass on what was measured, INP listed as missing (${JSON.stringify(thin)})`);
+  ok(fieldValue('inp', null) === null && fieldValue('inp', undefined) === null, 'a missing INP renders as no value (the UI says "not enough Chrome traffic"), never 0');
+  ok(fieldValue('cls', 0) === '0.00' && fieldValue('lcp', 722) === '0.72 s' && fieldValue('inp', 180) === '180 ms', 'a measured zero stays a value: CLS 0.00; LCP in s, INP in ms');
+  ok(assessField({ lcp: { p75: 3100, band: 'needs-improvement' }, inp: null, cls: good(0.02) }).status === 'fail', 'a needs-improvement LCP fails the assessment');
+  ok(assessField({ lcp: null, inp: null, cls: good(0.02) }).status === 'unknown', 'no LCP: not assessable, never a pass');
+  ok(fieldWindowLagDays('2026-08-01', '2026-10-17 16:20:57') === 78, 'a window ending 1 Aug checked 17 Oct is 78 days old');
+
+  // The directdrivewheels.com shape: two weekly history windows, no current record, no INP.
+  const site = 'sc-domain:crux.test';
+  const adb = new AuditDatabase(dbPathFor(dataDir, site));
+  adb.upsertProperty(site, 'apex');
+  const ins = adb.db.prepare(`INSERT INTO crux_metrics (scope,target,form_factor,metric,period_first,period_last,p75,good,ni,poor,source) VALUES ('origin','https://crux.test',?,?,?,?,?,?,?,?,'history')`);
+  for (const ff of ['PHONE', 'DESKTOP']) {
+    ins.run(ff, 'cumulative_layout_shift', '2026-06-28', '2026-07-25', 0, 0.95, 0.04, 0.01);
+    ins.run(ff, 'cumulative_layout_shift', '2026-07-05', '2026-08-01', 0, 0.95, 0.04, 0.01);
+    ins.run(ff, 'largest_contentful_paint', '2026-07-05', '2026-08-01', 722, 0.98, 0.02, 0);
+  }
+  adb.db.prepare(`INSERT INTO crux_targets (scope,target,form_factor,status,last_checked) VALUES ('origin','https://crux.test','PHONE','ok','2026-10-17 16:20:57')`).run();
+  const cf = cwvFieldPayload(adb.db);
+  const ph = cf?.formFactors?.PHONE;
+  ok(ph?.source === 'history' && ph?.windows === 2, `history-only origin: source "history", 2 windows held (${ph?.source}, ${ph?.windows})`);
+  ok(ph?.metrics?.inp === null && ph?.history?.inp?.length === 0, 'no INP rows: inp is null and its history empty (not zeros)');
+  ok(cf?.lastChecked === '2026-10-17 16:20:57', 'the last check date ships, so the UI can say how old the window is');
   adb.close();
 }
 

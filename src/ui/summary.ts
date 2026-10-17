@@ -12,6 +12,7 @@ import { esc, fmtNum, fmtCompact, sparkline, countDelta, axisDefaults, tooltipDe
 import { shareText, capHealth } from '../core/displayRules.js';
 import { buildVerdict, direction } from '../core/summaryVerdict.js';
 import { ago, SEV_LABEL } from './panels.js';
+import { cwvTile, cwvCoverage } from './cwv.js';
 
 const fmt = fmtNum;
 
@@ -173,6 +174,8 @@ function tiles(d: any): string {
   out.push(ic
     ? tile({ label: 'Indexed', value: `<span class="n">${fmt(ic.indexed)}</span><span class="kpi-of"> of <span class="n">${fmt(ic.total)}</span></span>`, sub: 'inspected URLs (a sample)', title: 'From URL Inspection, which is quota-bound: a sample of URLs, never a share of the whole site.' })
     : tile({ label: 'Indexed', value: '–', sub: 'run <code>inspect_urls</code>' }));
+
+  out.push(cwvTile(d));
 
   const ar = d.agentReadiness;
   out.push(ar
@@ -527,7 +530,8 @@ function coverageFooter(d: any): string {
       `A quota-bound sample: ${cv.inspected} URLs inspected in all, ${cv.inspectedIndexable ?? 0} of them indexable crawled pages.`),
     chip(cv.cwvPages > 0, 'Lab CWV', cv.cwvPages ? `<span class="n">${fmt(cv.cwvPages)}</span> pages` : 'none', 'Lighthouse lab data (page_lighthouse), not field data.'),
     chip(cv.backlinkPages > 0, 'Backlinks', cv.backlinkPages ? `<span class="n">${fmt(cv.backlinkPages)}</span> pages` : (d.apiKeys && !d.apiKeys.dataforseo ? 'no DataForSEO key' : 'none')),
-    chip(false, 'Field CWV', 'not collected', 'Chrome UX Report field data is not collected yet.'),
+    // Derived from the payload (cwvField), never hard-coded.
+    ((c) => chip(c.on, 'Field CWV', c.value, c.title))(cwvCoverage(d)),
     chip(false, 'Server logs', 'not collected', 'Log analysis is out of scope.'),
   ];
   return `<span class="cov-title">Data coverage</span>${chips.join('')}`;

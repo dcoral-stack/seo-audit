@@ -163,3 +163,42 @@ export function trappedEmptyReason(o: { backlinkPages: number; hasKey: boolean |
     ? 'No backlink data stored. Pulling it needs a DataForSEO key with the Backlinks subscription (pull_backlinks).'
     : 'No backlink data stored yet - run pull_backlinks to bring in referring-domain counts, then reload.';
 }
+
+// ── Field Core Web Vitals (CrUX) ─────────────────────────────────────────────────────────────
+export type FieldBand = 'good' | 'needs-improvement' | 'poor';
+export interface FieldMetricView { p75: number | null; band: FieldBand | null }
+export interface FieldAssessment {
+  /** 'pass' = LCP and CLS measured and every measured core metric good; 'fail' = any measured
+   *  core metric worse than good; 'unknown' = LCP or CLS unmeasured and nothing failing. */
+  status: 'pass' | 'fail' | 'unknown';
+  /** The worst band among the measured core metrics. */
+  worst: FieldBand | null;
+  /** Core metrics CrUX had no value for (not enough Chrome traffic): never shown as 0. */
+  missing: ('LCP' | 'INP' | 'CLS')[];
+}
+const BAND_ORDER: Record<FieldBand, number> = { good: 0, 'needs-improvement': 1, poor: 2 };
+/**
+ * Google's Core Web Vitals assessment on what CrUX measured: pass when the p75 of LCP, INP and CLS
+ * are all good. INP needs interactions, so a low-traffic origin often has none; like PageSpeed
+ * Insights we assess on LCP and CLS then, and list INP as missing instead of reading it as 0.
+ */
+export function assessField(m: { lcp: FieldMetricView | null; inp: FieldMetricView | null; cls: FieldMetricView | null }): FieldAssessment {
+  const core = [['LCP', m.lcp], ['INP', m.inp], ['CLS', m.cls]] as const;
+  const missing = core.filter(([, v]) => v?.p75 == null || !v.band).map(([k]) => k);
+  const bands = core.map(([, v]) => v?.band).filter((b): b is FieldBand => !!b);
+  const worst = bands.length ? bands.reduce((a, b) => (BAND_ORDER[b] > BAND_ORDER[a] ? b : a)) : null;
+  const status = worst && worst !== 'good' ? 'fail' : missing.includes('LCP') || missing.includes('CLS') ? 'unknown' : 'pass';
+  return { status, worst, missing: [...missing] };
+}
+/** Days between the newest CrUX window's end and the last time the origin was checked. */
+export function fieldWindowLagDays(periodLast: string, checkedAt: string | null | undefined): number | null {
+  const a = parseAt(periodLast), b = parseAt(checkedAt);
+  return Number.isFinite(a) && Number.isFinite(b) ? Math.max(0, Math.round((b - a) / DAY)) : null;
+}
+/** A field metric's p75 for display: seconds for LCP/FCP/TTFB, ms for INP, 2dp for CLS. Null -> null. */
+export function fieldValue(metric: 'lcp' | 'inp' | 'cls' | 'fcp' | 'ttfb', p75: number | null | undefined): string | null {
+  if (p75 == null || !Number.isFinite(p75)) return null;
+  if (metric === 'cls') return p75.toFixed(2);
+  if (metric === 'inp') return `${Math.round(p75)} ms`;
+  return `${(p75 / 1000).toFixed(2)} s`;
+}

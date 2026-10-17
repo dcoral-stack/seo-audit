@@ -7,6 +7,7 @@ import {
 import { shareText, sharePct } from '../core/displayRules.js';
 import { renderSearchTop, renderHealthTop, renderSideFreshness, drawNetwork, pctChg, SEV_ORDER, SEV_LABEL, type OverviewCtx } from './panels.js';
 import { renderSummary, type SummaryCtx } from './summary.js';
+import { renderFieldCwv } from './cwv.js';
 
 // Local view types (avoid importing core, which pulls node-only deps into the bundle).
 interface Totals { clicks: number; impressions: number; ctr: number; position: number }
@@ -562,6 +563,7 @@ function render(data: DashboardData): void {
   renderSummary(data, summaryCtx(col));
   renderSearchTop(data, octx);
   renderHealthTop(data, octx);
+  renderFieldCwv(data, { wrap, col, redacted: octx.redacted });
 
   renderBrandedSplit(data);
   // Audit findings - severity filter chips + prioritised table, then the categorised report

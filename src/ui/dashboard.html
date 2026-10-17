@@ -137,6 +137,19 @@
             <div><h4>Meta descriptions</h4><div id="sfMetas"></div></div>
           </div>
         </div>
+        <div class="chart-card" id="fieldCwvCard">
+          <div class="card-head"><div><h3>Core Web Vitals - real Chrome users</h3><div class="hint">Chrome UX Report (CrUX) field data for the whole origin: the 75th percentile of real Chrome visits over 28 days, per device, against Google's thresholds (LCP 2.5 s, INP 200 ms, CLS 0.1). The bars are the share of visits that were good, needed improvement or were poor.</div></div><span class="src" id="fieldCwvSrc"></span></div>
+          <div id="fieldCwvNote"></div>
+          <div id="fieldCwv" class="fcwv-grid"></div>
+          <div class="chart chart-fcwv" id="fieldCwvTrend" role="img" aria-label="Field Core Web Vitals p75 per 28-day window, phone and desktop"></div>
+          <div class="sum-note" id="fieldCwvTrendNote"></div>
+        </div>
+        <div class="chart-card" id="cwvCard" style="display:none">
+          <h3>Core Web Vitals - lab (Lighthouse)</h3>
+          <div class="hint">Lab Core Web Vitals from Lighthouse - the lowest-scoring pages first. Pass thresholds: LCP under 2.5s, CLS under 0.1, TBT under 200ms.</div>
+          <p class="sr-only" id="cwvSummary"></p>
+          <div id="cwvTable" class="findings-table"></div>
+        </div>
         <div class="chart-card" id="sfServerErrorsCard">
           <h3>Server errors (5xx)</h3>
           <div class="hint">URLs answering with a server error, most-linked first. These waste crawl budget and drop straight out of the index if they persist.</div>
@@ -153,12 +166,6 @@
           <div id="sfImages" class="findings-table"></div>
         </div>
 
-        <div class="chart-card" id="cwvCard" style="display:none">
-          <h3>Core Web Vitals</h3>
-          <div class="hint">Lab Core Web Vitals from Lighthouse - the lowest-scoring pages first. Pass thresholds: LCP under 2.5s, CLS under 0.1, TBT under 200ms.</div>
-          <p class="sr-only" id="cwvSummary"></p>
-          <div id="cwvTable" class="findings-table"></div>
-        </div>
         <div class="chart-card" id="securityCard" style="display:none">
           <h3>Security &amp; HTTPS</h3>
           <div class="hint">Share of your crawled pages carrying each response-security header. <span style="color:var(--intent-danger)">Red</span> = largely missing, <span style="color:var(--intent-warning)">amber</span> = partial, <span style="color:var(--intent-success)">green</span> = covered.</div>
