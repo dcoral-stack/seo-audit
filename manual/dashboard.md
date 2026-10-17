@@ -32,18 +32,22 @@ The landing tab, and the one to hand someone who has never seen the property. It
 
 - **Freshness** - one line per source (Search Console, crawl, audit, URL inspection, ranks) with its age. A source turns amber on a stated rule, shown in its tooltip: Search Console more than 7 days behind, a crawl or audit older than 30 days, or an audit that ran before the latest crawl (so its findings describe the previous crawl).
 - **The verdict** - one sentence built from a template, e.g. *"Organic clicks are down 12% on the prior 28 days (non-brand down 18%); 3 critical issues are open, 14 resolved since the last audit; 27 pages changed since the last crawl."* "Flat" means within ±5%. A clause is left out when its data is missing, so you'll never read "0 critical issues" before an audit has run.
-- **Five tiles** - organic clicks (28 days vs the prior 28, year-on-year once you hold 13 months, and a sparkline of complete months), non-brand share, **site health** (the share of crawled pages with no critical or high issue, with its definition; the Weak / Fair / Good / Excellent bands are our convention, not an industry benchmark), indexed pages as *n of M inspected* (URL Inspection is a sample, never a share of the site), and AI readiness.
+- **Six tiles** - organic clicks (28 days vs the prior 28, year-on-year once you hold 13 months, and a sparkline of complete months), non-brand share, **site health** (the share of crawled pages with no critical or high issue, with its definition; the Weak / Fair / Good / Excellent bands are our convention, not an industry benchmark), indexed pages as *n of M inspected* (URL Inspection is a sample, never a share of the site), **field Core Web Vitals** from the Chrome UX Report (pass or fail per device on LCP, INP and CLS at p75, with a sparkline of phone LCP; it asks you to run `sync_crux` until there's data), and AI readiness.
 - **Organic clicks by month** - up to 16 months. The current month is a hollow bar until it's complete, the dashed line is the same month last year (only where both months are complete), and each crawl and audit is ticked under the axis.
 - **Health and audit change** - the health score at each audit, and the issues opened and resolved between audits. Two audits are only compared when they ran the same checks over the same scope; otherwise the reason is printed (for example, a release added checks).
 - **What's broken, by area** and **Do this first** - the latest audit by category (pages with a critical, high, medium or low issue, and the change since the last comparable audit), next to the five highest-impact fixes with the pages affected, the clicks those pages earn now (not a forecast), the size of the fix and whether the evidence is deterministic (D), judgement (N) or from Search Console (G). Click either to open Issues & fixes filtered to it.
 - **Changed since the last crawl** - pages now erroring, noindex added, canonicals and titles changed, pages added or no longer reached: `detect_changes`, summarised. With one crawl it says it needs two; if a newer crawl was never snapshotted, it says the comparison isn't current instead of showing old numbers.
 - **Ranking mix** and **gaining and losing pages** - where your impressions sit by average position now vs the prior 28 days, and the biggest click movers among pages with at least 10 clicks in the prior 28 days.
 - **AI search** - the agent-readiness score, which AI crawlers your robots.txt lets in (grouped into search and citation bots vs training crawlers: blocking GPTBot, a training crawler, doesn't take you out of ChatGPT search), AI Overview presence as *n of M checked queries* from content recon, and a plain "not measured" for answer share in chat assistants, because we don't query them.
-- **Data coverage** - what's held (months of Search Console, crawled pages, URL inspection, lab Core Web Vitals, backlinks) and what isn't collected (field Core Web Vitals, server logs). The CSV exports sit below it.
+- **Data coverage** - what's held (months of Search Console, crawled pages, URL inspection, lab Core Web Vitals, backlinks, field Core Web Vitals with its windows) and what isn't collected (server logs, and anything you haven't pulled yet). The CSV exports sit below it.
 
 It works crawl-only: before Search Console is connected, the traffic panels ask you to connect it and everything else still works. If your Search Console history holds two row shapes for the same days (all-country and per-country rows, which a plain sum would count twice), the Summary says so; every figure in the dashboard and the audit reads one shape per day, the fuller one, so each day counts once.
 
 ![The Summary tab on a phone](../assets/dashboard-summary-mobile.png)
+
+The same tab in the dark theme:
+
+![The Summary tab in the dark theme](../assets/dashboard-summary-dark.png)
 
 ## Issues & fixes
 
@@ -59,7 +63,9 @@ Each finding shows an **impact score (0-100, normalised to the run's biggest fin
 
 If you grew up on desktop crawlers, this tab is home. It opens with a KPI strip (pages crawled, indexable, non-200, redirects, average crawl depth), then the **status mix** (2xx / 3xx / 4xx / 5xx across the crawl, and the share that's indexable, canonicalised, redirected or not found), then the **canonical, redirect and not-found breakdown**: the internal URLs that redirect, 404 or canonicalise elsewhere, each bucket with its most-linked example. Then the classic crawl diagnostics as clean stat bars: **response codes**, **indexability reasons** (with the *why* for every non-indexable URL), **response-time** and **HTML-size buckets** (measured on estimated transfer, not raw bytes), **crawl depth**, and title/meta issue counts. Below the bars, the lists: server errors (5xx), pages over a second, and the heaviest images your pages load - sampled from response headers during the crawl, so the image bytes are never downloaded.
 
-It also carries the thematic reports a dedicated crawler would, each appearing when its data is present: **Security & HTTPS** (the share of pages carrying HSTS, CSP, X-Frame, X-Content-Type and Referrer-Policy), **Structured-data coverage** (the JSON-LD rich-result types across your pages), **Redirect chains** (multi-hop redirects captured during the crawl), **Core Web Vitals** (after `page_lighthouse`), and **Hreflang** (declared languages, on multilingual sites).
+It also carries the thematic reports a dedicated crawler would, each appearing when its data is present: **Security & HTTPS** (the share of pages carrying HSTS, CSP, X-Frame, X-Content-Type and Referrer-Policy), **Structured-data coverage** (the JSON-LD rich-result types across your pages), **Redirect chains** (multi-hop redirects captured during the crawl), **Core Web Vitals - lab** (after `page_lighthouse`), and **Hreflang** (declared languages, on multilingual sites).
+
+**Core Web Vitals - real Chrome users** (after `sync_crux`, which needs a free `CRUX_API_KEY`): the Chrome UX Report's field data for your origin, phone and desktop side by side. Each device gets a pass or fail on Google's thresholds at the 75th percentile (LCP 2.5 s, INP 200 ms, CLS 0.1), each metric its p75, its band and the share of visits that were good, needed improvement or were poor, then FCP and TTFB as diagnostics and the LCP breakdown (server response, resource load delay, load duration, render delay: which part of LCP to fix). Under them, p75 per 28-day window for LCP, INP and CLS, one line per device, with Google's "good" line dashed. The windows overlap a week apart, so read the lines as a trend, never add them up. A metric with too little Chrome traffic says so instead of showing a zero, and when CrUX has no current record (only older history windows) the card says how old its newest window is. Before the first `sync_crux` the card says how to fill it.
 
 ## Opportunities
 
@@ -113,7 +119,7 @@ The structural story - where your internal link equity goes versus where your tr
 
 ## Links
 
-![The Links tab - link intersect, competitors' links you don't have](../assets/links.png)
+![The Links tab - the backlink profile: KPI strip, new vs lost referring domains per month, top referring domains](../assets/links.png)
 
 **Backlink profile** (top of the tab): your own links, from `pull_backlinks`. A KPI strip (backlinks, referring domains, DataForSEO Domain Rank, broken backlinks, nofollow share), a new-vs-lost referring-domains chart per month from DataForSEO's daily history, the top referring domains by rank, the anchor mix (branded, keyword, URL, generic, empty, by share of backlinks), your most-linked pages with the live HTTP status the pull resolved, and the backlinked pages that answer 4xx/5xx. Every number is a stored row; a section whose table was never filled says **not collected** rather than showing zero, and a pull made before 0.16 shows the summary and pages only until you re-run it.
 

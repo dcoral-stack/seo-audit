@@ -22,7 +22,7 @@ Grain is the thing that trips people up when composing - what one row means, per
 
 | Source | One row is | Notes |
 |---|---|---|
-| `search_analytics` (GSC) | date × query × page (+ device/country when synced with segments) | Rows are additive, but **position must be impression-weighted** when you aggregate it. |
+| `search_analytics` (GSC) | date × query × page, all-country totals (since 0.16.0 the device and country rows live in `search_analytics_segments`, so a total never counts a day twice) | Rows are additive, but **position must be impression-weighted** when you aggregate it. |
 | `pages` (crawl) | one `url_key`, the **latest crawl only** | Carries title, H1, meta, canonical, schema, body text by section, internal PageRank, click depth, in-degree. Cross-crawl history lives in `page_snapshots` and is diffed by `detect_changes`. |
 | `links` (crawl) | one link: source page → target URL, latest crawl | Anchor text, internal or external, placement (body / navigation / footer), rel, and how the href was written. |
 | `redirect_sources` | one crawled URL that redirected | Every hop of its chain and where it finally lands. |
@@ -38,6 +38,7 @@ Grain is the thing that trips people up when composing - what one row means, per
 | `backlink_anchors` | one anchor text per pull (`snapshot_at`) | `kind` (branded / keyword / url / generic / empty), backlinks, referring domains. |
 | `backlink_history` | one day | Backlinks and referring domains, new and lost that day. |
 | `link_prospects` | one prospect domain (links to your rivals, not to you) | Intersections, DataForSEO domain trust, worst spam score, followed flag, link-type mix - plus **Trust Flow**, Citation Flow and **Topical Trust Flow** for the prospects Majestic enriched when `MAJESTIC_API_KEY` is set (the top `enrichLimit`, 100 by default). Captured per `link_intersect` run and dated, so treat it as a snapshot: rivals keep earning links. |
+| `crux_metrics` / `crux_fractions` / `crux_targets` (CrUX) | target (origin or `url_key`) × form factor × metric × 28-day window / the same × bucket / target × form factor | From `sync_crux`. p75 and good / needs-improvement / poor shares per window; the windows overlap a week apart, so never sum them. `crux_targets.status = 'insufficient_data'` means too little Chrome traffic, not zero. Read with `query_audit` on the `crux-*` checks or the dashboard; `query_data` doesn't expose these tables. |
 | `keyword_intent` / `page_cwv` | one keyword / one URL | Persisted when you pass `siteUrl` to `search_intent` / `page_lighthouse`. |
 | Labs tools | keyword × target, or month × target | Cached 20 days; each live call costs money, so plan the fewest calls that answer the question. |
 | `findings` | one finding per check × URL | With priority and evidence JSON, per audit run. |

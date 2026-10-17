@@ -14,6 +14,15 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 
 Zero findings from a check normally means it passed. The exception is a check whose source table is empty because the data was never collected (the asset checks read `page_resources`, `resource_assets` and `image_assets`; `soft-404-handling` and `host-variant-split` read the crawl's site probes; the four JS-render divergence checks read `render_audit`, filled by `render_pages`): `run_audit` lists those under **Not collected** with the step that collects the data, so an empty table never reads as a clean bill of health.
 
+## Thresholds we chose
+
+Most thresholds here are Google's (Core Web Vitals bands, snippet rules, redirect behaviour) or a plain fact (a status code). Two are house defaults, picked by us because Google publishes no number. Treat them as a starting point, not a rule:
+
+| Check | Fires when | Why that number |
+|---|---|---|
+| `render-blocking-head-resources` | 3 or more render-blocking stylesheets in `<head>` (any parser-blocking script fires on its own) | A styled page needs its own stylesheet, and a font or plugin sheet beside it is the usual floor, so 1-2 aren't reported. |
+| `hydration-content-loss` | The rendered main content keeps 50% or less of the raw main content's words, where the raw had at least 200 | Below 200 words the ratio is noise (a short page swings on one block); losing more than half is past any template difference. |
+
 ## Crawlability (21)
 
 | Check | Labels | What it catches | The fix, in one line |
@@ -129,7 +138,7 @@ Zero findings from a check normally means it passed. The exception is a check wh
 | `rich-result-issues` | D+G | Rich-result issues Google itself reports via URL Inspection | Fix the listed issues - this is Google's own validation, not ours, so it's authoritative. |
 | `article-date-illogical` | D | Article dateModified earlier than datePublished | Fix the dates - an impossible pair undermines trust in the markup. |
 | `article-no-author` | D | Article schema where no Article node names an author (an `@id` reference to a named Person counts) | Add a Person author and a visible byline - AI-search guidance rewards a demonstrable first-hand point of view. |
-| `merchant-listing-incomplete` | N (0.5), low | Product markup on a store page missing what [Google's merchant listings](https://developers.google.com/search/docs/appearance/structured-data/merchant-listing) use. Required: `image`, an `Offer` (an `AggregateOffer` alone isn't accepted), `price` and `priceCurrency` (directly or in `priceSpecification`). Recommended: `availability`, `itemCondition`. Store product pages with no offers at all roll up into one site-level finding, because a quote-only product has no price and is not a merchant listing. A review page's Product without offers is skipped | Fix the product template once; ignore it for quote-only products. |
+| `merchant-listing-incomplete` | N (0.5) | Product markup on a store page missing what [Google's merchant listings](https://developers.google.com/search/docs/appearance/structured-data/merchant-listing) use. Required: `image`, an `Offer` (an `AggregateOffer` alone isn't accepted), `price` and `priceCurrency` (directly or in `priceSpecification`). Recommended: `availability`, `itemCondition`. Store product pages with no offers at all roll up into one site-level finding, because a quote-only product has no price and is not a merchant listing. A review page's Product without offers is skipped | Fix the product template once; ignore it for quote-only products. |
 | `duplicate-article-entities` | D (0.9) | More than one Article entity on one URL, typically an SEO plugin's graph plus a theme- or block-embedded Article | Emit one Article per page: remove the second source or merge it into the graph with the same `@id`. |
 | `discover-generic-article-type` | D+N (0.5) | Article schema using only the generic `Article` type where a more specific one fits | Use `NewsArticle` / `LiveBlogPosting` / `ProfilePage` where it genuinely applies - it unlocks richer Discover/News treatment. |
 | `discover-image-schema` | D | Article schema that declares no `image` (Discover cards need a large image) | Add an `image` (≥1200px wide, ideally 16:9 / 4:3 / 1:1 crops), matching the main visible image. |

@@ -221,9 +221,22 @@ The Chrome UX Report is Google's own record of how real Chrome users experience 
 
 1. Open the [Google Cloud console](https://console.cloud.google.com/) and pick a project. The one that holds your Search Console service account is fine.
 2. Go to **APIs & Services → Library**, search for **Chrome UX Report API**, and click **Enable**.
-3. Go to **APIs & Services → Credentials → Create credentials → API key**.
-4. Open the new key, set **API restrictions → Restrict key**, and tick only **Chrome UX Report API**. A key that can call nothing else is a key you don't have to worry about.
-5. Add it to your config's `env` block as `CRUX_API_KEY` and fully restart the client.
+
+   ![The Chrome UX Report API product page with the Enable button](../images/crux-1-enable-api.png)
+
+3. Once it's enabled you land on the API's details page, with its status reading **Enabled**. Open its **Credentials** tab.
+
+   ![The Chrome UX Report API details page: status Enabled, and the Metrics, Quotas and Credentials tabs](../images/crux-2-api-details.png)
+
+4. Click **Create credentials → API key**.
+
+   ![The Credentials tab with Create credentials open and API key highlighted](../images/crux-3-create-api-key.png)
+
+5. Restrict the key: under **API restrictions**, choose **Restrict key**, filter for *chrome*, tick only **Chrome UX Report API**, and click **OK**, then **Save**. A key that can call nothing else is a key you don't have to worry about.
+
+   ![The API restrictions list filtered to Chrome UX Report API](../images/crux-4-restrict-key.png)
+
+6. Copy the key and add it to your config's `env` block as `CRUX_API_KEY` and fully restart the client.
 
 Then ask *"pull CrUX data for yoursite.com"* (or just refresh the property - it runs on its own once the key is set). The API allows 150 calls a minute and the tool stays under that; the first pull for a site is about 200 calls (history, then the latest window, for the origin and 50 pages on phone and desktop), so it takes a minute or two. Pages without enough Chrome traffic simply have no CrUX data - they're recorded as *insufficient data*, never as a zero.
 

@@ -63,7 +63,7 @@ It's on npm, so there's nothing to clone or build. You need Node.js 20 or newer 
 }
 ```
 
-The first line is required. The others are optional: paste your key between the quotes, or **leave them empty to switch the tier off**. DataForSEO and Majestic are paid tiers; `CRUX_API_KEY` is field Core Web Vitals from a free Google API key restricted to the Chrome UX Report API. Don't leave template text such as `your-key-here` in a value, because it gets read as a real key and every call to that service fails.
+The first line is required. The others are optional: paste your key between the quotes, or **leave them empty to switch the tier off**. DataForSEO and Majestic are paid tiers; `CRUX_API_KEY` is field Core Web Vitals from a free Google API key restricted to the Chrome UX Report API. Empty means off. Template text such as `your-key-here`, `<your key>` or `changeme` is treated as empty too, and the server's log says so in one line (e.g. `MAJESTIC_API_KEY looks like a placeholder; Majestic tier disabled.`), so a tier you expected that stays off is worth a look at the log.
 
 **Claude Code** - one command (add `--env DATAFORSEO_USERNAME=…` and the others the same way if you use them):
 
@@ -170,7 +170,13 @@ The crawl is where audits usually go wrong, so it's worth understanding what thi
 
 **It refuses to be fooled.** A redirect that leaves your site (Shopify OAuth flows, I'm looking at you) is recorded as a redirect-out, never stored as a page. It always uses GET rather than HEAD, because a HEAD request can return a different status than the real request would - but it abandons the body for images, PDFs and assets, so it records status and size without downloading the bytes.
 
-**It's quick without being rude.** HTTP/2 where your origin supports it, gzip and brotli negotiated, keep-alive connections reused. The speed comes from efficiency, not from hammering your server. It respects robots.txt properly (a bot-specific group replaces `*`, per the spec, which plenty of commercial crawlers get wrong), backs off when your host rate-limits, and skips the junk: internal search, faceted filter combinations, login flows. This is a crawler for sites you own. Being a good guest is the point.
+**It's quick without being rude.** HTTP/2 where your origin supports it, gzip and brotli negotiated, keep-alive connections reused. The speed comes from efficiency, not from hammering your server. It respects robots.txt properly (a bot-specific group replaces `*`, per the spec, which plenty of commercial crawlers get wrong), and skips the junk: internal search, faceted filter combinations, login flows. This is a crawler for sites you own. Being a good guest is the point.
+
+**It slows down when your host asks it to.** A 429 (or a 503 with `Retry-After`) halves the crawl's concurrency, waits out the `Retry-After`, and puts the URL at the back of the queue for two more tries; clean responses add workers back. Shopify stores are spotted from their headers and start gently. A URL still rate limited at the end is stored as *rate limited* with no status, never as a broken page, and the crawl status tells you how many.
+
+**It tests what a crawl can't find on its own.** Each crawl ends with up to five site probes: two URLs that can't exist (does the site answer 404, or 200 and a soft-404?) and the http/https and www/apex twins of the homepage and a deep page (one 301 to the canonical host, or a split?). It also records what every page loads - stylesheets, scripts, fonts, images, first or third party, in the head or the body - without downloading any of it; `headResources:true` adds a header-only pass for their status, size and caching.
+
+**It says what it didn't measure.** A check whose data was never collected - the asset checks before a `headResources` crawl, the render checks before `render_pages`, field Core Web Vitals before `sync_crux` - is listed in the audit as *not collected*, with the step that collects it. An empty table never reads as a clean bill of health.
 
 After the crawl it computes a real link graph: internal PageRank with nav and footer links down-weighted, click depth from the homepage counting body links only, in-degree per page. That graph powers the orphan, equity-leak and underlinked-page checks - and the donor rankings when the tool suggests internal links.
 
@@ -184,7 +190,7 @@ Each of these is a real procedure I use, and each is one prompt. The expanded ve
 
 1. **Your first audit.** *"Refresh sc-domain:mysite.com"*, then *"Run an SEO audit on mysite.com"*. Twenty minutes on a mid-size site, and the top five findings are usually worth more than the other eighty-five combined. Then *"generate the fix for #1"*. → [getting-started.md](manual/getting-started.md)
 2. **Sitewide keyword optimisation.** The question isn't "what keywords should I target?" - it's "where does my copy fail to say what I already rank for?" *"Score the passages on mysite.com"* runs a small local relevance model over every ranking page; *"draft the missing content for /page"* writes the fix in your site's own voice, grounded so it invents nothing. → [tools.md](manual/tools.md#ai-search-readiness)
-3. **Cannibalisation.** *"Show me the cannibalisation findings with evidence"* - thresholds tuned so incidental long-tail overlap doesn't count, so the consolidate-or-differentiate call is made on numbers. → [checks.md](manual/checks.md#the-merged-checks-23)
+3. **Cannibalisation.** *"Show me the cannibalisation findings with evidence"* - thresholds tuned so incidental long-tail overlap doesn't count, so the consolidate-or-differentiate call is made on numbers. → [checks.md](manual/checks.md#the-merged-checks-24)
 4. **The content plan.** *"Suggest new pages for mysite.com"* mines demand Google already shows you; *"what topics should mysite.com cover?"* maps the demand it doesn't. Together: a quarter's plan. → [competitive.md](manual/competitive.md)
 5. **The template play.** *"List the page templates"* - big sites aren't 50,000 pages, they're a dozen templates repeated, and one template fix corrects the whole cluster. → [tools.md](manual/tools.md#list_templates)
 6. **Monitoring and migrations.** *"Detect changes on mysite.com"* diffs your two most recent crawls by severity. During a migration this is the difference between catching a stray noindex on Tuesday and explaining a traffic graph in a board meeting three weeks later. I've been on the wrong end of that one. → [tools.md](manual/tools.md#monitoring)
@@ -254,7 +260,7 @@ Three steps - the [quick start](#quick-start) above is the short version, and th
 2. **Connect Search Console:** create a Google Cloud service account, download its JSON key, and - the step everyone misses - **add the service account's email as a user on your property** in Search Console. Prefer a walkthrough with pictures? [Setting it up from scratch](https://houtini.com/articles/better-search-console/#setting-it-up-from-scratch) covers the whole flow.
 3. **Point your MCP client at it** with `GOOGLE_APPLICATION_CREDENTIALS` set: `npx -y @houtini/seo-audit-console` for the published package, or `node /path/to/seo-audit-console/dist/index.js` if you built from source. Works in Claude Desktop and Claude Code; only the one env var is required.
 
-Every environment variable the server reads, in one block. The first is required and everything below it is optional: fill in the ones you use and leave the rest as empty strings (or delete them). An empty value switches that service off. Template text such as `your-key-here` does not: it's read as a real key and every call to that service fails.
+Every environment variable the server reads, in one block. The first is required and everything below it is optional: fill in the ones you use and leave the rest as empty strings (or delete them). An empty value switches that service off, and so does leftover template text such as `your-key-here` (with one line in the server's log saying so).
 
 ```json
 {
@@ -282,6 +288,17 @@ Built from source instead? Swap the two launch lines for `"command": "node"` and
 `GOOGLE_APPLICATION_CREDENTIALS` gets you the whole core audit. DataForSEO adds the market layer, `MAJESTIC_API_KEY` adds the Trust Flow re-sort to `link_intersect`, and `CRUX_API_KEY` (optional: field Core Web Vitals, a free Google API key restricted to the Chrome UX Report API) adds real-user LCP, INP and CLS. Line-by-line, including the advanced ones you'll probably never need (the reranker device, the Majestic sandbox host, and the dashboard server's bind, port and auto-start): [getting-started.md](manual/getting-started.md#environment-variables).
 
 Then: *"list properties"* to check it's connected, *"refresh"*, *"run an SEO audit"*.
+
+### Upgrading to 0.16.0
+
+0.16.0 changes how Search Console rows are stored. The device and country rows a `segments:true` sync pulls now live in their own table (`search_analytics_segments`), and `search_analytics` holds only the all-country totals, so no total can count a day twice. Nothing to do by hand, but know what the first sync after upgrading does to a database that held both shapes:
+
+- **It backs the database up first**, to `<database>.bak-<date-time>` beside it. The backup is a full copy, so a 5 GB database leaves a 5 GB `.bak` file.
+- **It checks free disk before it starts**: room for the backup, plus half the database again, plus 256 MB. Without that room the sync stops with the reason and changes nothing; free some space and sync again.
+- **Then it moves the rows**, a batch of days at a time. On a 5.5 GB database that took under three and a half minutes, backup included. If it's interrupted it carries on from where it stopped on the next sync, and the numbers read correctly throughout.
+- **Afterwards, reclaim the space.** The database file keeps its size until it's compacted: ask *"vacuum the mysite.com database"* (`data_storage`, `prune` with `vacuum`). On the 5.5 GB test database that took it to 4.4 GB. Once you're happy with the numbers, delete the `.bak` file yourself; nothing deletes it for you.
+
+A database that only ever held one shape (most do: a sync without `segments`) is marked as migrated on first open, with no backup and no move. The [changelog](CHANGELOG.md) has the rest of the release.
 
 ### Docker and the Docker MCP gateway
 
@@ -326,8 +343,8 @@ The one-line version - full descriptions, inputs and example prompts for every t
 
 | Tool | What it does |
 |---|---|
-| `refresh_property` | Sync GSC + crawl + inspect + rank history, one job |
-| `sync_gsc` · `start_crawl` · `inspect_urls` · `track_ranks` | Run a single part on its own |
+| `refresh_property` | Sync GSC + crawl + inspect + rank history + CrUX field data, one job |
+| `sync_gsc` · `start_crawl` · `inspect_urls` · `track_ranks` · `sync_crux` | Run a single part on its own (`sync_crux`: real-user Core Web Vitals from the Chrome UX Report, free with a `CRUX_API_KEY`) |
 | `check_sync_status` · `check_crawl_status` | Watch a long job's progress |
 | `run_audit` · `query_audit` · `list_checks` | The scored audit · one check with evidence · the catalogue |
 | `query_data` | Read-only queries over the raw tables - aggregates in the database, answers not rows |
@@ -367,7 +384,7 @@ The one-line version - full descriptions, inputs and example prompts for every t
 
 ## Privacy and data
 
-Your Search Console data and the crawl live in local SQLite files under `SAC_DATA_DIR`. The passage-scoring model runs locally too. Nothing leaves your machine except the API calls *you* trigger - Google (your own GSC) and, if you've set them up, DataForSEO and Majestic (`link_intersect` sends prospect domain names; `pull_backlinks` sends your own backlinked page URLs). Every one of those is keyed by you, called on demand, and cached locally so it isn't called twice. Content recon's competitor fetch requests those public pages directly, with no service in between. The crawl also reaches beyond your own site in one way: after each crawl it checks the outbound links your pages carry (a HEAD request, or a ranged GET, to each linked URL; `checkExternal:false` turns that off). And the free extras fetch from public sources: the local models download once from Hugging Face, `resolve_entities` queries Wikidata, and `news_discovery` reads the Google News feed. No telemetry. None.
+Your Search Console data and the crawl live in local SQLite files under `SAC_DATA_DIR`. The passage-scoring model runs locally too. Nothing leaves your machine except the API calls *you* trigger - Google (your own GSC, and the Chrome UX Report if you've set `CRUX_API_KEY`: it's sent your origin and top page URLs) and, if you've set them up, DataForSEO and Majestic (`link_intersect` sends prospect domain names; `pull_backlinks` sends your own backlinked page URLs). Every one of those is keyed by you, called on demand, and cached locally so it isn't called twice. Content recon's competitor fetch requests those public pages directly, with no service in between. The crawl also reaches beyond your own site in one way: after each crawl it checks the outbound links your pages carry (a HEAD request, or a ranged GET, to each linked URL; `checkExternal:false` turns that off). And the free extras fetch from public sources: the local models download once from Hugging Face, `resolve_entities` queries Wikidata, and `news_discovery` reads the Google News feed. No telemetry. None.
 
 ---
 
