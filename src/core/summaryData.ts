@@ -311,8 +311,10 @@ export function pageMovers(db: Database.Database, maxDate: string, limit = 3): P
 export interface Coverage {
   gsc: { minDate: string; maxDate: string; months: number } | null;
   crawlPages: number;
-  /** URL Inspection is a quota-bound SAMPLE: n inspected of the indexable crawled pages. */
+  /** URL Inspection is a quota-bound SAMPLE. `inspected` = every URL inspected; `inspectedIndexable`
+   *  = how many of the indexable crawled pages are among them (the spec's "n of N indexable"). */
   inspected: number;
+  inspectedIndexable: number;
   indexablePages: number;
   cwvPages: number;
   backlinkPages: number;
@@ -328,6 +330,7 @@ export function coverage(db: Database.Database): Coverage {
     crawlPages: n(`SELECT COUNT(*) n FROM pages WHERE is_internal=1`),
     inspected: n(`SELECT COUNT(*) n FROM url_inspection`),
     indexablePages: n(`SELECT COUNT(*) n FROM pages WHERE is_internal=1 AND status_code=200 AND indexable=1`),
+    inspectedIndexable: n(`SELECT COUNT(*) n FROM pages p JOIN url_inspection u ON u.url_key = p.url_key WHERE p.is_internal=1 AND p.status_code=200 AND p.indexable=1`),
     cwvPages: n(`SELECT COUNT(*) n FROM page_cwv WHERE performance IS NOT NULL`),
     backlinkPages: n(`SELECT COUNT(*) n FROM page_backlinks`),
   };

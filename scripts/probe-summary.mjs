@@ -12,6 +12,7 @@ import { dbPathFor } from '../dist/core/paths.js';
 import { robotsVerdict } from '../dist/core/robots.js';
 import { AI_BOTS, AI_BOT_PATTERN } from '../dist/core/aiBots.js';
 import { monthlyClicks, yearOnYear } from '../dist/core/summaryData.js';
+import { buildVerdict } from '../dist/core/summaryVerdict.js';
 
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; console.log(`  ok  ${msg}`); } else { fail++; console.log(`  FAIL ${msg}`); } };
@@ -144,6 +145,7 @@ function audit(db, runId, at, crawlId, findings, checkIds = CHECKS) {
   ok(!d.pageMovers.gaining.some(g => g.urlKey === 'https://x.test/new') && d.pageMovers.minPriorClicks === 10, 'pageMovers: a page under the stated 10-prior-click minimum is not ranked');
 
   ok(d.events.filter(e => e.kind === 'crawl').length === 2 && d.events.filter(e => e.kind === 'audit').length === 2, 'events: two crawls and two audits');
+  ok(d.coverage.inspected === 0 && d.coverage.inspectedIndexable === 0 && d.coverage.indexablePages === 2, `coverage: inspection counts only indexable crawled pages (${d.coverage.inspectedIndexable} of ${d.coverage.indexablePages})`);
   ok(d.coverage.gsc.months === 18 && d.coverage.crawlPages === 4, `coverage: 18 months of GSC, 4 crawled pages (${JSON.stringify(d.coverage.gsc)})`);
   ok(d.freshness.auditVsCrawl?.predatesCrawl === false && d.freshness.auditVsCrawl.auditCrawlId === 'c2', 'freshness: the audit read the latest crawl');
 }
@@ -218,6 +220,21 @@ function audit(db, runId, at, crawlId, findings, checkIds = CHECKS) {
   ok(group.GPTBot === 'training' && group['OAI-SearchBot'] === 'search' && group['ChatGPT-User'] === 'search', 'aiBots: GPTBot is training; OAI-SearchBot and ChatGPT-User are search');
   ok(group.ClaudeBot === 'training' && group['Google-Extended'] === 'training' && group.PerplexityBot === 'search', 'aiBots: ClaudeBot and Google-Extended training, PerplexityBot search');
   ok(AI_BOT_PATTERN.test('User-agent: anthropic-ai') && !AI_BOT_PATTERN.test('User-agent: Googlebot'), 'aiBots: the rules pattern covers legacy tokens and not Googlebot');
+}
+
+// ── 7. The verdict template: built only from panel values, clauses omitted when missing ─────────
+{
+  const text = (v) => v.segments.map(x => x.text).join('');
+  const full = buildVerdict({ clicks: { current: 880, prior: 1000 }, nonBrand: { current: 410, prior: 500, brand: 'acme' }, criticalOpen: 3, resolvedSinceLastAudit: 14, pagesChanged: 27 });
+  ok(text(full) === 'Organic clicks are down 12% on the prior 28 days (non-brand down 18%); 3 critical issues are open, 14 resolved since the last audit; 27 pages changed since the last crawl.', `verdict: the full sentence (${text(full)})`);
+  ok(full.chips.map(c => c.direction).join() === 'down,neutral,neutral', 'verdict: chips coloured by direction only');
+  ok(text(buildVerdict({ clicks: { current: 1030, prior: 1000 } })) === 'Organic clicks are flat on the prior 28 days.', 'verdict: inside the ±5% dead band reads flat');
+  const noGsc = buildVerdict({ criticalOpen: 1, pagesChanged: 0 });
+  ok(text(noGsc) === '1 critical issue is open; 0 pages changed since the last crawl.' && !/clicks/i.test(text(noGsc)), 'verdict, no GSC: traffic clauses dropped');
+  const noAudit = buildVerdict({ clicks: { current: 1200, prior: 1000 }, pagesChanged: null });
+  ok(text(noAudit) === 'Organic clicks are up 20% on the prior 28 days.', 'verdict, no audit or one crawl: only the traffic clause, never "0 critical"');
+  ok(!/resolved/.test(text(buildVerdict({ criticalOpen: 2, resolvedSinceLastAudit: null }))), 'verdict: no comparable audit pair, no "resolved" clause');
+  ok(buildVerdict({}).empty === true, 'verdict: nothing to say renders the empty state');
 }
 
 rmSync(dataDir, { recursive: true, force: true });
