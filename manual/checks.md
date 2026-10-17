@@ -176,6 +176,8 @@ Most thresholds here are Google's (Core Web Vitals bands, snippet rules, redirec
 
 A deterministic subset of the [axe-core](https://github.com/dequelabs/axe-core) rules - the ones decidable from the raw HTML, no render needed. The rest of axe-core needs a rendered page and isn't run (`render_pages` diffs content and links, not accessibility). These sit alongside the on-page `image-alt`, `heading-hierarchy` and `missing-lang` checks.
 
+`a11y-link-name`, `a11y-button-name` and `a11y-duplicate-id` are rolled up by template (since 0.16.1). A theme's nameless icon links and buttons appear on every page, so one finding per page reported the same few elements hundreds of times. The crawl now records which elements failed (a short selector such as `button.menu-toggle`, and for links the shape of the href, so a share link's per-page `?u=` doesn't split it), and the check reports one finding per set of elements shared by 3 or more pages (`scope: "template"`, with the page count, sample pages and the elements), plus a finding for each page with nameless elements of its own on top (`scope: "page"`). Pages crawled before 0.16.1 have no element record and keep one finding per page until the next crawl. `image-empty-alt-content` isn't rolled up: it only counts images inside the main content, which are the page's own.
+
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
 | `a11y-link-name` | D | Links with no discernible accessible name (empty anchor, icon-only, no aria-label) | Give the link visible text, an aria-label, or an `<img>` with real alt text (axe link-name). |

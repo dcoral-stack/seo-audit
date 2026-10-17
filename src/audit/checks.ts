@@ -1,3 +1,4 @@
+import { rollupA11y } from './templateRollup.js';
 import type Database from 'better-sqlite3';
 import { TITLE_MAX_CHARS, META_DESC_MAX_CHARS } from '../core/onPageLimits.js';
 import type { FindingLabel, Severity } from '../core/AuditDatabase.js';
@@ -275,12 +276,13 @@ export const CHECKS: CheckDef[] = [
   {
     id: 'a11y-link-name', category: 'accessibility', severity: 'med', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'per-page',
     title: 'Links with no accessible name', fix: 'Give every link discernible text: visible anchor text, an aria-label, or (for an icon/image link) an <img> with real alt text. A nameless link is unusable with a screen reader and tells search engines nothing about the destination (axe link-name).',
-    run: (c) => rows(c, `SELECT url_key urlKey, a11y_links_no_name n FROM pages WHERE status_code=200 AND indexable=1 AND a11y_links_no_name > 0`).map(r => ({ urlKey: r.urlKey, evidence: { namelessLinks: r.n } })),
+    // 0.16.1: one finding per shared set of theme elements (scope "template"), plus one per page for its extras.
+    run: (c) => rollupA11y(c, { kind: 'links', countCol: 'a11y_links_no_name', countKey: 'namelessLinks', unit: 'occurrences' }),
   },
   {
     id: 'a11y-button-name', category: 'accessibility', severity: 'med', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'per-page',
     title: 'Buttons with no accessible name', fix: 'Give every button text, a value (for input buttons), or an aria-label — an icon-only button with no label can’t be operated by assistive tech (axe button-name).',
-    run: (c) => rows(c, `SELECT url_key urlKey, a11y_buttons_no_name n FROM pages WHERE status_code=200 AND indexable=1 AND a11y_buttons_no_name > 0`).map(r => ({ urlKey: r.urlKey, evidence: { namelessButtons: r.n } })),
+    run: (c) => rollupA11y(c, { kind: 'buttons', countCol: 'a11y_buttons_no_name', countKey: 'namelessButtons', unit: 'occurrences' }),
   },
   {
     id: 'a11y-form-label', category: 'accessibility', severity: 'med', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'per-page',
@@ -295,7 +297,7 @@ export const CHECKS: CheckDef[] = [
   {
     id: 'a11y-duplicate-id', category: 'accessibility', severity: 'low', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'per-page',
     title: 'Duplicate id attributes', fix: 'Make every id unique on the page — duplicate ids break label/for associations, aria-labelledby references and in-page anchors (axe duplicate-id).',
-    run: (c) => rows(c, `SELECT url_key urlKey, a11y_duplicate_ids n FROM pages WHERE status_code=200 AND indexable=1 AND a11y_duplicate_ids > 0`).map(r => ({ urlKey: r.urlKey, evidence: { duplicateIds: r.n } })),
+    run: (c) => rollupA11y(c, { kind: 'dupIds', countCol: 'a11y_duplicate_ids', countKey: 'duplicateIds', unit: 'distinct' }),
   },
   {
     id: 'a11y-positive-tabindex', category: 'accessibility', severity: 'low', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'per-page',

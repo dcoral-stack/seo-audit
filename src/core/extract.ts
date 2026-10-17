@@ -127,6 +127,9 @@ export interface ExtractedPage {
   a11yViewportZoomDisabled: boolean; // <meta viewport> blocks pinch-zoom: user-scalable=no / maximum-scale<2 (axe meta-viewport)
   a11yPositiveTabindex: number;    // elements with tabindex>0 — breaks the natural focus order (axe tabindex)
   a11yDuplicateIds: number;        // id values used more than once in the document (axe duplicate-id)
+  /** 0.16.1: WHICH elements failed (signature -> occurrences, up to A11Y_SAMPLE_MAX each), so the audit
+   * can roll a theme's shared nameless links/buttons up into one finding per template. */
+  a11ySamples: A11ySamples;
   bodyChunks: { heading: string; level: number; text: string }[]; // content segmented by heading (RAG layer)
   links: ExtractedLink[];
   imageSrcs: string[];             // distinct absolute <img> src URLs (capped) — image-weight sampling
@@ -145,6 +148,11 @@ function placementOf($: cheerio.CheerioAPI, el: any): 'navigation' | 'footer' | 
  * `baseHost` is the seed apex host for internal/external classification;
  * `keyOpts` is the url-key normalisation config for this property.
  */
+/** Signatures of the elements behind the a11y counts: `a.icon[href="/cart"]`, `button.menu-toggle`, `#main`. */
+export interface A11ySamples { links: Record<string, number>; buttons: Record<string, number>; dupIds: Record<string, number> }
+export const A11Y_SAMPLE_MAX = 25;
+const SIG_MAX = 120;
+
 export function extractPage(
   html: string,
   pageUrl: string,
@@ -312,17 +320,52 @@ export function extractPage(
     if (viaImgAlt && $e.find('img[alt]').filter((_, i) => (($(i).attr('alt') ?? '').trim() !== '')).length) return true;
     return false;
   };
+  // A short, template-stable selector: tag, an id without a long number (WordPress post-123 ids differ
+  // per page), the first two classes. With the link's href shape it identifies the same theme element
+  // across pages; the audit groups pages by these to report one finding per template (0.16.1).
+  const elSelector = (el: any): string => {
+    const $e = $(el);
+    const tag = String(el.name ?? 'el').toLowerCase();
+    const id = ($e.attr('id') ?? '').trim();
+    const cls = ($e.attr('class') ?? '').trim().split(/\s+/).filter(c => c && !/\d{3,}/.test(c)).slice(0, 2);
+    const role = ($e.attr('role') ?? '').trim();
+    const type = tag === 'input' ? ($e.attr('type') ?? '').trim() : '';
+    return `${tag}${id && !/\d{3,}/.test(id) ? `#${id}` : ''}${cls.map(c => `.${c}`).join('')}${role ? `[role=${role}]` : ''}${type ? `[type=${type}]` : ''}`;
+  };
+  // The href's shape, not its exact value: a share link's ?u=<this page> differs on every page.
+  const pageNoHash = pageUrl.split('#')[0];
+  const hrefShape = (href: string): string => {
+    const h = href.trim();
+    if (!h || h === '#') return '#';
+    if (h.startsWith('#')) return '#fragment';
+    try {
+      const u = new URL(h, docBase);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return u.protocol;
+      if (u.href.split('#')[0] === pageNoHash) return '(this page)';
+      return u.hostname === new URL(pageUrl).hostname ? (u.pathname || '/') : `${u.hostname}${u.pathname === '/' ? '' : u.pathname}`;
+    } catch { return h.slice(0, 60); }
+  };
+  const a11ySamples: A11ySamples = { links: {}, buttons: {}, dupIds: {} };
+  const sample = (m: Record<string, number>, sig: string): void => {
+    const s = sig.length > SIG_MAX ? `${sig.slice(0, SIG_MAX - 1)}…` : sig;
+    if (s in m) m[s]++;
+    else if (Object.keys(m).length < A11Y_SAMPLE_MAX) m[s] = 1;
+  };
   let a11yLinksNoName = 0;
-  $('a[href]').each((_, el) => { if (!hasAccName(el, true)) a11yLinksNoName++; });
+  $('a[href]').each((_, el) => {
+    if (hasAccName(el, true)) return;
+    a11yLinksNoName++;
+    sample(a11ySamples.links, `${elSelector(el)}[href="${hrefShape($(el).attr('href') ?? '')}"]`);
+  });
   let a11yButtonsNoName = 0;
   // submit/reset inputs self-name via a UA default, so axe doesn't flag them — only type=button does.
   $('button, [role="button"], input[type="button"]').each((_, el) => {
     const $e = $(el);
     if ((el as { name?: string }).name === 'input') {
-      if (!(($e.attr('value') ?? '').trim() || ($e.attr('aria-label') ?? '').trim() || ($e.attr('title') ?? '').trim())) a11yButtonsNoName++;
+      if (!(($e.attr('value') ?? '').trim() || ($e.attr('aria-label') ?? '').trim() || ($e.attr('title') ?? '').trim())) { a11yButtonsNoName++; sample(a11ySamples.buttons, elSelector(el)); }
       return;
     }
-    if (!hasAccName(el, true)) a11yButtonsNoName++;
+    if (!hasAccName(el, true)) { a11yButtonsNoName++; sample(a11ySamples.buttons, elSelector(el)); }
   });
   let a11yInputsNoLabel = 0;
   // Precompute the set of label[for] targets — a per-input `label[for="<id>"]` selector would throw
@@ -345,7 +388,7 @@ export function extractPage(
   const idCounts = new Map<string, number>();
   $('[id]').each((_, el) => { const id = ($(el).attr('id') ?? '').trim(); if (id) idCounts.set(id, (idCounts.get(id) ?? 0) + 1); });
   let a11yDuplicateIds = 0;
-  for (const n of idCounts.values()) if (n > 1) a11yDuplicateIds++;
+  for (const [id, n] of idCounts) if (n > 1) { a11yDuplicateIds++; sample(a11ySamples.dupIds, `#${id}`); if (`#${id}` in a11ySamples.dupIds) a11ySamples.dupIds[`#${id}`] = n; }
 
   // Images: count those lacking a non-empty alt (decorative alt="" is intentional, not flagged),
   // and those lacking both width & height attributes (a deterministic CLS signal).
@@ -500,6 +543,7 @@ export function extractPage(
     a11yViewportZoomDisabled,
     a11yPositiveTabindex,
     a11yDuplicateIds,
+    a11ySamples,
     bodyChunks,
     links,
     imageSrcs: [...imageSrcSet],
