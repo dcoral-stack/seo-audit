@@ -7,6 +7,7 @@ import { expectedCtr } from '../core/ctrModel.js';
 import { latestTwoCrawls } from './drift.js';
 import { HTML_CT } from '../core/sql.js';
 import { SIGNAL_CHECKS } from './checks-signals.js';
+import { REDIRECT_CHECKS, redirectChainFindings } from './checks-redirects.js';
 
 /**
  * Check registry. Each check is a pure read over the AuditDatabase (crawl + GSC +
@@ -360,11 +361,9 @@ export const CHECKS: CheckDef[] = [
   {
     id: 'redirect-chain', category: 'crawlability', severity: 'med', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'automated',
     title: 'Redirect chain (2+ hops)', fix: 'Collapse to a single hop to the final URL.',
-    // Count hops in SQL (json_array_length, guarded by json_valid) and filter to >=2 there — so we
-    // never pull every redirect-bearing page into JS just to count + drop most of them.
-    run: (c) => rows(c, `SELECT url_key urlKey, json_array_length(redirects) hops FROM pages
-      WHERE redirects IS NOT NULL AND json_valid(redirects) AND json_array_length(redirects) >= 2`)
-      .map(r => ({ urlKey: r.urlKey, evidence: { hops: r.hops } })),
+    // #55 group B: one finding per redirecting SOURCE (redirect_sources + pages.redirects), internal
+    // chains that resolve only. Off-site/login bounces and loops are excluded (loops: redirect-loop).
+    run: redirectChainFindings,
   },
   {
     id: 'internal-links-to-redirects', category: 'crawlability', severity: 'med', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'automated',
@@ -1530,6 +1529,8 @@ export const CHECKS: CheckDef[] = [
   // Deliberately not added here; see plan/google-discover.md.
   // #55 group A: site-wide indexing alarm, AI-search controls, CrUX field data, non-brand decline.
   ...SIGNAL_CHECKS,
+  // #55 group B: redirect hygiene (item 3).
+  ...REDIRECT_CHECKS,
 ];
 
 // ── Google Discover helpers (article-eligibility + directive/schema parsing) ──

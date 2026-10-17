@@ -98,6 +98,7 @@ scripts/*
 !scripts/probe-review-0-15.mjs
 !scripts/probe-external.mjs
 !scripts/probe-blocking.mjs
+!scripts/probe-redirects.mjs
 
 # --- secrets hardening (never commit) ---
 *.pem

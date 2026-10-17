@@ -95,7 +95,7 @@ page('https://smoke.test/deep', { click_depth: 6 });                            
 page('https://smoke.test/dead', { status_code: 404, indexable: 0 });            // 404 target
 link('https://smoke.test/', 'https://smoke.test/dead');                         // ipr-bleed (home ipr 100 -> dead)
 page('https://smoke.test/bad-canon', { canonical_url: 'https://smoke.test/dead', canonical_key: k('https://smoke.test/dead'), canonical_count: 1 }); // broken-canonical-target
-page('https://smoke.test/redir', { redirects: '["https://smoke.test/a","https://smoke.test/b"]' }); // redirect-chain
+page('https://smoke.test/redir', { redirects: JSON.stringify([{ from: 'https://smoke.test/a', to: 'https://smoke.test/b', status: 301 }, { from: 'https://smoke.test/b', to: 'https://smoke.test/redir', status: 301 }]) }); // redirect-chain (the crawler's {from,to,status} hop shape)
 link('https://smoke.test/', 'https://smoke.test/redir');                        // internal-links-to-redirects
 page('https://smoke.test/list?cat=1&sort=asc', { url_key: k('https://smoke.test/list?cat=1&sort=asc') }); // faceted-spider-trap (no GSC)
 page('https://smoke.test/shop/page/2', { canonical_url: 'https://smoke.test/shop', canonical_key: k('https://smoke.test/shop'), canonical_count: 1, rel_prev: 1 }); // pagination-canonical
