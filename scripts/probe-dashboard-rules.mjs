@@ -14,6 +14,8 @@ import {
 import { cwvFieldPayload } from '../dist/core/CruxSync.js';
 import { loadBrandQueries, spacedIsUncertain } from '../dist/core/brand.js';
 import { getDashboardData } from '../dist/core/dashboardData.js';
+import { runSingleCheck } from '../dist/audit/engine.js';
+import { META_DESC_MAX_CHARS } from '../dist/core/onPageLimits.js';
 import { AuditDatabase } from '../dist/core/AuditDatabase.js';
 import { computeHealth } from '../dist/audit/history.js';
 import { dbPathFor } from '../dist/core/paths.js';
@@ -166,6 +168,24 @@ console.log('brand on exact-match domains');
     ok(m.variants.includes('directdrivewheelseu') && m.uncertain?.spellings?.[0] === 'direct drive wheels eu', `the dotted form stays brand while the spaced form is uncertain (${JSON.stringify(m)})`);
     adb.close();
   }
+}
+
+// ── 8. One meta-description limit for Crawl health and the audit ─────────────────────────────
+console.log('meta description limit');
+{
+  const site = 'sc-domain:meta.test';
+  const adb = new AuditDatabase(dbPathFor(dataDir, site));
+  adb.upsertProperty(site, 'apex');
+  adb.db.prepare(`INSERT INTO crawl_metadata (crawl_id,base_url,base_domain,status,urls_crawled,started_at,finished_at) VALUES ('m1','https://meta.test','meta.test','completed',4,datetime('now'),datetime('now'))`).run();
+  const ins = adb.db.prepare(`INSERT INTO pages (crawl_id,url,url_key,status_code,content_type,is_internal,indexable,title,meta_description,meta_description_length) VALUES ('m1',?,?,200,'text/html',1,1,?,?,?)`);
+  [150, 158, 161, 175].forEach((len, i) => ins.run(`https://meta.test/p${i}`, `https://meta.test/p${i}`, `Title ${i}`, 'x'.repeat(len), len));
+  adb.db.prepare(`INSERT INTO search_analytics (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES ('2026-09-01','q','https://meta.test/p0','https://meta.test/p0','','',1,10,0.1,5)`).run();
+  adb.close();
+  const metas = getDashboardData(dataDir, site).crawlHealth?.metas ?? [];
+  const over = metas.find(r => /^Over/.test(r.label));
+  const check = runSingleCheck(dataDir, site, 'meta-description-length');
+  ok(over?.label === `Over ${META_DESC_MAX_CHARS} characters` && over.count === 2, `Crawl health counts meta descriptions over ${META_DESC_MAX_CHARS} (${JSON.stringify(over)})`);
+  ok(check.total === over?.count, `the audit check flags the same pages (${check.total} vs ${over?.count})`);
 }
 
 rmSync(dataDir, { recursive: true, force: true });

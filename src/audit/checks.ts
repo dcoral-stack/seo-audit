@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { TITLE_MAX_CHARS, META_DESC_MAX_CHARS } from '../core/onPageLimits.js';
 import type { FindingLabel, Severity } from '../core/AuditDatabase.js';
 import { validateJsonLdColumn, type SchemaIssueKind } from './schema-validate.js';
 import { parseJsonLdNodes, nodeType } from './templates.js';
@@ -361,12 +362,12 @@ export const CHECKS: CheckDef[] = [
   {
     id: 'title-too-long', category: 'onpage', severity: 'low', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'per-page',
     title: 'Title over ~60 chars', fix: 'Trim the title so the primary keyword sits within ~60 chars.',
-    run: (c) => rows(c, `SELECT url_key urlKey, title_length len FROM pages WHERE status_code=200 AND indexable=1 AND title_length > 60`).map(r => ({ urlKey: r.urlKey, evidence: { titleLength: r.len } })),
+    run: (c) => rows(c, `SELECT url_key urlKey, title_length len FROM pages WHERE status_code=200 AND indexable=1 AND title_length > ${TITLE_MAX_CHARS}`).map(r => ({ urlKey: r.urlKey, evidence: { titleLength: r.len } })),
   },
   {
     id: 'meta-description-length', category: 'onpage', severity: 'low', labels: ['D'], certainty: 1, effortBase: 1, fixType: 'per-page',
     title: 'Meta description over ~160 chars', fix: 'Tighten to ~150–160 chars so it isn’t truncated.',
-    run: (c) => rows(c, `SELECT url_key urlKey, meta_description_length len FROM pages WHERE status_code=200 AND indexable=1 AND meta_description_length > 160`).map(r => ({ urlKey: r.urlKey, evidence: { length: r.len } })),
+    run: (c) => rows(c, `SELECT url_key urlKey, meta_description_length len FROM pages WHERE status_code=200 AND indexable=1 AND meta_description_length > ${META_DESC_MAX_CHARS}`).map(r => ({ urlKey: r.urlKey, evidence: { length: r.len } })),
   },
   {
     id: 'non-https', category: 'security', severity: 'high', labels: ['D'], certainty: 1, effortBase: 3, fixType: 'global',

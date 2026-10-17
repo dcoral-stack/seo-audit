@@ -5,6 +5,7 @@ import {
   EChartWrapper, chartPalette, axisDefaults, tooltipDefaults, emptyState, countDelta, rankDelta,
 } from './lib/index.js';
 import { shareText, sharePct, quickWinsEmptyReason, trappedEmptyReason } from '../core/displayRules.js';
+import { TITLE_MAX_CHARS, META_DESC_MAX_CHARS } from '../core/onPageLimits.js';
 import { renderSearchTop, renderHealthTop, renderSideFreshness, drawNetwork, pctChg, SEV_ORDER, SEV_LABEL, type OverviewCtx } from './panels.js';
 import { renderSummary, type SummaryCtx } from './summary.js';
 import { renderFieldCwv } from './cwv.js';
@@ -945,6 +946,9 @@ function render(data: DashboardData): void {
     sfBars('sfOnPage', ch?.onPage, total, 'No on-page issue on any indexable page.');
     sfBars('sfTitles', ch?.titles, total, 'No indexable page has a missing, duplicate, long or short title.');
     sfBars('sfMetas', ch?.metas, total, 'No indexable page has a missing, duplicate, long or short meta description.');
+    // The same limits the audit checks use (core/onPageLimits.ts), named so the counts can be matched.
+    $('sfTitlesRule').textContent = total ? `Indexable pages. "Over ${TITLE_MAX_CHARS}" is the audit's title-too-long check.` : '';
+    $('sfMetasRule').textContent = total ? `Indexable pages. "Over ${META_DESC_MAX_CHARS}" is the audit's meta-description-length check.` : '';
     const card = (id: string, show: boolean): HTMLElement => { const c = $(id); c.style.display = show ? '' : 'none'; return c; };
     card('sfServerErrorsCard', !!ch?.serverErrors?.length);
     if (ch?.serverErrors?.length) $('sfServerErrors').innerHTML = tableHtml(['URL', 'Status'],

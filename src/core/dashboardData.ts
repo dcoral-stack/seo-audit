@@ -7,6 +7,7 @@ import { dbPathFor, jobScopeFor } from './paths.js';
 import { gscFreshness } from './gscFreshness.js';
 import { expectedCtr } from './ctrModel.js';
 import { loadBrandQueries, brandPredicate } from './brand.js';
+import { TITLE_MAX_CHARS, TITLE_MIN_CHARS, META_DESC_MAX_CHARS, META_DESC_MIN_CHARS } from './onPageLimits.js';
 import { SMALL_BASE_MIN, QUICK_WIN_MIN_IMPRESSIONS, QUICK_WIN_MAX_POSITION, TRAPPED_MIN_REF_DOMAINS, TRAPPED_MIN_DEPTH } from './displayRules.js';
 import { HTML_CT } from './sql.js';
 import { gscMixedShape } from './gscRows.js';
@@ -722,11 +723,11 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
           FROM pages`).get() as Record<string, unknown>;
         const g2 = db.db.prepare(`SELECT
             SUM(CASE WHEN title IS NULL OR TRIM(title)='' THEN 1 ELSE 0 END) tMissing,
-            SUM(CASE WHEN title_length > 60 THEN 1 ELSE 0 END) tLong,
-            SUM(CASE WHEN title_length BETWEEN 1 AND 29 THEN 1 ELSE 0 END) tShort,
+            SUM(CASE WHEN title_length > ${TITLE_MAX_CHARS} THEN 1 ELSE 0 END) tLong,
+            SUM(CASE WHEN title_length BETWEEN 1 AND ${TITLE_MIN_CHARS - 1} THEN 1 ELSE 0 END) tShort,
             SUM(CASE WHEN meta_description IS NULL OR TRIM(meta_description)='' THEN 1 ELSE 0 END) mMissing,
-            SUM(CASE WHEN meta_description_length > 155 THEN 1 ELSE 0 END) mLong,
-            SUM(CASE WHEN meta_description_length BETWEEN 1 AND 69 THEN 1 ELSE 0 END) mShort,
+            SUM(CASE WHEN meta_description_length > ${META_DESC_MAX_CHARS} THEN 1 ELSE 0 END) mLong,
+            SUM(CASE WHEN meta_description_length BETWEEN 1 AND ${META_DESC_MIN_CHARS - 1} THEN 1 ELSE 0 END) mShort,
             SUM(CASE WHEN h1 IS NULL OR TRIM(h1)='' THEN 1 ELSE 0 END) h1Missing,
             SUM(CASE WHEN h1_count > 1 THEN 1 ELSE 0 END) h1Multi,
             SUM(CASE WHEN images_without_alt > 0 THEN 1 ELSE 0 END) noAlt,
@@ -771,14 +772,14 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         const titles = stats([
           { label: 'Missing', count: num(g2.tMissing), tone: 'warn' },
           { label: 'Duplicate', count: dupCount('title'), tone: 'warn' },
-          { label: 'Over 60 characters', count: num(g2.tLong), tone: 'warn' },
-          { label: 'Under 30 characters', count: num(g2.tShort), tone: 'warn' },
+          { label: `Over ${TITLE_MAX_CHARS} characters`, count: num(g2.tLong), tone: 'warn' },
+          { label: `Under ${TITLE_MIN_CHARS} characters`, count: num(g2.tShort), tone: 'warn' },
         ]);
         const metas = stats([
           { label: 'Missing', count: num(g2.mMissing), tone: 'warn' },
           { label: 'Duplicate', count: dupCount('meta_description'), tone: 'warn' },
-          { label: 'Over 155 characters', count: num(g2.mLong), tone: 'warn' },
-          { label: 'Under 70 characters', count: num(g2.mShort), tone: 'warn' },
+          { label: `Over ${META_DESC_MAX_CHARS} characters`, count: num(g2.mLong), tone: 'warn' },
+          { label: `Under ${META_DESC_MIN_CHARS} characters`, count: num(g2.mShort), tone: 'warn' },
         ]);
         const onPage = stats([
           { label: 'Missing H1', count: num(g2.h1Missing), tone: 'warn' },
