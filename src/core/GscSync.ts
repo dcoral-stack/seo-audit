@@ -1,6 +1,6 @@
 import { AuditDatabase } from './AuditDatabase.js';
 import { addQueries } from './fts.js';
-import type Database from 'better-sqlite3';
+import Database from 'better-sqlite3';
 import { SEGMENTS, gscStorageState, refreshLegacyDayShapes, segmentSql, settleGscTotals, type SettleResult } from './gscRows.js';
 import { gb, migrateGscStorage, type GscMigrationResult } from './gscMigrate.js';
 import { GscClient } from './GscClient.js';
@@ -63,11 +63,15 @@ const daysBefore = (date: string, n: number): string => new Date(Date.parse(date
  * segment rows still in search_analytics. So the answer does not change when a sync migrates first.
  */
 export function storedMaxDates(db: Database.Database): { totals: string | null; segments: string | null } {
-  const max = (sql: string): string | null => (db.prepare(sql).get() as { d: string | null }).d;
+  // Every lookup walks the date index from the top (the plan for a start reply rides on these).
+  // A table missing (a read-only handle on a database this version never opened) reads as empty.
+  const max = (sql: string): string | null => {
+    try { return (db.prepare(sql).get() as { d: string | null } | undefined)?.d ?? null; } catch { return null; }
+  };
   const totals = max(`SELECT MAX(date) d FROM search_analytics`);
   let segments = max(`SELECT MAX(date) d FROM ${SEGMENTS}`);
   if (gscStorageState(db) !== 'done') {
-    const legacy = max(`SELECT MAX(date) d FROM search_analytics WHERE ${segmentSql()}`);
+    const legacy = max(`SELECT date d FROM search_analytics WHERE ${segmentSql()} ORDER BY date DESC LIMIT 1`);
     if (legacy && (!segments || legacy > segments)) segments = legacy;
   }
   return { totals, segments };
@@ -85,6 +89,24 @@ export function syncDimensions(requested: string[] | undefined, max: { totals: s
     return { dimensions: FULL_DIMENSIONS, segmentsKept: true };
   }
   return { dimensions: dims, segmentsKept: false };
+}
+
+/**
+ * The search types stored, read from the first and last row (by rowid) of each table: constant
+ * time. The property holds one search type at a time (a sync of another type wipes both tables
+ * first, and rows from before the column existed default to web), so the end rows answer it. The
+ * old UNION over every row scanned both tables: 2.7 s on a warm 7.6M-row property, and it ran
+ * before the sync's first network call, so it blocked the event loop.
+ */
+export function storedSearchTypes(db: Database.Database): string[] {
+  const types = new Set<string>();
+  for (const table of ['search_analytics', SEGMENTS]) {
+    for (const dir of ['ASC', 'DESC']) {
+      const r = db.prepare(`SELECT COALESCE(search_type, 'web') t FROM ${table} ORDER BY rowid ${dir} LIMIT 1`).get() as { t: string } | undefined;
+      if (r) types.add(r.t);
+    }
+  }
+  return [...types];
 }
 
 export interface GscSyncOptions {
@@ -106,9 +128,11 @@ export class GscSync {
   plannedRange(siteUrl: string, options: FetchOptions): { startDate: string; endDate: string; incremental: boolean; noop?: boolean; dimensions: string[]; segmentsKept?: boolean } {
     let max: { totals: string | null; segments: string | null } = { totals: null, segments: null };
     try {
-      const db = new AuditDatabase(dbPathFor(this.dataDir, siteUrl));
-      try { max = storedMaxDates(db.db); } finally { db.close(); }
-    } catch { /* no DB yet */ }
+      // A plain read-only handle: two index-backed MAX(date) lookups and nothing else. The tool's
+      // reply waits on this, so no schema ensure work (AuditDatabase) and no write lock.
+      const db = new Database(dbPathFor(this.dataDir, siteUrl), { readonly: true, fileMustExist: true });
+      try { max = storedMaxDates(db); } finally { db.close(); }
+    } catch { /* no DB yet, or one this version never opened */ }
     const { dimensions, segmentsKept } = syncDimensions(options.dimensions, max);
     const shape = { dimensions, ...(segmentsKept ? { segmentsKept } : {}) };
     if (options.fullResync) return { startDate: options.startDate, endDate: options.endDate, incremental: false, ...shape };
@@ -201,9 +225,7 @@ export class GscSync {
       // history) would silently mix/overwrite rows; it wipes both tables instead, and the wipe rides
       // the first fetched batch's transaction, so a failed fetch destroys nothing.
       const wantType = options.searchType ?? 'web';
-      const storedTypes = (db.db
-        .prepare(`SELECT COALESCE(search_type, 'web') t FROM search_analytics UNION SELECT COALESCE(search_type, 'web') FROM ${SEGMENTS}`)
-        .all() as { t: string }[]).map(r => r.t);
+      const storedTypes = storedSearchTypes(db.db);
       let mustWipe = storedTypes.length > 0 && (storedTypes.length > 1 || storedTypes[0] !== wantType);
       const wipeAndInsert = db.db.transaction((records: Record<string, unknown>[]) => {
         db.db.exec(`DELETE FROM search_analytics; DELETE FROM ${SEGMENTS}; DELETE FROM gsc_day_shape;`);

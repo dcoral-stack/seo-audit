@@ -5,7 +5,7 @@
  * naming exactly what would be deleted. Never touches a DB while a job is running.
  */
 import Database from 'better-sqlite3';
-import { readdirSync, statSync, existsSync, rmSync } from 'node:fs';
+import { readdirSync, statSync, existsSync, rmSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import { dbPathFor, sanitizeProperty } from './paths.js';
 
@@ -135,6 +135,30 @@ const safeCount = (db: Database.Database, table: string): number => {
   try { return (db.prepare(`SELECT COUNT(*) n FROM "${table}"`).get() as { n: number }).n; } catch { return 0; }
 };
 
+/**
+ * Row counts are the slow part of a listing: COUNT(*) reads a whole index, which on a cold 5.5 GB
+ * property took most of the 9.1 s first call (the 0.1 s second call was the page cache). They only
+ * change when the file does, so they are kept in `_storage-counts.json` beside the databases, keyed
+ * by the size and mtime of the database and its WAL: a later listing (another gateway worker
+ * included) reuses them until a write touches either file. Best effort: an unreadable or unwritable
+ * cache just means counting.
+ */
+export const COUNTS_CACHE_FILE = '_storage-counts.json';
+const COUNTED_TABLES = ['search_analytics', 'search_analytics_segments', 'pages', 'links', 'page_snapshots', 'findings', 'link_prospects'] as const;
+type Counts = Record<(typeof COUNTED_TABLES)[number], number>;
+interface CountsEntry { stamp: string; counts: Counts }
+const fileStamp = (dbFile: string): string => ['', '-wal'].map(sfx => {
+  try { const st = statSync(dbFile + sfx); return `${st.size}:${st.mtimeMs}`; } catch { return '-'; }
+}).join('|');
+function readCountsCache(dataDir: string): Record<string, CountsEntry> {
+  try { return JSON.parse(readFileSync(path.join(dataDir, COUNTS_CACHE_FILE), 'utf8')) as Record<string, CountsEntry>; } catch { return {}; }
+}
+function writeCountsCache(dataDir: string, cache: Record<string, CountsEntry>): void {
+  const file = path.join(dataDir, COUNTS_CACHE_FILE);
+  const tmp = `${file}.${process.pid}.tmp`;
+  try { writeFileSync(tmp, JSON.stringify(cache)); renameSync(tmp, file); } catch { try { rmSync(tmp, { force: true }); } catch { /* ignore */ } }
+}
+
 export function storageSummary(dataDir: string, siteUrl?: string): StorageSummary {
   const properties: PropertyStorage[] = [];
   const caches: { file: string; bytes: number }[] = [];
@@ -154,9 +178,12 @@ export function storageSummary(dataDir: string, siteUrl?: string): StorageSummar
     return { file: b, of: BACKUP_RE.exec(b)![1], bytes: sizeWithSidecars(full), modified, kind: 'other' as BackupFile['kind'] };
   });
 
+  const countsCache = readCountsCache(dataDir);
+  let countsChanged = false;
   for (const file of files.sort()) {
     const full = path.join(dataDir, file);
     const bytes = sizeWithSidecars(full);
+    const stamp = fileStamp(full);
     if (CACHE_DB_NAMES.has(file)) { caches.push({ file, bytes }); continue; }
     let db: Database.Database | null = null;
     try {
@@ -187,18 +214,25 @@ export function storageSummary(dataDir: string, siteUrl?: string): StorageSummar
       try {
         linkProspectsFetched = (db.prepare(`SELECT MAX(fetched_at) t FROM link_prospects`).get() as { t: string | null }).t;
       } catch { /* no link_prospects table (pre-link_intersect DB) */ }
+      let counts = countsCache[file]?.stamp === stamp ? countsCache[file].counts : null;
+      if (!counts) {
+        const db2 = db;
+        counts = Object.fromEntries(COUNTED_TABLES.map(t => [t, safeCount(db2, t)])) as Counts;
+        countsCache[file] = { stamp, counts };
+        countsChanged = true;
+      }
       properties.push({
         file,
         siteUrl: meta?.site_url ?? null,
         bytes,
-        searchAnalytics: safeCount(db, 'search_analytics'),
-        searchAnalyticsSegments: safeCount(db, 'search_analytics_segments'),
-        pages: safeCount(db, 'pages'),
-        links: safeCount(db, 'links'),
-        pageSnapshots: safeCount(db, 'page_snapshots'),
-        findings: safeCount(db, 'findings'),
+        searchAnalytics: counts.search_analytics,
+        searchAnalyticsSegments: counts.search_analytics_segments,
+        pages: counts.pages,
+        links: counts.links,
+        pageSnapshots: counts.page_snapshots,
+        findings: counts.findings,
         lastSynced: meta?.last_synced_at ?? null,
-        linkProspects: safeCount(db, 'link_prospects'),
+        linkProspects: counts.link_prospects,
         linkProspectsFetched,
         ...(sharedWith ? { sharedWith } : {}),
         gscStorage,
@@ -213,6 +247,11 @@ export function storageSummary(dataDir: string, siteUrl?: string): StorageSummar
     }
   }
 
+  if (countsChanged) {
+    // Drop entries for databases that are gone, then save.
+    for (const k of Object.keys(countsCache)) if (!files.includes(k)) delete countsCache[k];
+    writeCountsCache(dataDir, countsCache);
+  }
   const reportsBytes = dirSize(path.join(dataDir, 'reports'));
   // Narrowed to one property: only its backups.
   const backups = wantStem ? backupsAll.filter(b => b.of === `${wantStem}.db`) : backupsAll;

@@ -5,10 +5,10 @@
 // Run: node scripts/probe-data-storage.mjs   (after npm run build:server). No network.
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync, copyFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync, copyFileSync, readFileSync } from 'node:fs';
 import { AuditDatabase } from '../dist/core/AuditDatabase.js';
 import { dbPathFor } from '../dist/core/paths.js';
-import { storageSummary, removeEmptySidecars } from '../dist/core/dataStorage.js';
+import { storageSummary, removeEmptySidecars, COUNTS_CACHE_FILE } from '../dist/core/dataStorage.js';
 import { migrateGscStorage } from '../dist/core/gscMigrate.js';
 import { setGscStorageState } from '../dist/core/gscRows.js';
 
@@ -73,6 +73,23 @@ try {
   check('no -wal/-shm beside the new backup', beside.length === 0, JSON.stringify(beside));
   const after = storageSummary(dir, mig.site).properties[0];
   check('GSC storage: migrated, its backup marked', after?.gscStorage.state === 'migrated' && after.backups[0]?.kind === 'gsc-migration', JSON.stringify(after?.backups));
+
+  // ── 4. Row counts are cached beside the databases until a database or its WAL changes (0.16.2) ──
+  {
+    const cacheFile = path.join(dir, COUNTS_CACHE_FILE);
+    const first = storageSummary(dir, site).properties[0];
+    check('the counts cache is written', existsSync(cacheFile));
+    // Doctor the cached count: a listing that reuses the cache shows it, one that recounts doesn't.
+    const cache = JSON.parse(readFileSync(cacheFile, 'utf8'));
+    cache[path.basename(file)].counts.findings = 4242;
+    writeFileSync(cacheFile, JSON.stringify(cache));
+    check('an unchanged database reuses the cached counts', storageSummary(dir, site).properties[0]?.findings === 4242, String(storageSummary(dir, site).properties[0]?.findings));
+    { const adb = new AuditDatabase(file); adb.db.prepare(`INSERT INTO audit_runs (run_id, started_at) VALUES ('r-cache', datetime('now'))`).run(); adb.close(); }
+    const recount = storageSummary(dir, site).properties[0];
+    check('a write to the database invalidates them', recount?.findings === first.findings && recount.findings !== 4242, String(recount?.findings));
+    writeFileSync(cacheFile, '{not json');
+    check('an unreadable cache just means counting', storageSummary(dir, site).properties[0]?.findings === first.findings);
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

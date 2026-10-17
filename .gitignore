@@ -110,6 +110,7 @@ scripts/*
 !scripts/probe-hreflang.mjs
 !scripts/probe-assets.mjs
 !scripts/probe-a11y-rollup.mjs
+!scripts/probe-reply-latency.mjs
 
 # --- secrets hardening (never commit) ---
 *.pem

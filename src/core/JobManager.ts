@@ -371,9 +371,13 @@ export class JobManager {
       this.write(job, true);
     };
 
-    // Promise.resolve().then(...) so a synchronous throw in fn becomes a rejection
-    // (caught below) rather than an uncaught exception that crashes the MCP process.
-    return Promise.resolve()
+    // The body starts on a later turn of the event loop (setImmediate), never in this one: a job's
+    // first synchronous stretch (opening a multi-GB database, a planning query) would otherwise run
+    // in the microtask queue ahead of the tool's own reply, so the client waited on the job's DB
+    // work before it saw the job id (33.8 s for sync_gsc on a 5.5 GB property in 0.16.1).
+    // Run through a promise so a synchronous throw in fn becomes a rejection (caught below)
+    // rather than an uncaught exception that crashes the MCP process.
+    return new Promise<void>(resolve => setImmediate(resolve))
       .then(() => fn(update, controller.signal))
       .then(result => {
         job.result = result;
