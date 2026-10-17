@@ -37,9 +37,12 @@
  * click flips its spaced spelling back to brand; a brand nobody types as one word reads as
  * non-brand until they do. The variants that matched are returned so the UI shows what was counted.
  *
- * SQL side: the branded queries are collected once per connection into `temp.brand_query`, and
- * readers test `LOWER(query) IN (SELECT q FROM temp.brand_query)` (see `brandPredicate`). No query
- * text is ever interpolated into SQL.
+ * SQL side: the branded queries are collected once per connection into `temp.brand_query`, AS
+ * STORED (the raw query text, every case variant that matched), and readers test
+ * `query IN (SELECT q FROM temp.brand_query)` (see `brandPredicate`). Matching happens once, in JS
+ * (brandRun lower-cases with full Unicode rules); comparing the raw text means SQLite's ASCII-only
+ * LOWER() never has to agree with JS toLowerCase() ("Simracingcockpit ÜBERSICHT"). No query text
+ * is ever interpolated into SQL.
  */
 import type Database from 'better-sqlite3';
 import { gscTotalsSource } from './gscRows.js';
@@ -112,13 +115,13 @@ export function loadBrandQueries(db: Database.Database, siteUrl: string): BrandM
   // Totals per matched query over the held history (an index lookup per query on query).
   // Totals read the gsc_rows view: a day stored in two row shapes counts once.
   const sums = db.prepare(`SELECT COALESCE(SUM(clicks),0) c, COALESCE(SUM(impressions),0) i FROM ${gscTotalsSource(db)} WHERE query = ?`);
-  type Hit = { q: string; run: string; spaced: boolean; c: number; i: number };
+  type Hit = { q: string; raw: string; run: string; spaced: boolean; c: number; i: number };
   const matched: Hit[] = [];
   for (const { q } of cands) {
     const run = brandRun(q, token);
     if (!run) continue;
     const t = sums.get(q) as { c: number; i: number };
-    matched.push({ q: q.toLowerCase(), run, spaced: run.includes(' '), c: t.c, i: t.i });
+    matched.push({ q: q.toLowerCase(), raw: q, run, spaced: run.includes(' '), c: t.c, i: t.i });
   }
   const tot = (xs: Hit[]): { impressions: number; clicks: number } => ({ impressions: xs.reduce((s, x) => s + x.i, 0), clicks: xs.reduce((s, x) => s + x.c, 0) });
   const spacedHits = matched.filter(m => m.spaced), joinedHits = matched.filter(m => !m.spaced);
@@ -137,11 +140,12 @@ export function loadBrandQueries(db: Database.Database, siteUrl: string): BrandM
     : null;
   db.exec(`CREATE TEMP TABLE IF NOT EXISTS brand_query (q TEXT PRIMARY KEY)`);
   const ins = db.prepare(`INSERT OR IGNORE INTO temp.brand_query (q) VALUES (?)`);
-  db.transaction(() => { db.exec(`DELETE FROM temp.brand_query`); for (const q of hits) ins.run(q); })();
+  // The raw text of every counted query: the predicate compares the column as stored.
+  db.transaction(() => { db.exec(`DELETE FROM temp.brand_query`); for (const m of counted) ins.run(m.raw); })();
   const match: BrandMatch = { token, queries: hits.size, variants: bySpelling(counted), uncertain };
   loaded.set(db, { token, match });
   return match;
 }
 
 /** SQL predicate "this row's query is branded" (call `loadBrandQueries` first on the same handle). `col` defaults to `query`. */
-export const brandPredicate = (col = 'query'): string => `LOWER(${col}) IN (SELECT q FROM temp.brand_query)`;
+export const brandPredicate = (col = 'query'): string => `${col} IN (SELECT q FROM temp.brand_query)`;
