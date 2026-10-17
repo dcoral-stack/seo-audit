@@ -136,6 +136,9 @@ export function diffLatest(db: Database.Database): DriftResult {
   for (const [k, n] of newer) {
     const o = older.get(k);
     if (!o) { changes.push({ urlKey: k, kind: 'added', changes: [] }); continue; }
+    // #54: rate limited in either crawl = not fetched, so status/indexable are unknown there, not a
+    // change. Diffing it would report a crit "200 -> null / indexable lost" for a page that is fine.
+    if (n.indexable_reason === 'rate-limited' || o.indexable_reason === 'rate-limited') continue;
     const fc: FieldChange[] = [];
     const push = (field: string, from: unknown, to: unknown, severity: DriftSeverity): void => { fc.push({ field, from, to, severity }); };
 

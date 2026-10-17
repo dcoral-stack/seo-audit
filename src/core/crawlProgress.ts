@@ -1,3 +1,4 @@
+import { rateLimitSummary, type RateLimitReport } from './rateLimit.js';
 /**
  * Crawl progress arithmetic (#52): pages/sec and an ETA the client can read while a long crawl
  * runs, so a 20-40 minute job never looks stalled. Pure, so it is testable without a network.
@@ -46,3 +47,25 @@ export function fmtDuration(seconds: number | null): string {
   if (m < 60) return `${m}m ${s}s`;
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
+
+/**
+ * The rate-limit and platform notes (#54) appended to a crawl's status line, e.g.
+ * "; Shopify host: started at concurrency 3; rate limited by the host: concurrency reduced to 2;
+ * 37 URLs retried, 3 not fetched". Empty when neither applies. Accepts the raw progress/result
+ * object, so it reads what a job stored without trusting its shape.
+ */
+export function crawlNotes(p: { rateLimited?: unknown; platform?: unknown } | null | undefined): string {
+  if (!p) return '';
+  const out: string[] = [];
+  const pl = p.platform as CrawlPlatformLike | undefined;
+  if (pl && pl.name === 'shopify') {
+    out.push(pl.userSetConcurrency
+      ? `Shopify host (your maxConcurrency kept; Shopify rate-limits hard above ~3)`
+      : `Shopify host: started at concurrency ${pl.startConcurrency}`);
+  }
+  const rl = p.rateLimited as RateLimitReport | undefined;
+  const s = rl && typeof rl.events === 'number' ? rateLimitSummary(rl) : null;
+  if (s) out.push(s);
+  return out.length ? `; ${out.join('; ')}` : '';
+}
+interface CrawlPlatformLike { name: string; startConcurrency: number; userSetConcurrency: boolean }

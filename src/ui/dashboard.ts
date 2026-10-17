@@ -884,7 +884,8 @@ function render(data: DashboardData): void {
     ? tableHtml(['URL', 'Internal links in', 'Status', 'Indexable'], tlp.map(p =>
       `<tr><td class="url" title="${esc(p.url)}">${esc(shortPath(p.url))}</td><td class="num">${fmt(p.inlinks)}</td><td>${statusBadge(p.status)}</td><td>${p.indexable ? icons.check : `${icons.x} ${esc(p.reason || '')}`}</td></tr>`))
     : emptyState('Run a crawl to see the internal-link hierarchy.', 'refresh_property');
-  const tlpBroken = tlp.filter(p => p.status !== 200).length;
+  // status null = not fetched (rate limited, #54) or robots-blocked: unknown, not a broken page.
+  const tlpBroken = tlp.filter(p => p.status != null && p.status !== 200).length;
   $('topLinkedSummary').textContent = `Top ${tlp.length} internally-linked pages by inlink count; ${tlpBroken} return a non-200 status.`;
 
   // 0e) Site health - stat bars as EChartWrapper configs (brief: no DOM/SVG chart
