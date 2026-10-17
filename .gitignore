@@ -112,3 +112,7 @@ gsc*.json
 design/*
 !design/stitch/
 design/stitch/out/
+# design/summary/ - the gap analysis + summary-page proposal; raw Stitch output stays local.
+!design/summary/
+design/summary/out/
+design/summary/stitch/out/
