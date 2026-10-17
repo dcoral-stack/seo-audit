@@ -10,7 +10,7 @@ It's the most data-intensive thing this MCP does, so it's on-demand and it costs
 
 > Run content recon on mysite.com
 
-That's it. Recon auto-selects your worst declining / striking-distance pages (high impressions, currently sitting at position 3-15, one top query each) and works through them. It's an **async job** - it returns a job id immediately and you poll it, because each page is a live page-fetch plus a serialised SERP call. On a handful of pages that's under a minute; on a big batch, longer.
+That's it. Recon auto-selects your striking-distance pages - each page's top query over the last 28 days, sitting at position 3-15, with at least `minImpressions` impressions (default 300), highest impressions first, five per batch unless you set `limit` (up to 50) - and works through them. It's an **async job** - it returns a job id immediately and you poll it with `check_sync_status`, because each page is a live page-fetch plus a serialised SERP call. Each page is written to the to-do ledger as it completes, so `recon_todos` shows results even mid-run. On a handful of pages that's under a minute; on a big batch, longer.
 
 You can also aim it:
 
@@ -18,14 +18,14 @@ You can also aim it:
 
 > Run content recon on these two URLs: mysite.com/best-running-shoes and mysite.com/buying-guide
 
-Pass `location` to match where your impressions actually come from - organic rank is location-sensitive, and a UK site read from a US data centre gives you the wrong SERP. Pass explicit `urls` to skip auto-selection and interrogate exactly the pages you care about.
+Pass `location` to match where your impressions actually come from - organic rank is location-sensitive, and a UK site read from a US data centre gives you the wrong SERP. Pass explicit `urls` to skip auto-selection and interrogate exactly the pages you care about; a URL needs Search Console data in the last 28 days (recon reads its top query from it), and one without any is skipped.
 
 ## How it works
 
 For each target page, recon does four things and reconciles them:
 
 1. **Fetches your live page** with the crawler's extractor - headings, JSON-LD types, whether it carries Product/Review markup, its `dateModified`.
-2. **Pulls the live Google SERP** for the page's top query (DataForSEO SERP-advanced, depth 20 organic). From that it reads **where you actually rank in organic**, **whether the AI Overview cites you and who it does cite**, and **how much of the SERP is video** (a format signal).
+2. **Pulls the live Google SERP** for the page's top query (DataForSEO SERP-advanced, depth 20 organic). From that it reads **where you actually rank in organic**, **whether the AI Overview cites you and who it does cite**, and **whether there's a video pack** (a format signal).
 3. **Checks the crawl's reality.** Search Console keeps reporting impressions for a URL long after it's been canonicalised away or set `noindex`. If the crawl says the page can't rank, that overrides the SERP/GSC read - no point planning content for a page Google won't serve.
 4. **Judges cannibalisation across the whole query cluster**, not one query at a time - because the real overlap hides across the topic family under different phrasings.
 
@@ -37,11 +37,11 @@ This is the heart of it. Where you rank organically, crossed with whether the AI
 
 | Verdict | What it means | The move |
 |---|---|---|
-| **defend-and-deepen** | Strong organic (top 5) and the AIO already cites you, or there's no AIO | You're winning. Deepen to become the primary source. |
+| **defend-and-deepen** | Strong organic (top 5) and the AIO already cites you, there's no AIO, or its citations couldn't be resolved | You're winning. Deepen to become the primary source. |
 | **accuracy-or-freshness** | You rank top 5 organically but the AIO does **not** cite you | The sharpest, most actionable class. Google ranks you but won't *quote* you - a data-accuracy or freshness signal. Make the facts current, correct and marked up so they're machine-liftable. Not a rewrite. |
 | **consolidate-weak-page** | The AIO cites you but your organic rank is weak | You've got a quotable nugget on an under-powered page. Consolidate and strengthen it. |
-| **competitive-gap** | Not cited, weak or absent from organic | A full coverage gap. Run the deep competitor diff. |
-| **page-cannot-rank** | The crawl says the URL is noindex / canonicalised away | Its GSC history is legacy - the SERP read belongs to another page. Resolve the duplicate first; content work here is wasted. |
+| **competitive-gap** | Weak or absent from organic, and not cited (or there's no AIO, or its citations couldn't be resolved) | A full coverage gap. Run the deep competitor diff. |
+| **page-cannot-rank** | The crawl says the URL isn't indexable (noindex, an error status, a redirect, robots-blocked) or canonicalises elsewhere | Its GSC history is legacy - the SERP read belongs to another page. Resolve the duplicate first; content work here is wasted. |
 
 The `accuracy-or-freshness` verdict is the one you can't get anywhere else, and it's usually the highest-value finding recon produces: a page that already earns the ranking but is being passed over by the AI answer, which is a small, surgical fix rather than a content project.
 
@@ -58,35 +58,36 @@ Recon will not claim a measurement it didn't take. This matters because a confid
 Per page, the job result gives you:
 
 - **The verdict and its note** - the plain-English *why*, e.g. *"You rank organic #4 but the AI Overview does NOT cite you (checked 7 references) - a data-accuracy or freshness signal."*
-- **Your organic rank** (live), your **GSC average position** and whether it **slipped** vs the prior 28 days, and your **impressions** (with the window).
-- **AI Overview state** - present or not, cites you or not (or unknown), and whether it was loaded asynchronously.
+- **Your organic rank** (live), your **GSC average position** and, for auto-selected pages, whether it **slipped** vs the prior 28 days, and your **impressions** (with the window).
+- **AI Overview state** - present or not, cites you or not (or unknown), with a note that says when Google loaded it asynchronously.
 - **Video-pack presence** - because if the SERP is video-led, some of your click loss is format, not content.
 - **The opportunity** - not raw impressions, but *impressions × the CTR gap between where you rank and a realistic target, damped by the verdict*. So a broken page with headroom outranks a #4 defend-and-deepen page that's already near its ceiling, which is roughly the right working order. It names its position source (live SERP vs GSC average) so you know what the estimate is built on.
-- **The cannibalisation cluster** - how many of your URLs compete across the topic, and on how many queries they actually collide.
-- **The competitor set** - the organic results ranked above you, the AI Overview's cited domains, and the ranking videos. This is your diff list.
-- **A readable markdown summary** of the whole run.
+- **Your page's facts** - whether it carries Product schema, its `dateModified`, and how many to-dos were written.
+- **A readable markdown summary** of the whole run, which also names the cannibalisation cluster when there is one - how many of your URLs compete across the topic, and on how many queries they actually collide.
+
+The competitor set - the organic results ranked above you, the AI Overview's cited domains and the ranking videos - is what `scrapeCompetitors` fetches. The job result keeps the full fetched content, but the competitor URLs themselves come back only with that option on (which were fetched, which skipped); the rest of the per-page detail is stored with the to-dos, so the job reply stays small enough to read.
 
 ### Optional: pull the competitors as content
 
-Add `scrapeCompetitors: true` and recon also **fetches the ranking competitors as text**, routed by host so each source is fetched the right way:
+Add `scrapeCompetitors: true` and recon also **fetches the ranking competitors as text**, routed by host so each source is fetched the right way. It needs at least one of the Firecrawl and Supadata keys; with neither set, nothing is fetched.
 
-- **YouTube / video** → Supadata transcript (needs `SUPADATA_API_KEY`) - and video usually *is* what wins these SERPs.
-- **Reddit** → its `.json` endpoint.
-- **Everything else** → Firecrawl (needs `FIRECRAWL_API_KEY`), with a free browser-profile HTTP fetch as fallback.
+- **YouTube and other video hosts** (TikTok, X, Vimeo and friends) → Supadata transcript (needs `SUPADATA_API_KEY`) - and video usually *is* what wins these SERPs.
+- **Reddit** → its `.json` endpoint, with a plain HTML fetch as fallback.
+- **Everything else** → Firecrawl (needs `FIRECRAWL_API_KEY`), with a free browser-profile HTTP fetch as fallback. `crawlAs: "googlebot"` sends that free fetch as Googlebot instead.
 
-`competitorLimit` (default 5) caps how many are fetched, and **whatever isn't fetched is listed as skipped, never dropped silently** - so you always know the full competitor set even if you only pulled the top five. Cloudflare-challenge sites (PCMag and friends) still can't be fetched from a server and come back as a per-URL error - the SERP still tells you they rank; if one matters, paste its copy in and it'll get diffed alongside the rest.
+`competitorLimit` (default 5, max 12) caps how many are fetched - with one slot kept for a ranking video when there is one - and **whatever isn't fetched is listed as skipped, never dropped silently**, so you always know the full competitor set even if you only pulled the top five. Cloudflare-challenge sites (PCMag and friends) still can't be fetched from a server and come back as a per-URL error - the SERP still tells you they rank; if one matters, paste its copy in and it'll get diffed alongside the rest.
 
 ## The to-do ledger: recon → research → track
 
 Recon doesn't just report - it seeds a **trackable to-do board** per page, and there's a loop:
 
-1. **`recon_targets`** classifies each page and writes the **deterministic** to-dos it can prove without judgement - missing item-level schema on a commercial page, a stale `dateModified`, a cannibalisation cluster to consolidate, a format gap where the SERP wants video. Each to-do snapshots the page's rank/citation **baseline** so the fix's effect is measurable later.
+1. **`recon_targets`** classifies each page and writes the **deterministic** to-dos it can prove without judgement - missing item-level schema on a commercial page, the facts to update and mark up on an accuracy-or-freshness page, a `dateModified` more than 90 days old, a cannibalisation cluster to consolidate, a format gap where the SERP wants video - plus a research to-do to run the competitor diff. A page-cannot-rank page gets just one: resolve the duplicate. Each to-do snapshots the page's rank/citation **baseline** so the fix's effect is measurable later.
 
 2. **`save_recon_todo`** is how the *research* writeback happens. After you (or Claude) diff the fetched competitors and video transcripts against your own content, you write the **judgement** to-dos back - the content gaps and originality findings - against the page. They sort on the same opportunity scale as the deterministic ones.
 
 3. **`recon_todos`** is the board itself. With no id, it lists the to-dos grouped by page with each page's verdict - the pick-a-page-to-work-on surface, and the hand-off to a content workflow. With an id, you update one to-do: move its status (`open → researching → drafted → shipped → dismissed`) and append dated annotations as you work.
 
-   The payoff: on `status: shipped` with `remeasure: true`, recon **re-fetches the SERP and records the outcome** - so you can see, in black and white, whether the fix moved you from *AIO-uncited* to *cited*, or up the organic ranks. That's the before/after the whole exercise was built to prove.
+   The payoff: on `status: shipped` with `remeasure: true`, recon **re-fetches the SERP and records the outcome** (a paid SERP call, so it needs DataForSEO; pass the same `location` as the original run so the before and after are comparable) - so you can see, in black and white, whether the fix moved you from *AIO-uncited* to *cited*, or up the organic ranks. That's the before/after the whole exercise was built to prove.
 
 > Show me the recon to-dos for mysite.com
 
