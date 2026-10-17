@@ -8,6 +8,7 @@
 // "0 pages changed". The UI renders those states as words.
 import type Database from 'better-sqlite3';
 import { diffLatest, type DriftResult } from '../audit/drift.js';
+import { SMALL_BASE_MIN } from './displayRules.js';
 
 const tableExists = (db: Database.Database, name: string): boolean =>
   !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(name);
@@ -314,7 +315,7 @@ export function aiOverviewSummary(db: Database.Database): AiOverviewSummary | nu
 export interface PageMove { urlKey: string; clicks: number; prevClicks: number; change: number }
 export interface PageMovers { gaining: PageMove[]; losing: PageMove[]; minPriorClicks: number; eligible: number }
 /** The stated rule: only pages with at least this many clicks in the prior 28 days are ranked. */
-export const MOVER_MIN_PRIOR = 10;
+export const MOVER_MIN_PRIOR = SMALL_BASE_MIN;
 
 /** Largest absolute click changes, last 28 days vs the prior 28, across ALL pages (not a top-N subset). */
 export function pageMovers(db: Database.Database, maxDate: string, limit = 3): PageMovers {

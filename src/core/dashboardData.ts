@@ -7,6 +7,7 @@ import { dbPathFor, jobScopeFor } from './paths.js';
 import { gscFreshness } from './gscFreshness.js';
 import { expectedCtr } from './ctrModel.js';
 import { loadBrandQueries, brandPredicate } from './brand.js';
+import { SMALL_BASE_MIN } from './displayRules.js';
 import { HTML_CT } from './sql.js';
 import { gscMixedShape } from './gscRows.js';
 import { latestSerpFootprint, ensureFootprintTable, type SerpFootprint } from './serpFootprint.js';
@@ -67,7 +68,7 @@ export interface DashboardData {
   }[];
   deviceBreakdown?: { device: string; clicks: number; prevClicks: number; impressions: number; ctr: number; position: number }[];
   countryBreakdown?: { country: string; clicks: number; prevClicks: number; impressions: number }[];
-  pagePerformance?: { urlKey: string; clicks: number; prevClicks: number; clicksChangePct: number; impressions: number; position: number; category: string }[];
+  pagePerformance?: { urlKey: string; clicks: number; prevClicks: number; clicksChangePct: number | null; impressions: number; position: number; category: string }[];
   keywordMovement?: { query: string; firstPos: number; lastPos: number; delta: number; firstDate: string; lastDate: string; category: string }[];
   // Equity vs reality: per-page internal PageRank (x) vs GSC impressions (y), bucketed by template.
   equityScatter?: { x: number; y: number; t: string; u: string }[];
@@ -218,7 +219,8 @@ interface Totals { clicks: number; impressions: number; position: number }
 // 26: backlinkProfile (#47), merged onto the summary stack (its branch numbered it 24).
 // 27: crawlHealth.responseCodes gains the rate-limited bucket (#54; its branch numbered it 25).
 // (#65 changed where segment rows live, not the payload; the version probe reads both tables.)
-const PAYLOAD_VERSION = '27';
+// 28: the real-data dashboard fixes (#68 follow-up): small-base clicksChangePct, cwvField detail, brand on exact-match domains, network inlinks.
+const PAYLOAD_VERSION = '28';
 
 /** Build the dashboard payload for a property from its synced GSC history. */
 export function getDashboardData(dataDir: string, siteUrl: string): DashboardData {
@@ -423,8 +425,9 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const pagePrior = new Map((db.db.prepare(`SELECT page_key, SUM(clicks) clicks, SUM(impressions) impressions FROM gsc_rows WHERE page_key IS NOT NULL AND date > date(?, '-56 days') AND date <= date(?, '-28 days') GROUP BY page_key`).all(maxDate, maxDate) as any[]).map(p => [p.page_key, p]));
     const pagePerformance = (db.db.prepare(`SELECT page_key, SUM(clicks) clicks, SUM(impressions) impressions, AVG(position) position FROM gsc_rows WHERE page_key IS NOT NULL AND ${UB} AND date > date(?, '-28 days') GROUP BY page_key ORDER BY clicks DESC LIMIT 40`).all(maxDate) as any[]).map(p => {
       const prev = (pagePrior.get(p.page_key) as any) ?? { clicks: 0, impressions: 0 };
-      const pct = prev.clicks ? ((p.clicks - prev.clicks) / prev.clicks) * 100 : (p.clicks > 0 ? 100 : 0);
-      return { urlKey: p.page_key, clicks: p.clicks, prevClicks: prev.clicks, clicksChangePct: Math.round(pct), impressions: p.impressions, position: Math.round(p.position * 10) / 10, category: pageCategory(p, prev) };
+      // The small-base rule (displayRules): no % on a prior under SMALL_BASE_MIN clicks (0 -> 1 is not +100%).
+      const pct = prev.clicks >= SMALL_BASE_MIN ? Math.round(((p.clicks - prev.clicks) / prev.clicks) * 100) : null;
+      return { urlKey: p.page_key, clicks: p.clicks, prevClicks: prev.clicks, clicksChangePct: pct, impressions: p.impressions, position: Math.round(p.position * 10) / 10, category: pageCategory(p, prev) };
     });
 
     // Content decay & refresh ROI — pages that earned ≥10 clicks last period and have since fallen

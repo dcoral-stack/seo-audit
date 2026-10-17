@@ -8,7 +8,8 @@
 //   - samples say "n of M"; thresholds are stated product rules, shown where they apply;
 //   - every number carries class "n" so redact mode (?redact=1) blurs it, and charts drop their
 //     numeric axes and tooltips when redacted.
-import { esc, fmtNum, fmtCompact, sparkline, delta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
+import { esc, fmtNum, fmtCompact, sparkline, countDelta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
+import { shareText, capHealth } from '../core/displayRules.js';
 import { buildVerdict, direction } from '../core/summaryVerdict.js';
 import { ago, SEV_LABEL } from './panels.js';
 
@@ -134,17 +135,16 @@ function tiles(d: any): string {
     } else if (yoy) yoyTxt = 'year-on-year needs 13 months';
     out.push(tile({
       label: 'Organic clicks · 28d', value: `<span class="n">${fmtCompact(c)}</span>`,
-      foot: `${p ? `<span class="n">${delta(((c - p) / p) * 100)}</span>` : '<span class="chg flat">no prior clicks</span>'}${months.length >= 2 ? sparkline(months) : ''}`,
+      foot: `${p ? `<span class="n">${countDelta(c, p)}</span>` : '<span class="chg flat">no prior clicks</span>'}${months.length >= 2 ? sparkline(months) : ''}`,
       sub: yoyTxt, title: `Last 28 days to ${d.dateRange?.maxDate ?? ''} vs the prior 28.${yoy?.available ? ` Year-on-year: the same 28 days 52 weeks earlier (${yoy.priorWindow.start} to ${yoy.priorWindow.end}).` : ''}${months.length >= 2 ? ` Sparkline: ${months.length} complete months.` : ''}`,
     }));
     const bs = d.brandedSplit;
     if (bs) {
       const tot = bs.branded.clicks + bs.nonBranded.clicks;
-      const share = tot ? Math.round((bs.nonBranded.clicks / tot) * 100) : null;
-      const nb = bs.priorNonBrandedClicks ? ((bs.nonBranded.clicks - bs.priorNonBrandedClicks) / bs.priorNonBrandedClicks) * 100 : null;
+      const share = tot ? shareText(bs.nonBranded.clicks, tot) : null;
       out.push(tile({
         label: 'Non-brand share', value: share == null ? '–' : `<span class="n">${share}%</span>`,
-        foot: nb != null ? `<span class="n">${delta(nb)}</span><span class="tile-note">non-brand clicks</span>` : undefined,
+        foot: bs.priorNonBrandedClicks || bs.nonBranded.clicks ? `<span class="n">${countDelta(bs.nonBranded.clicks, bs.priorNonBrandedClicks)}</span><span class="tile-note">non-brand clicks</span>` : undefined,
         sub: `of clicks · brand "${esc(bs.brand)}"`,
         title: `Non-brand = queries that don't spell "${bs.brand}" in whole words, detected from the domain (a heuristic)${bs.variants?.length ? `. Counted as brand: ${bs.variants.map((v: string) => `"${v}"`).join(', ')}` : ''}.`,
       }));
@@ -154,14 +154,16 @@ function tiles(d: any): string {
   }
 
   const hs = d.healthScore;
-  const hist = (d.healthHistory ?? []).map((h: any) => h.score).filter((v: any) => v != null);
+  const hist = (d.healthHistory ?? []).filter((h: any) => h.score != null).map((h: any) => capHealth(h.score, h.errorPages));
   if (hs) {
     const tone = hs.band === 'Excellent' || hs.band === 'Good' ? 'var(--intent-success)' : hs.band === 'Fair' ? 'var(--intent-warning)' : 'var(--intent-danger)';
+    const score = capHealth(hs.score, hs.errorPages);
+    const capNote = hs.errorPages > 0 ? ` Never shown as 100 while any page carries a critical or high issue: ${hs.errorPages} of ${hs.totalPages} ${hs.errorPages === 1 ? 'page does' : 'pages do'}${(1 - hs.errorPages / hs.totalPages) * 100 >= 99.5 ? ', so the score is capped at 99 rather than rounded up to 100' : ''}.` : '';
     out.push(tile({
-      label: 'Site health', value: `<span class="n" style="color:${tone}">${hs.score}</span><span class="kpi-of">/100</span>`,
+      label: 'Site health', value: `<span class="n" style="color:${tone}">${score}</span><span class="kpi-of">/100</span>`,
       foot: `<span class="tile-band" title="Bands are a product convention, not an industry benchmark">${esc(hs.band)}</span>${hist.length >= 2 ? sparkline(hist, false, [0, 100]) : ''}`,
-      sub: 'pages with no critical or high issue',
-      title: `${hs.definition} ${hs.totalPages - hs.errorPages} of ${hs.totalPages} pages. Bands (Weak under 31, Fair, Good from 71, Excellent from 91) are a product convention, not an industry benchmark.${hist.length >= 2 ? ` Sparkline: ${hist.length} audits.` : ''}`,
+      sub: hs.errorPages ? `<span class="n">${fmt(hs.errorPages)}</span> ${hs.errorPages === 1 ? 'page has' : 'pages have'} a critical or high issue` : 'no page has a critical or high issue',
+      title: `${hs.definition} ${hs.totalPages - hs.errorPages} of ${hs.totalPages} pages.${capNote} Bands (Weak under 31, Fair, Good from 71, Excellent from 91) are a product convention, not an industry benchmark.${hist.length >= 2 ? ` Sparkline: ${hist.length} audits.` : ''}`,
     }));
   } else {
     out.push(tile({ label: 'Site health', value: '–', sub: (d.coverage?.crawlPages ?? 0) > 0 ? 'run <code>run_audit</code>' : 'run a crawl, then <code>run_audit</code>' }));
@@ -287,7 +289,8 @@ function health(d: any, ctx: SummaryCtx): void {
   const histAll: any[] = d.healthHistory ?? [];
   const deltas: any[] = d.auditDeltas ?? [];
   const MAX = 12;
-  const hist = histAll.slice(-MAX);
+  // The same cap as the tile: never 100 while a page carries a critical or high issue.
+  const hist = histAll.slice(-MAX).map(h => ({ ...h, score: h.score == null ? null : capHealth(h.score, h.errorPages) }));
   if (!hist.length) {
     ctx.wrap('sumHealthChart').setEmpty((d.coverage?.crawlPages ?? 0) > 0 ? 'No audit yet - run run_audit' : 'Run a crawl, then run_audit', col);
     set('sumHealthNotes', ''); set('sumHealthSrc', '');
@@ -448,9 +451,10 @@ function rankingMix(d: any): string {
     { k: 'Pos 1-3', c: 'var(--chart-categorical-3)' }, { k: 'Pos 4-10', c: 'var(--chart-categorical-1)' },
     { k: 'Pos 11-20', c: 'var(--chart-categorical-2)' }, { k: 'Pos 21+', c: 'var(--chart-context)' },
   ];
-  const pct = (v: number[], i: number): number => { const t = v.reduce((a, b) => a + b, 0); return t ? Math.round((v[i] / t) * 100) : 0; };
+  const tot = (v: number[]): number => v.reduce((a, b) => a + b, 0);
+  const pct = (v: number[], i: number): string => shareText(v[i], tot(v));
   const bar = (v: number[]): string => `<div class="mix">${v.map((x, i) => (x ? `<span style="flex:${x};background:${B[i].c}" title="${B[i].k}: ${pct(v, i)}%"></span>` : '')).join('')}</div>`;
-  const top10 = (v: number[]): number => pct(v, 0) + pct(v, 1);
+  const top10 = (v: number[]): string => shareText(v[0] + v[1], tot(v));
   return `<div class="mix-row"><span class="mix-lbl">Last 28 days</span><span class="mix-val"><span class="n">${top10(cur)}%</span> in the top 10</span></div>${bar(cur)}` +
     (prior ? `<div class="mix-row"><span class="mix-lbl">Prior 28 days</span><span class="mix-val"><span class="n">${top10(prior)}%</span> in the top 10</span></div>${bar(prior)}` : '<div class="sum-note">The prior 28 days aren\'t held yet.</div>') +
     `<div class="mix-legend">${B.map((b, i) => `<span><span class="dot" style="background:${b.c}"></span>${b.k} <b class="n">${pct(cur, i)}%</b></span>`).join('')}</div>` +

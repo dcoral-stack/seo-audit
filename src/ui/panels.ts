@@ -4,7 +4,8 @@
 // the Summary tab (summary.ts) replaced the Overview as the landing view and they moved to the tabs
 // they belong to. Pure HTML-string + ECharts builders; dashboard.ts owns the data load, the chart
 // registry and the tab shell, and passes them in.
-import { esc, fmtNum, fmtCompact, fmtDate, delta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
+import { esc, fmtNum, fmtCompact, fmtDate, countDelta, axisDefaults, tooltipDefaults, monoFont, type ChartPalette, type EChartWrapper } from './lib/index.js';
+import { shareText, sharePct } from '../core/displayRules.js';
 
 const fmt = fmtNum;
 import type { DashboardData } from './dashboard.js';
@@ -117,7 +118,7 @@ function crawlCard(d: Dash): string {
     { k: '5xx / failed', n: byCls(/^5xx|Fetch failed/), c: 'var(--intent-danger)' },
   ].filter(m => m.n > 0);
   const tot = mix.reduce((s, m) => s + m.n, 0) || 1;
-  const p = (n: number): string => { const v = (n / tot) * 100; return v > 0 && v < 1 ? '<1' : String(Math.round(v)); };
+  const p = (n: number): string => shareText(n, tot);
   const bar = `<div class="mix" role="img" aria-label="Response status mix">${mix.map(m => `<span style="flex:${m.n};background:${m.c}" title="${m.k}: ${m.n}"></span>`).join('')}</div>`;
   const legend = `<div class="mix-legend">${mix.map(m => `<span><span class="dot" style="background:${m.c}"></span>${m.k} <b>${p(m.n)}%</b></span>`).join('')}</div>`;
   const total = ch.totalPages as number;
@@ -132,7 +133,7 @@ function crawlCard(d: Dash): string {
   ];
   const statRows = rows.map(r => {
     const w = total ? Math.max(r.n ? 1 : 0, (r.n / total) * 100) : 0;
-    return `<div class="stat-row"><div class="sr-top"><span>${r.label}</span><span><b>${fmt(r.n)}</b><em>${total ? Math.round((r.n / total) * 100) : 0}%</em></span></div><div class="stat-track"><span style="width:${w.toFixed(1)}%;background:${r.c}"></span></div></div>`;
+    return `<div class="stat-row"><div class="sr-top"><span>${r.label}</span><span><b>${fmt(r.n)}</b><em>${sharePct(r.n, total)}</em></span></div><div class="stat-track"><span style="width:${w.toFixed(1)}%;background:${r.c}"></span></div></div>`;
   }).join('');
   return bar + legend + `<div class="stat-rows">${statRows}</div>`;
 }
@@ -189,8 +190,7 @@ function kwTable(d: Dash): string {
   const kw = (d.topKeywords ?? []).slice().sort((a: any, b: any) => b.clicks - a.clicks).slice(0, 8);
   if (!kw.length) return '<div class="empty-state">No keyword data yet - run <code>sync_gsc</code>.</div>';
   const rows = kw.map((k: any) => {
-    const ch = k.prevClicks ? ((k.clicks - k.prevClicks) / k.prevClicks) * 100 : (k.clicks ? 100 : 0);
-    return `<tr><td class="q" title="${esc(k.query)}">${esc(k.query)}</td><td class="num">${fmt(k.clicks)}</td><td class="num">${delta(ch)}</td><td class="num">${Number(k.position).toFixed(1)}</td></tr>`;
+    return `<tr><td class="q" title="${esc(k.query)}">${esc(k.query)}</td><td class="num">${fmt(k.clicks)}</td><td class="num">${countDelta(k.clicks, k.prevClicks)}</td><td class="num">${Number(k.position).toFixed(1)}</td></tr>`;
   }).join('');
   return `<table><thead><tr><th>Query</th><th class="num">Clicks</th><th class="num">Change</th><th class="num">Pos</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
@@ -198,7 +198,7 @@ function pageTable(d: Dash, ctx: OverviewCtx): string {
   const pp = (d.pagePerformance ?? []).slice().sort((a: any, b: any) => b.clicks - a.clicks).slice(0, 8);
   if (!pp.length) return '<div class="empty-state">No page data yet - run <code>sync_gsc</code>.</div>';
   const rows = pp.map((p: any) =>
-    `<tr><td class="url" title="${esc(p.urlKey)}">${esc(ctx.shortPath(p.urlKey, 40))}</td><td class="num">${fmt(p.clicks)}</td><td class="num">${delta(p.clicksChangePct)}</td><td class="num">${Number(p.position).toFixed(1)}</td></tr>`).join('');
+    `<tr><td class="url" title="${esc(p.urlKey)}">${esc(ctx.shortPath(p.urlKey, 40))}</td><td class="num">${fmt(p.clicks)}</td><td class="num">${countDelta(p.clicks, p.prevClicks)}</td><td class="num">${Number(p.position).toFixed(1)}</td></tr>`).join('');
   return `<table><thead><tr><th>Page</th><th class="num">Clicks</th><th class="num">Change</th><th class="num">Pos</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
@@ -243,7 +243,7 @@ export function renderHealthTop(d: Dash, ctx: OverviewCtx): void {
   const depthRows: any[] = ch.depth ?? [];
   const depthN = depthRows.reduce((s, r) => s + r.count, 0);
   const depthAvg = depthN ? depthRows.reduce((s, r) => s + (parseInt(String(r.label).replace(/\D/g, ''), 10) || 0) * r.count, 0) / depthN : 0;
-  const share = (n: number): string => `${Math.round((n / ch.totalPages) * 100)}% of crawled`;
+  const share = (n: number): string => `${sharePct(n, ch.totalPages)} of crawled`;
   if (k) k.innerHTML = ([
     { label: 'Pages crawled', value: fmt(ch.totalPages), sub: 'internal URLs, latest crawl' },
     { label: 'Indexable', value: fmt(idx), sub: share(idx), color: 'var(--intent-success)' },
@@ -256,7 +256,7 @@ export function renderHealthTop(d: Dash, ctx: OverviewCtx): void {
   if (flowEl && flow.length) {
     const tone: Record<string, string> = { bad: 'dot-bad', warn: 'dot-high', muted: 'dot-never' };
     flowEl.innerHTML = `<table><thead><tr><th>Type</th><th class="num">URLs</th><th class="num">Share</th><th>Most-linked example</th></tr></thead><tbody>${flow.map(r =>
-      `<tr><td><span class="lbl-dot"><span class="dot ${tone[r.tone] ?? 'dot-never'}"></span>${esc(r.label)}</span></td><td class="num">${fmt(r.count)}</td><td class="num">${Math.round((r.count / ch.totalPages) * 100)}%</td><td class="url" title="${esc(r.example ?? '')}">${esc(r.example ? ctx.shortPath(r.example, 60) : '-')}</td></tr>`).join('')}</tbody></table>`;
+      `<tr><td><span class="lbl-dot"><span class="dot ${tone[r.tone] ?? 'dot-never'}"></span>${esc(r.label)}</span></td><td class="num">${fmt(r.count)}</td><td class="num">${sharePct(r.count, ch.totalPages)}</td><td class="url" title="${esc(r.example ?? '')}">${esc(r.example ? ctx.shortPath(r.example, 60) : '-')}</td></tr>`).join('')}</tbody></table>`;
   }
 }
 

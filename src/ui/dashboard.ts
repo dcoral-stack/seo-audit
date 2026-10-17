@@ -1,9 +1,10 @@
 import { App, applyDocumentTheme, applyHostStyleVariables } from '@modelcontextprotocol/ext-apps';
 import {
   esc, fmtNum, fmtCompact, fmtDate, fmtMonth, fmtWeek, icons, sevBadge, statusBadge, badge, kpiGrid, filterGroup,
-  attachSort, formatTrend, accordionItem, accordionSection, accordionControls,
-  EChartWrapper, chartPalette, axisDefaults, tooltipDefaults, emptyState,
+  attachSort, accordionItem, accordionSection, accordionControls,
+  EChartWrapper, chartPalette, axisDefaults, tooltipDefaults, emptyState, countDelta, rankDelta,
 } from './lib/index.js';
+import { shareText, sharePct } from '../core/displayRules.js';
 import { renderSearchTop, renderHealthTop, renderSideFreshness, drawNetwork, pctChg, SEV_ORDER, SEV_LABEL, type OverviewCtx } from './panels.js';
 import { renderSummary, type SummaryCtx } from './summary.js';
 
@@ -39,7 +40,7 @@ export interface DashboardData {
   dateAlignment?: { note: string };
   deviceBreakdown?: { device: string; clicks: number; prevClicks: number; impressions: number; ctr: number; position: number }[];
   countryBreakdown?: { country: string; clicks: number; prevClicks: number; impressions: number }[];
-  pagePerformance?: { urlKey: string; clicks: number; prevClicks: number; clicksChangePct: number; impressions: number; position: number; category: string }[];
+  pagePerformance?: { urlKey: string; clicks: number; prevClicks: number; clicksChangePct: number | null; impressions: number; position: number; category: string }[];
   keywordMovement?: { query: string; firstPos: number; lastPos: number; delta: number; firstDate: string; lastDate: string; category: string }[];
   findings?: { runId: string; total: number; finishedAt: string | null; byCheck: any[]; top: any[]; recommendations?: any[] } | null;
   topLinkedPages?: { url: string; inlinks: number; status: number | null; indexable: boolean; reason: string | null }[];
@@ -324,14 +325,12 @@ function renderBrandedSplit(data: DashboardData): void {
   const hint = $('brandedHint');
   if (hint) hint.innerHTML = `Branded = queries that spell <strong>“${esc(b.brand)}”</strong> in whole words (auto-detected from the domain${b.variants?.length ? `; matched: ${b.variants.map(v => `“${esc(v)}”`).join(', ')}` : ''}). How much of your demand is people looking for you vs discovering you - last 28 days.`;
   const bc = b.branded.clicks, nc = b.nonBranded.clicks, tc = bc + nc;
-  const bpct = tc ? Math.round(bc / tc * 100) : 0, npct = 100 - bpct;
-  const dpc = (cur: number, prev: number): number => prev ? Math.round((cur - prev) / prev * 100) : (cur > 0 ? 100 : 0);
-  const arrow = (n: number): string => n > 0 ? `<span class="chg up">${icons.triangleUp} ${n}%</span>` : n < 0 ? `<span class="chg down">${icons.triangleDown} ${Math.abs(n)}%</span>` : '<span class="chg flat">flat</span>';
+  const bpct = tc ? (bc / tc) * 100 : 0, npct = tc ? 100 - bpct : 0;
   el.innerHTML =
     `<div class="split-bar"><span class="split-branded" style="width:${bpct}%"></span><span class="split-nonbranded" style="width:${npct}%"></span></div>` +
     `<div class="split-legend">` +
-    `<div class="split-item"><span class="split-dot dot-branded"></span><div><div class="split-k">Branded · ${bpct}%</div><div class="split-v">${fmt(bc)} clicks ${arrow(dpc(bc, b.priorBrandedClicks))} · ${fmt(b.branded.impressions)} impr</div></div></div>` +
-    `<div class="split-item"><span class="split-dot dot-nonbranded"></span><div><div class="split-k">Non-branded · ${npct}%</div><div class="split-v">${fmt(nc)} clicks ${arrow(dpc(nc, b.priorNonBrandedClicks))} · ${fmt(b.nonBranded.impressions)} impr</div></div></div>` +
+    `<div class="split-item"><span class="split-dot dot-branded"></span><div><div class="split-k">Branded · ${shareText(bc, tc)}%</div><div class="split-v">${fmt(bc)} clicks ${countDelta(bc, b.priorBrandedClicks)} · ${fmt(b.branded.impressions)} impr</div></div></div>` +
+    `<div class="split-item"><span class="split-dot dot-nonbranded"></span><div><div class="split-k">Non-branded · ${shareText(nc, tc)}%</div><div class="split-v">${fmt(nc)} clicks ${countDelta(nc, b.priorNonBrandedClicks)} · ${fmt(b.nonBranded.impressions)} impr</div></div></div>` +
     `</div>`;
 }
 
@@ -545,10 +544,11 @@ function render(data: DashboardData): void {
   const sCtr = spark.map(d => d.impressions ? d.clicks / d.impressions : 0);
   const sPos = spark.map(d => d.position).filter(v => v > 0);
   $('metrics').outerHTML = kpiGrid([
-    { label: 'Clicks', value: fmtCompact(c.clicks), change: pctChg(c.clicks, p.clicks), spark: sClicks },
-    { label: 'Impressions', value: fmtCompact(c.impressions), change: pctChg(c.impressions, p.impressions), spark: sImpr },
+    { label: 'Clicks', value: fmtCompact(c.clicks), changeHtml: countDelta(c.clicks, p.clicks), spark: sClicks },
+    { label: 'Impressions', value: fmtCompact(c.impressions), changeHtml: countDelta(c.impressions, p.impressions, 'impression'), spark: sImpr },
     { label: 'CTR', value: `${(c.ctr * 100).toFixed(1)}%`, change: pctChg(c.ctr, p.ctr), spark: sCtr },
-    { label: 'Avg position', value: c.position.toFixed(1), change: pctChg(c.position, p.position), lowerIsBetter: true, spark: sPos },
+    // A rank's change is shown in positions, never as a % of the rank (#68 real-data fix).
+    { label: 'Avg position', value: c.position.toFixed(1), changeHtml: rankDelta(c.position, p.position), lowerIsBetter: true, spark: sPos },
   ]).replace('<div class="metrics">', '<div class="metrics" id="metrics">');
 
   const col = palette();
@@ -683,7 +683,7 @@ function render(data: DashboardData): void {
       tooltip: { ...tooltipDefaults(col), axisPointer: { type: 'shadow' }, valueFormatter: (v: number) => `${v}% of pages` },
       xAxis: { type: 'value', max: 100, name: '% of pages', ...axis },
       yAxis: { type: 'category', data: hs.map(h => h.label), ...catAxis(axis, 220) },
-      series: [{ type: 'bar', barWidth: 15, data: pct.map(p => ({ value: p, itemStyle: { color: barColor(p) } })), label: { show: true, position: 'right', formatter: '{c}%', color: col.muted, fontSize: 11 } }],
+      series: [{ type: 'bar', barWidth: 15, data: pct.map(p => ({ value: p, itemStyle: { color: barColor(p) } })), label: { show: true, position: 'right', formatter: (p: any) => sharePct(hs[p.dataIndex].present, sec.total), color: col.muted, fontSize: 11 } }],
     });
     const missing = sec.headers.filter(h => h.present / sec.total < 0.95).map(h => h.label.replace(/ \(.*\)/, ''));
     $('securitySummary').textContent = (missing.length ? `Missing or partial: ${missing.join(', ')}.` : 'All key security headers present across crawled pages.') + (sec.mixedContent ? ` ${sec.mixedContent} pages load mixed content.` : '');
@@ -744,8 +744,7 @@ function render(data: DashboardData): void {
   if (cwv && cwv.worst.length) {
     const rows = cwv.worst.map(w => `<tr><td class="url">${esc(shortPath(w.url, 42))}</td><td class="num">${w.perf}</td><td class="num">${(w.lcpMs / 1000).toFixed(1)} s</td><td class="num">${w.cls.toFixed(3)}</td><td class="num">${fmt(w.tbtMs)} ms</td></tr>`);
     $('cwvTable').innerHTML = tableHtml(['Page', 'Perf', 'LCP', 'CLS', 'TBT'], rows);
-    const pct = (n: number) => Math.round((n / cwv.pages) * 100);
-    $('cwvSummary').textContent = `${fmt(cwv.pages)} pages measured. Passing: LCP ${pct(cwv.passLcp)}%, CLS ${pct(cwv.passCls)}%, TBT ${pct(cwv.passTbt)}%.`;
+    $('cwvSummary').textContent = `${fmt(cwv.pages)} pages measured. Passing: LCP ${sharePct(cwv.passLcp, cwv.pages)}, CLS ${sharePct(cwv.passCls, cwv.pages)}, TBT ${sharePct(cwv.passTbt, cwv.pages)}.`;
   }
 
   // 0i) Hreflang / international (V2) - declared languages by page count.
@@ -906,7 +905,7 @@ function render(data: DashboardData): void {
       const rev = rows.slice().reverse(); // horizontal bars read top-down
       el.classList.add('sf-chart');
       el.style.height = `${rev.length * 26 + 12}px`;
-      const pctOf = (n: number): string => { const p = (n / base) * 100; return p < 1 && n > 0 ? '<1' : String(Math.round(p)); };
+      const pctOf = (n: number): string => shareText(n, base);
       // Long labels truncate to a width that fits the card (the full label stays in the tooltip).
       const lw = labelW(190);
       wrap(id).setOption({
@@ -982,7 +981,7 @@ function render(data: DashboardData): void {
   });
   const last = dist[dist.length - 1];
   const lastTot = last ? last.b1 + last.b2 + last.b3 + last.b4 : 0;
-  $('distSummary').textContent = `Impressions by SERP position bucket across ${dist.length} days; latest day ${lastTot} impressions, ${lastTot ? Math.round((last.b1 / lastTot) * 100) : 0}% in positions 1–3.`;
+  $('distSummary').textContent = `Impressions by SERP position bucket across ${dist.length} days; latest day ${lastTot} impressions, ${sharePct(last?.b1 ?? 0, lastTot)} in positions 1–3.`;
 
   // 1b) DataForSEO search visibility over time (rank_history) - reconciled window
   const rh = data.rankHistory ?? [];
@@ -1211,13 +1210,13 @@ function render(data: DashboardData): void {
   // Report tables (agency-style)
   const pp = data.pagePerformance ?? [];
   $('pagePerfTable').innerHTML = pp.length
-    ? tableHtml(['Trend', 'Page', 'Clicks', 'Clicks change', 'Impressions', 'Position'], pp.map(p => `<tr><td><span class="cat ${catClass(p.category)}">${p.category}</span></td><td class="url" title="${esc(p.urlKey)}">${esc(shortPath(p.urlKey))}</td><td class="num" data-sort="${p.clicks}">${fmt(p.clicks)}</td><td class="num" data-sort="${p.clicksChangePct}">${formatTrend(p.clicksChangePct, { suffix: '%' })}</td><td class="num" data-sort="${p.impressions}">${fmt(p.impressions)}</td><td class="num">${Number(p.position).toFixed(1)}</td></tr>`))
+    ? tableHtml(['Trend', 'Page', 'Clicks', 'Clicks change', 'Impressions', 'Position'], pp.map(p => `<tr><td><span class="cat ${catClass(p.category)}">${p.category}</span></td><td class="url" title="${esc(p.urlKey)}">${esc(shortPath(p.urlKey))}</td><td class="num" data-sort="${p.clicks}">${fmt(p.clicks)}</td><td class="num" data-sort="${p.clicks - p.prevClicks}">${countDelta(p.clicks, p.prevClicks)}</td><td class="num" data-sort="${p.impressions}">${fmt(p.impressions)}</td><td class="num">${Number(p.position).toFixed(1)}</td></tr>`))
     : '<div class="hint">No GSC data.</div>';
   $('pagePerfSummary').textContent = `${pp.length} pages categorised by 28-day trend.`;
 
   const mv = data.keywordMovement ?? [];
   $('movementTable').innerHTML = mv.length
-    ? tableHtml(['Movement', 'Query', 'First pos', 'Latest pos', 'Pos change'], mv.map(m => `<tr><td><span class="cat ${catClass(m.category)}">${m.category}</span></td><td>${esc(m.query)}</td><td class="num">${Number(m.firstPos).toFixed(1)}</td><td class="num">${Number(m.lastPos).toFixed(1)}</td><td class="num">${m.delta > 0 ? '+' : ''}${Number(m.delta).toFixed(1)}</td></tr>`))
+    ? tableHtml(['Movement', 'Query', 'First pos', 'Latest pos', 'Pos change'], mv.map(m => `<tr><td><span class="cat ${catClass(m.category)}">${m.category}</span></td><td>${esc(m.query)}</td><td class="num">${Number(m.firstPos).toFixed(1)}</td><td class="num">${Number(m.lastPos).toFixed(1)}</td><td class="num" data-sort="${m.delta}">${rankDelta(m.lastPos, m.firstPos, { short: true })}</td></tr>`))
     : '<div class="hint">No movement data.</div>';
   $('movementSummary').textContent = `${mv.length} queries with rank movement.`;
 
@@ -1464,7 +1463,7 @@ function renderBacklinkProfile(data: DashboardData): void {
   const anHtml = an
     ? `<div class="hint">Live anchors in the latest pull (${when(an.snapshotAt)}), classified by text: branded (contains your name), URL, generic (“click here”), empty (image or no text), everything else keyword. Share is by backlinks.</div>` +
       tbl('<tr><th>Anchor type</th><th class="num">Anchors</th><th class="num">Backlinks</th><th class="num">Share</th><th class="num">Ref. domains</th></tr>',
-        an.mix.map(m => `<tr><td>${esc(KIND_LABEL[m.kind] ?? m.kind)}</td><td class="num">${fmtNum(m.anchors)}</td><td class="num">${fmtNum(m.backlinks)}</td><td class="num">${anTotal ? Math.round(m.backlinks / anTotal * 100) : 0}%</td><td class="num">${fmtNum(m.referringDomains)}</td></tr>`).join('')) +
+        an.mix.map(m => `<tr><td>${esc(KIND_LABEL[m.kind] ?? m.kind)}</td><td class="num">${fmtNum(m.anchors)}</td><td class="num">${fmtNum(m.backlinks)}</td><td class="num">${sharePct(m.backlinks, anTotal)}</td><td class="num">${fmtNum(m.referringDomains)}</td></tr>`).join('')) +
       `<details><summary class="hint">Top ${an.top.length} anchors</summary>` +
       tbl('<tr><th>Anchor</th><th>Type</th><th class="num">Backlinks</th><th class="num">Ref. domains</th></tr>',
         an.top.map(t => `<tr><td>${t.anchor ? esc(t.anchor) : '<i>(empty)</i>'}</td><td>${esc(KIND_LABEL[t.kind] ?? t.kind)}</td><td class="num">${fmtNum(t.backlinks)}</td><td class="num">${fmtNum(t.referringDomains)}</td></tr>`).join('')) + '</details>'
