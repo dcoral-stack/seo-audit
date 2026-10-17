@@ -9,6 +9,7 @@ import { HTML_CT } from './sql.js';
 import { latestSerpFootprint, ensureFootprintTable, type SerpFootprint } from './serpFootprint.js';
 import { latestMarketSizing, ensureMarketTable, type MarketSizing } from './marketSizing.js';
 import { contentArchitecture, type TopicCluster } from '../audit/contentArchitecture.js';
+import { auditHistory, backfillAuditHealth, computeHealth, healthBand, HEALTH_DEFINITION, type AuditHistory } from '../audit/history.js';
 
 export interface DashboardData {
   siteUrl: string;
@@ -123,6 +124,13 @@ export interface DashboardData {
   // Site Health Score (the headline every paid tool has): % of crawled internal pages with no
   // error-class (critical/high) finding. Honest + defensible; banded Weak/Fair/Good/Excellent.
   healthScore?: { score: number; band: string; errorPages: number; totalPages: number; definition: string } | null;
+  // Audit history (summary page panel 3). healthHistory: the stored health per completed run (score
+  // NULL where it couldn't be rebuilt honestly; `basis` says how/why). auditDeltas: opened / resolved
+  // / carried findings (key check_id + url_key, "site" when null) between consecutive completed runs,
+  // compared only with the same scope AND check set; otherwise `skipped` names why.
+  healthHistory?: AuditHistory['healthHistory'];
+  auditDeltas?: AuditHistory['auditDeltas'];
+  auditHistoryTruncated?: AuditHistory['truncated'] | null;
   // Security / HTTPS coverage (V2): share of 200 internal pages carrying each security header.
   securityCoverage?: { total: number; headers: { key: string; label: string; present: number }[]; mixedContent: number } | null;
   // Structured-data coverage (V2): JSON-LD @types across the crawl, most common first.
@@ -147,7 +155,8 @@ interface Totals { clicks: number; impressions: number; position: number }
 
 // Bump when the dashboard payload SHAPE/content changes, so cached entries from older code are
 // invalidated even if the underlying GSC/crawl data hasn't changed. Part of the cache version key.
-const PAYLOAD_VERSION = '22'; // 22: crawl-health urlFlow counts redirects from redirect_sources
+// 22: crawl-health urlFlow counts redirects from redirect_sources. 23: healthHistory + auditDeltas.
+const PAYLOAD_VERSION = '23';
 
 /** Build the dashboard payload for a property from its synced GSC history. */
 export function getDashboardData(dataDir: string, siteUrl: string): DashboardData {
@@ -160,9 +169,11 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     // own paths). Omitting the latter two would serve a stale dashboard after those tools run.
     ensureFootprintTable(db.db); // probe below reads it; create before first serp_features run
     ensureMarketTable(db.db);
+    // Lazy, one-time health backfill for past audit runs (a no-op probe once every run is visited).
+    backfillAuditHealth(db.db);
     const ver = db.db.prepare(
       `SELECT (SELECT MAX(date)||':'||COALESCE(MAX(rowid),0) FROM search_analytics) sa,
-              (SELECT run_id FROM audit_runs ORDER BY started_at DESC LIMIT 1) run,
+              (SELECT run_id FROM audit_runs ORDER BY started_at DESC LIMIT 1)||':'||(SELECT COUNT(*)||':'||COALESCE(MAX(finished_at),'')||':'||COUNT(health_basis) FROM audit_runs) run,
               (SELECT COALESCE(MAX(rowid),0) FROM pages) pg,
               (SELECT COALESCE(MAX(checked_at),'') FROM agent_readiness) ar,
               (SELECT COUNT(*)||':'||COALESCE(MAX(period),'') FROM rank_history) rh,
@@ -180,7 +191,11 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     const fresh = gscFreshness(db.db);
     const maxDate = fresh.effectiveMax;
     // No GSC data yet: still carry freshness, so a crawled-but-unsynced property shows its job status.
-    if (!maxDate) return { siteUrl, empty: true, freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))) };
+    if (!maxDate) {
+      // No GSC yet: audit history is crawl-only, so it still ships (the summary's health trend works without GSC).
+      const h = auditHistory(db.db);
+      return { siteUrl, empty: true, freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))), healthHistory: h.healthHistory, auditDeltas: h.auditDeltas, auditHistoryTruncated: h.truncated ?? null };
+    }
     // Upper bound: never include unfinalised days past effectiveMax. Windows anchored on maxDate
     // only set a lower bound (date > date(maxDate,'-Nd')), so without this the partial trailing
     // days would still slip into current-period sums and the daily charts. (Prior windows already
@@ -424,13 +439,13 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     // Site Health Score - the headline metric every paid tool has. Ahrefs-style and honest:
     // the share of crawled internal pages carrying no error-class (critical/high) finding.
     let healthScore: DashboardData['healthScore'] = null;
+    const history = auditHistory(db.db);
     if (lastRun && totalInternalPages > 0) {
       // Count only crawled internal pages that carry a crit/high finding, so a check whose url_key
       // is not a crawled page (ghost-pages, backlinks-to-404) can't push errPages past the total.
-      const errPages = (db.db.prepare(`SELECT COUNT(DISTINCT f.url_key) n FROM findings f JOIN pages p ON p.url_key = f.url_key AND p.is_internal = 1 WHERE f.run_id=? AND f.severity IN ('crit','high') AND f.url_key IS NOT NULL`).get(lastRun.run_id) as { n: number }).n;
-      const score = Math.max(0, Math.min(100, Math.round((1 - errPages / totalInternalPages) * 100)));
-      const band = score >= 91 ? 'Excellent' : score >= 71 ? 'Good' : score >= 31 ? 'Fair' : 'Weak';
-      healthScore = { score, band, errorPages: errPages, totalPages: totalInternalPages, definition: 'Share of crawled internal pages with no critical or high finding.' };
+      // One formula (src/audit/history.ts), shared with the per-run value runAudit stores.
+      const h = computeHealth(db.db, lastRun.run_id);
+      if (h) healthScore = { score: h.score, band: healthBand(h.score), errorPages: h.errorPages, totalPages: h.totalPages, definition: HEALTH_DEFINITION };
     }
 
     // Security / HTTPS coverage (V2 view): share of 200 internal pages carrying each header.
@@ -951,6 +966,9 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
       linkFlows,
       structureGraph,
       healthScore,
+      healthHistory: history.healthHistory,
+      auditDeltas: history.auditDeltas,
+      auditHistoryTruncated: history.truncated ?? null,
       securityCoverage,
       schemaCoverage,
       indexCoverage,
