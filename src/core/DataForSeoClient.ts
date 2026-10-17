@@ -95,7 +95,7 @@ export class DataForSeoClient {
     return createHash('sha256').update(endpoint + '\n' + canonical).digest('hex');
   }
 
-  /** POST to a DataForSEO endpoint, served from the 7-day cache when fresh. */
+  /** POST to a DataForSEO endpoint, served from the cache (DEFAULT_DFS_CACHE_DAYS) when fresh. */
   async call(endpoint: string, body: unknown[], timeoutMs = 60000): Promise<DfsResponse> {
     const key = this.keyFor(endpoint, body);
     const row = this.cache
@@ -136,7 +136,7 @@ export class DataForSeoClient {
       }
       const cost = Number(json.cost) || 0;
       // Only cache genuinely successful responses — a task-level failure (40xxx) or
-      // all-null results must not be cached for 7 days; let a later call retry.
+      // all-null results must not be cached for the TTL; let a later call retry.
       const taskOk = tasks.length > 0 && (tasks[0]?.status_code ?? 20000) < 40000 && tasks.some((t: any) => t?.result != null);
       if (taskOk) {
         this.cache
@@ -187,7 +187,7 @@ export class DataForSeoClient {
   }
 
   /** SERP — live YouTube organic results for a keyword (video discovery). Same SERP
-   * scope + 7-day cache as serpOrganic. Returns the ranking videos shaped for content
+   * scope + cache (DEFAULT_DFS_CACHE_DAYS) as serpOrganic. Returns the ranking videos shaped for content
    * research: title, url, channel, views, publish date, duration. `blockDepth` = how many
    * videos to collect (YouTube SERP uses block_depth, default 20, max 200). */
   async serpYoutube(
@@ -223,7 +223,7 @@ export class DataForSeoClient {
   }
 
   /** SERP — live Google News results for a keyword (what's been PUBLISHED / freshness).
-   * Same SERP scope + 7-day cache. Flattens both `news_search` items and `top_stories`
+   * Same SERP scope + cache (DEFAULT_DFS_CACHE_DAYS). Flattens both `news_search` items and `top_stories`
    * groups into one ranked list: title, url, source, snippet, timestamp. */
   async serpNews(
     keyword: string, location?: string | number, languageCode = 'en', depth = 20,
@@ -252,7 +252,7 @@ export class DataForSeoClient {
    * keywords, for seasonality / "is this rising or fading". Returns the time series per
    * keyword (values aligned to the queried keywords). `timeRange` presets: past_7_days,
    * past_30_days, past_90_days, past_12_months (default), past_5_years, 2004_present.
-   * `type`: web (default), news, youtube, images, froogle. Cached 7 days. */
+   * `type`: web (default), news, youtube, images, froogle. Cached for the TTL (default 20 days). */
   async googleTrends(
     keywords: string[], location?: string | number, languageCode = 'en',
     opts: { timeRange?: string; type?: string; categoryCode?: number; related?: boolean } = {},
@@ -333,7 +333,7 @@ export class DataForSeoClient {
   /**
    * Related terms for a keyword — People Also Ask questions + related searches,
    * parsed from the SERP advanced response. Powers the click-through "related
-   * terms" on the keyword charts. Cached 7 days via the underlying SERP call.
+   * terms" on the keyword charts. Cached for the TTL (default 20 days) via the underlying SERP call.
    */
   async relatedTerms(
     keyword: string,
