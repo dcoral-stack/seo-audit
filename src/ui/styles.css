@@ -877,3 +877,7 @@ select, select.sel, #cannSelect {
   /* The freshness line wraps on a phone, so the "stale" flag is never cut off by an ellipsis. */
   .sf-v { white-space: normal; }
 }
+/* Five backlink KPIs sit on one row (not four and a stray fifth); 3 + 2 on a tablet. */
+.metrics.metrics-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .metrics.metrics-5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .metrics.metrics-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metrics.metrics-5 > :last-child { grid-column: 1 / -1; } }

@@ -57,7 +57,7 @@ export function delta(change: number, lowerIsBetter = false): string {
   if (!change) return `<span class="chg flat">flat</span>`;
   const better = lowerIsBetter ? change < 0 : change > 0;
   const arrow = change > 0 ? icons.triangleUp : icons.triangleDown;
-  return `<span class="chg ${better ? 'up' : 'down'}">${arrow} ${Math.abs(Math.round(change))}%</span>`;
+  return `<span class="chg ${better ? 'up' : 'down'}">${arrow} ${Math.abs(change) < 0.5 ? "<1" : Math.abs(Math.round(change))}%</span>`;
 }
 
 export const statBlock = (o: StatBlockOpts): string =>

@@ -1444,7 +1444,7 @@ function renderBacklinkProfile(data: DashboardData): void {
     { label: 'Domain Rank', value: s.domainRank == null ? '–' : String(s.domainRank) },
     { label: 'Broken backlinks', value: fmtNum(s.brokenBacklinks) },
     { label: 'Nofollow share', value: s.nofollowPct == null ? '–' : `${Math.round(s.nofollowPct * 100)}%` },
-  ]) : nc('Summary');
+  ]).replace('<div class="metrics">', '<div class="metrics metrics-5">') : nc('Summary');
   top.innerHTML = `<div class="chart-card"><h3>Backlink profile — your own links</h3>
     <div class="hint">From <code>pull_backlinks</code>${s ? `, summary pulled ${when(s.fetchedAt)}` : ''}: ${fmtNum(bp.pagesTotal)} backlinked pages stored${bp.pagesUnchecked ? `, ${fmtNum(bp.pagesUnchecked)} without a live status check` : ''}. Domain Rank is DataForSEO’s 0–1000 authority score.</div>
     ${kpis}</div>`;
