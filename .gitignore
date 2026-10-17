@@ -100,6 +100,7 @@ scripts/*
 !scripts/probe-blocking.mjs
 !scripts/probe-redirects.mjs
 !scripts/probe-ecommerce.mjs
+!scripts/probe-hreflang.mjs
 
 # --- secrets hardening (never commit) ---
 *.pem

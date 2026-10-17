@@ -1,6 +1,6 @@
 # The check registry
 
-All 126 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
+All 131 checks `run_audit` evaluates, grouped by category. This list is generated from the registry in `src/audit/checks.ts` - if the code and this page ever disagree, the code wins, and `list_checks` always returns the live list.
 
 ## Reading the labels
 
@@ -37,7 +37,7 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `discover-crawl-waste` | D | Too much of the crawl going to redirects and non-indexable URLs (site-level - Discover leans on fast discovery) | Aim for almost everything Google crawls to be an indexable 200 - repoint links off redirects/404s and prune faceted/parameter URLs. |
 | `entity-internal-link-gap` | N (0.5) | Topically related pages (per Wikidata) with no link between them | Link the broader page to the more specific one - after verifying the entity match. Needs `resolve_entities`. |
 
-## Indexation (20)
+## Indexation (25)
 
 | Check | Labels | What it catches | The fix, in one line |
 |---|---|---|---|
@@ -53,8 +53,13 @@ Every finding is priced the same way: priority = (traffic at stake × expected y
 | `index-bloat` | D+G | Indexable pages with no impressions in 90 days | Consolidate, improve, or noindex/prune - after confirming it isn't seasonal or new. |
 | `broken-canonical-target` | D | Canonicals pointing at broken, redirecting, noindexed or chained targets | Point the canonical at a live, indexable, self-canonical HTTPS URL. |
 | `soft-404-shell` | D+G | Pages serving 200 that Google flags as soft 404 | Populate the page with real content, or return a true 404/410. |
-| `broken-hreflang-target` | D | hreflang alternates that are 4xx/5xx, redirected or noindex | Point every alternate at a live, indexable URL - one bad alternate drops the whole cluster. |
-| `hreflang-no-return-tag` | D | hreflang annotations the target never reciprocates | Add the return tag - Google ignores one-way hreflang. |
+| `broken-hreflang-target` | D | hreflang alternates that are 4xx/5xx, noindex, or a URL that redirected in the latest crawl (from `redirect_sources`; before #55 group C redirecting alternates were skipped). A rate-limited fetch or a legacy stored 429/503 is unknown, not broken; alternates on hosts we didn't crawl are not judged | Point every alternate at a live, indexable URL - one bad alternate drops the whole cluster. |
+| `hreflang-no-return-tag` | D | hreflang annotations a crawled, live, indexable target never reciprocates (x-default is not required to return). Alternates that canonicalise elsewhere, and pages that are themselves canonicalised, are left to `hreflang-canonical-conflict` | Add the return tag - Google ignores one-way hreflang. |
+| `canonical-cross-host` | D | A 200 page whose canonical names a different host (an old domain, staging, a CDN or sister host, a subdomain). The www/apex twin and an http/https switch don't count. Pages with equity (GSC clicks >= 1 or impressions >= 10, a backlink, or an internal link) are listed first | Make the canonical self-referencing on this host, or redirect if the move is real. |
+| `hreflang-invalid-code` | D | hreflang values Google can't read: not `x-default` or a two-letter ISO 639-1 language with an optional ISO 3166-1 alpha-2 region, hyphenated (`en-uk`, `en_US`, `eng`, `es-419`, `en-EU`). Checked against the platform's ICU data; a four-letter script subtag (`zh-Hant`) is accepted | Use codes like `en-GB`, `pt-BR`, `x-default`. |
+| `hreflang-missing-self` | D | A 200 page whose hreflang set doesn't list the page itself | Add the self-referencing annotation to the template. |
+| `hreflang-duplicate-locale` | D | One locale value (case-insensitive) pointing at two different URLs in a page's set; the same URL listed twice is not counted | Keep one URL per locale. |
+| `hreflang-canonical-conflict` | D | A page declaring hreflang that canonicalises elsewhere (Google ignores its annotations), or a crawled 200 alternate that canonicalises elsewhere. Broken, noindex and redirecting alternates are `broken-hreflang-target`'s | Point alternates at canonical URLs and keep every locale page self-canonical. |
 | `sitemap-non-indexable` | D | Sitemaps listing dead, redirected, noindexed or blocked URLs | List only canonical, indexable pages, or Google loses trust in the sitemap. |
 | `indexable-not-in-sitemap` | D | Indexable pages the sitemap omits | Add them so Google discovers and prioritises them. |
 | `image-preview-restricted` | D | max-image-preview capped below large | Set max-image-preview:large - Discover strongly favours it - unless licensing forbids. |
