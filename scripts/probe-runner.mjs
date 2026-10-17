@@ -112,6 +112,38 @@ try {
     fdb.close();
   }
 
+  // ── A queued job nothing can claim is stale: shown, never live, never deleted ───────────────
+  {
+    const dir = path.join(root, 'stale-queue');
+    const mcp = JM({ dbPath: jobsDbPath(dir), runner: 'external', runnerStaleMs: 300, queuedFreshMs: 300 });
+    const id = submitJob(mcp, 'crawl', { siteUrl: site, maxPages: 2 }, noDeps, jobScopeFor(dir, site));
+    check('a just-queued job is live for destructive guards (a runner may be starting)', mcp.possiblyRunning().some(j => j.id === id) && !mcp.get(id)?.noRunner, JSON.stringify(mcp.get(id)));
+    await sleep(400);
+    const stale = mcp.get(id);
+    check('queued past the fresh window with no runner: no longer blocks prune / repair', !mcp.possiblyRunning().some(j => j.id === id), JSON.stringify(mcp.possiblyRunning()));
+    check('...is still in the registry, still queued, marked noRunner', stale?.state === 'queued' && stale.noRunner === true, JSON.stringify(stale));
+    mcp.beatRunner({ pid: 1, host: 'h', version: 'v', concurrency: 1, running: 0 });
+    check('a fresh runner heartbeat makes the old queued job live again', mcp.possiblyRunning().some(j => j.id === id) && !mcp.get(id)?.noRunner, JSON.stringify(mcp.get(id)));
+    mcp.removeRunner();
+    // liveJobTypes (the dashboard's read, real 2 min window): an old queued row with no runner.
+    const raw = new Database(jobsDbPath(dir));
+    const old = new Date(Date.now() - 5 * 60_000).toISOString();
+    raw.prepare(`UPDATE jobs SET started_at = ?, updated_at = ? WHERE id = ?`).run(old, old, id);
+    raw.close();
+    const scope = jobScopeFor(dir, site);
+    const lt = liveJobTypes(dir, scope);
+    check('liveJobTypes: an old queued crawl with no runner is queuedNoRunner, not queued', !!lt && !lt.queued?.has('crawl') && lt.queuedNoRunner?.has('crawl'), JSON.stringify({ q: lt && [...lt.queued], nr: lt && [...lt.queuedNoRunner] }));
+    mcp.beatRunner({ pid: 1, host: 'h', version: 'v', concurrency: 1, running: 0 });
+    const lt2 = liveJobTypes(dir, scope);
+    check('liveJobTypes: with a fresh runner heartbeat it is queued again', !!lt2 && lt2.queued?.has('crawl') && !lt2.queuedNoRunner?.has('crawl'), JSON.stringify({ q: lt2 && [...lt2.queued], nr: lt2 && [...lt2.queuedNoRunner] }));
+    mcp.removeRunner();
+    const fdb = new AuditDatabase(path.join(root, 'fresh-norunner.db'));
+    fdb.db.prepare("INSERT INTO crawl_metadata (crawl_id, base_url, base_domain, status, started_at, finished_at, urls_crawled) VALUES ('c1', ?, 'x', 'completed', '2026-10-01T00:00:00Z', '2026-10-01T01:00:00Z', 10)").run(site);
+    const crawl = getDataFreshness(fdb.db, Object.assign(new Set(), { queued: new Set(), queuedNoRunner: new Set(['crawl']) })).sources.find(s => s.kind === 'crawl');
+    check('freshness: a crawl queued with no runner keeps its stored state and says "queued: no job runner"', crawl?.state === 'completed' && /^queued: no job runner/.test(crawl.detail), JSON.stringify(crawl));
+    fdb.close();
+  }
+
   // ── Per-property exclusion in the claim ─────────────────────────────────────────────────────
   {
     const dir = path.join(root, 'scope');
