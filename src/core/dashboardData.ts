@@ -178,7 +178,8 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
     // dashboard never shows the "traffic tanking" cliff of unfinalised data.
     const fresh = gscFreshness(db.db);
     const maxDate = fresh.effectiveMax;
-    if (!maxDate) return { siteUrl, empty: true };
+    // No GSC data yet: still carry freshness, so a crawled-but-unsynced property shows its job status.
+    if (!maxDate) return { siteUrl, empty: true, freshness: getDataFreshness(db.db) };
     // Upper bound: never include unfinalised days past effectiveMax. Windows anchored on maxDate
     // only set a lower bound (date > date(maxDate,'-Nd')), so without this the partial trailing
     // days would still slip into current-period sums and the daily charts. (Prior windows already
@@ -772,11 +773,11 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         // one pass, with the most-linked example URL per bucket.
         const bucketSql = `CASE
             WHEN status_code IN (301,308) THEN 'Permanent redirect (301/308)'
-            WHEN status_code IN (302,303,307) THEN 'Temporary redirect (302/307)'
+            WHEN status_code IN (302,303,307) THEN 'Temporary redirect (302/303/307)'
             WHEN status_code = 404 THEN 'Not found (404)'
             WHEN status_code = 410 THEN 'Gone (410)'
             WHEN status_code = 200 AND indexable_reason = 'canonicalised' THEN 'Canonicalised elsewhere'
-            WHEN status_code = 200 AND ${HTML_CT} AND (canonical_url IS NULL OR canonical_url = '') THEN 'Missing canonical'
+            WHEN status_code = 200 AND indexable = 1 AND ${HTML_CT} AND (canonical_url IS NULL OR canonical_url = '') THEN 'Missing canonical'
             ELSE NULL END`;
         const urlFlow = (db.db.prepare(
           `SELECT b label, COUNT(*) count, MAX(CASE WHEN rn = 1 THEN url_key END) example

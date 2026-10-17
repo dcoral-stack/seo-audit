@@ -1141,22 +1141,41 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       } finally { db.close(); }
       {
         if (!rows.length) return { content: [{ type: 'text', text: `No crawled 404/410 URLs for ${siteUrl}. Run start_crawl (it seeds GSC-known URLs) first.` }], structuredContent: { rows: [] } };
-        let probed = 0;
+        // Live verification is reported explicitly either way (#40 review): a map that was NOT
+        // checked must never read as one that was.
+        let probed = 0, candidates = 0;
+        let verification: { ran: boolean; probed: number; candidates: number; error?: string } = { ran: false, probed: 0, candidates: 0 };
         if (verify !== false) {
           const seed = siteUrl.startsWith('sc-domain:') ? `https://${siteUrl.slice('sc-domain:'.length)}/` : siteUrl;
-          try { ({ rows, probed } = await verifyLive(rows, new URL(seed).hostname)); } catch (e) { console.error('[triage_404s] live verification skipped:', e instanceof Error ? e.message : String(e)); }
+          try {
+            ({ rows, probed, candidates } = await verifyLive(rows, new URL(seed).hostname));
+            verification = { ran: true, probed, candidates };
+            if (candidates && !probed) verification.error = 'no candidate answered within the time budget';
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.error('[triage_404s] live verification failed:', msg);
+            verification = { ran: false, probed: 0, candidates: 0, error: msg };
+          }
         }
         const by = (b: string) => rows.filter(r => r.bucket === b);
         const redirect = by('redirect'), review = by('review'), ignore = by('ignore'), already = by('already-redirected'), liveNow = by('live-now');
         const cell = (u: string | null) => (u ?? '—').replace(/\|/g, '\\|');
-        const redirectMd = redirect.length ? `\n\n**Redirect (${redirect.length})**\n| From | To | Score | Why |\n|---|---|---|---|\n${redirect.slice(0, 60).map(r => `| ${cell(r.url)} | ${cell(r.bestMatch)} | ${r.score} | ${r.reason} |`).join('\n')}\n\n301 map (from to):\n\`\`\`\n${redirect.map(r => `${r.url} ${r.bestMatch}`).join('\n')}\n\`\`\`` : '';
+        const redirectMd = redirect.length ? `\n\n**Redirect (${redirect.length})**\n| From | To | Score | Why |\n|---|---|---|---|\n${redirect.slice(0, 60).map(r => `| ${cell(r.url)} | ${cell(r.bestMatch)} | ${r.score} | ${r.reason}${r.live?.catchAll ? ' ⚠ currently caught by a blanket redirect to the homepage' : ''} |`).join('\n')}\n\n301 map (from to):\n\`\`\`\n${redirect.map(r => `${r.url} ${r.bestMatch}`).join('\n')}\n\`\`\`` : '';
         const reviewMd = review.length ? `\n\n**Review (${review.length})**\n${review.slice(0, 40).map(r => `- ${r.url}: ${r.reason}${r.bestMatch ? ` (closest: ${r.bestMatch}, ${r.score})` : ''}`).join('\n')}` : '';
         const ignoreMd = ignore.length ? `\n\n**Ignore (${ignore.length})**: mangled or stray URLs with no value. Examples:\n${ignore.slice(0, 10).map(r => `- ${r.url}${r.bestMatch && r.score >= (minScore ?? 0.6) ? ` (variant of ${r.bestMatch})` : ''}`).join('\n')}` : '';
         const alreadyMd = already.length ? `\n\n**Already redirected live (${already.length})**: the crawl predates these redirects; nothing to do unless the destination is wrong.\n${already.slice(0, 40).map(r => `- ${r.url} → ${r.live?.finalUrl} (${r.live?.chain.join('→')})`).join('\n')}` : '';
         const liveMd = liveNow.length ? `\n\n**Live now (${liveNow.length})**: answer 200 today; re-crawl to clear them.\n${liveNow.slice(0, 20).map(r => `- ${r.url}`).join('\n')}` : '';
-        const verifyNote = verify === false ? ' Not verified live (verify:false).' : probed ? ` ${probed} candidate(s) verified live.` : '';
-        const text = `${rows.length} crawled 404/410 URL(s) for ${siteUrl}: ${redirect.length} to redirect, ${review.length} to review, ${ignore.length} to ignore${already.length ? `, ${already.length} already redirected` : ''}${liveNow.length ? `, ${liveNow.length} live now` : ''}.${verifyNote}${redirectMd}${reviewMd}${alreadyMd}${liveMd}${ignoreMd}`;
-        return { content: [{ type: 'text', text: text.slice(0, 38000) }], structuredContent: { counts: { redirect: redirect.length, review: review.length, ignore: ignore.length, alreadyRedirected: already.length, liveNow: liveNow.length }, probed, rows } };
+        const stale = already.length + liveNow.length;
+        const verifyNote = verify === false
+          ? ' ⚠ Not verified live (verify:false): confirm each target with probe_urls before shipping.'
+          : verification.error
+            ? ` ⚠ NOT VERIFIED LIVE: ${verification.error}. The buckets below are from the stored crawl only; re-run (verify defaults to on) or check targets with probe_urls before shipping any 301.`
+            : probed < candidates
+              ? ` ${probed} of ${candidates} candidate(s) verified live (the rest hit the time budget; re-run to cover them).`
+              : ` ${probed} candidate(s) verified live.`;
+        const recrawlNote = stale ? ` ${stale} URL(s) are no longer 404s live, so the stored crawl is stale: re-crawl (start_crawl) before acting on the rest.` : '';
+        const text = `${rows.length} crawled 404/410 URL(s) for ${siteUrl}: ${redirect.length} to redirect, ${review.length} to review, ${ignore.length} to ignore${already.length ? `, ${already.length} already redirected` : ''}${liveNow.length ? `, ${liveNow.length} live now` : ''}.${verifyNote}${recrawlNote}${redirectMd}${reviewMd}${alreadyMd}${liveMd}${ignoreMd}`;
+        return { content: [{ type: 'text', text: text.slice(0, 38000) }], structuredContent: { counts: { redirect: redirect.length, review: review.length, ignore: ignore.length, alreadyRedirected: already.length, liveNow: liveNow.length }, verification, recrawlRecommended: stale > 0, rows } };
       }
     },
   );

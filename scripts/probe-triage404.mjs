@@ -76,6 +76,22 @@ check('limit applies after ranking by value (the lost page survives limit:1)', t
   check('still-dead candidates keep their bucket; ignore bucket is never probed', v['simagic']?.bucket === preSimagic && v['simagic'].live?.status === 404 && probed > 0 && verified.filter(r => r.bucket === 'ignore').every(r => !r.live), JSON.stringify({ probed, pre: preSimagic, post: v['simagic']?.bucket }));
 }
 
+// Catch-all redirects and destination comparison (post-0.14.0 review)
+{
+  const catchAll = async (targets) => targets.map(t => ({ url: t.url, status: 301, finalStatus: 200, finalUrl: `${S}/`, redirectChain: [{ url: t.url, status: 301, location: `${S}/` }] }));
+  const { rows: ca } = await verifyLive(triage404s(db), 'simracing.example', { probe: catchAll });
+  const lost = ca.find(r => r.url === P(dead.lost));
+  check('blanket 404→homepage rule: row keeps its redirect bucket, flagged catchAll', lost?.bucket === 'redirect' && lost.live?.catchAll === true && /catch-all/.test(lost.reason), JSON.stringify(lost));
+  check('catch-all: nothing moves to already-redirected', !ca.some(r => r.bucket === 'already-redirected'), JSON.stringify(ca.map(r => r.bucket)));
+  const toSuggested = async (targets) => targets.map(t => { const row = triage404s(db).find(r => r.url === t.url); return { url: t.url, status: 301, finalStatus: 200, finalUrl: row?.bestMatch ?? `${S}/x/`, redirectChain: [{ url: t.url, status: 301, location: row?.bestMatch }] }; });
+  const { rows: ms } = await verifyLive(triage404s(db), 'simracing.example', { probe: toSuggested });
+  const lost2 = ms.find(r => r.url === P(dead.lost));
+  check('redirect already pointing at the suggested target → already-redirected, matchesSuggestion', lost2?.bucket === 'already-redirected' && lost2.live?.matchesSuggestion === true, JSON.stringify(lost2));
+  let threw = false;
+  try { await verifyLive(triage404s(db), 'simracing.example', { probe: async () => { throw new Error('boom'); } }); } catch { threw = true; }
+  check('a failing prober propagates (the tool reports NOT VERIFIED rather than swallowing it)', threw, '');
+}
+
 wrap.close();
 rmSync(dbPath, { force: true });
 console.log(`\n${pass} passed, ${fail} failed`);

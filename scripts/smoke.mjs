@@ -220,7 +220,49 @@ const nf = flow.find(r => r.label === 'Not found (404)');
 ok(nf && nf.count >= 1 && typeof nf.example === 'string', `urlFlow has a 404 bucket with an example (${JSON.stringify(nf)})`);
 // A cache hit must still carry live freshness (it is read outside the payload cache).
 const dash2 = getDashboardData(dataDir, site);
-ok(Array.isArray(dash2?.freshness?.sources) && dash2.freshness.sources.length === fr.sources.length, 'cached payload still carries live freshness');
+ok(Array.isArray(dash2?.freshness?.sources) && dash2.freshness.sources.length === (fr?.sources?.length ?? -1), 'cached payload still carries live freshness');
+
+// ── Dashboard review fixes (post-0.14.0) ───────────────────────────────────────────────────
+{
+  const { getDataFreshness } = await import('../dist/core/dataFreshness.js');
+  // The fixture connection is closed above (the audit/dashboard open their own); reopen for these checks.
+  const db = new AuditDatabase(dbPathFor(dataDir, site)).db;
+  const page = (url, o = {}) => db.prepare(`INSERT INTO pages (${COLS.join(',')}) VALUES (${COLS.map(c => '@' + c).join(',')})`).run({ ...PAGE_DEFAULTS, ...o, url, url_key: o.url_key ?? k(url) });
+  // A failed run that wrote nothing leaves c1's pages on screen: shownCrawl must say so.
+  db.prepare(`INSERT INTO crawl_metadata (crawl_id,base_url,base_domain,status,urls_crawled,started_at,finished_at,error) VALUES ('c2','https://smoke.test','smoke.test','failed',0,datetime('now'),datetime('now'),'boom')`).run();
+  let fz = getDataFreshness(db);
+  const crawl = fz.sources.find(s => s.kind === 'crawl');
+  ok(crawl?.state === 'failed' && /last completed crawl/.test(crawl.detail) && fz.shownCrawl?.crawlId === 'c1' && fz.shownCrawl.partial === false,
+    `failed crawl that wrote nothing: shownCrawl is the last completed run (${fz.shownCrawl?.crawlId}, "${crawl?.detail}")`);
+  // A failed run that DID write pages is what's on screen (the crawler wiped the previous snapshot).
+  db.prepare(`UPDATE crawl_metadata SET urls_crawled=7 WHERE crawl_id='c2'`).run();
+  fz = getDataFreshness(db);
+  ok(fz.shownCrawl?.crawlId === 'c2' && fz.shownCrawl.partial === true && /partial snapshot/.test(fz.sources.find(s => s.kind === 'crawl').detail), 'failed crawl that wrote pages: shownCrawl is that run, flagged partial');
+  db.prepare(`DELETE FROM crawl_metadata WHERE crawl_id='c2'`).run();
+  // Audit state: the engine writes status; a crashed run reads failed, a dead pre-status row reads interrupted.
+  const latestAudit = db.prepare(`SELECT status FROM audit_runs ORDER BY started_at DESC LIMIT 1`).get();
+  ok(latestAudit?.status === 'completed', `engine records audit status (${latestAudit?.status})`);
+  db.prepare(`INSERT INTO audit_runs (run_id, scope, started_at, status, error) VALUES ('r-fail','core',datetime('now','+1 second'),'failed','check exploded')`).run();
+  ok(getDataFreshness(db).sources.find(s => s.kind === 'audit')?.state === 'failed', 'a failed audit run reads failed, not running');
+  // The newest row must be the dead one for this check, so age every other run past it, then restore.
+  const origStarts = db.prepare(`SELECT run_id, started_at FROM audit_runs`).all();
+  db.prepare(`UPDATE audit_runs SET started_at=datetime('now','-5 hours')`).run();
+  db.prepare(`INSERT INTO audit_runs (run_id, scope, started_at) VALUES ('r-dead','core',datetime('now','-2 hours'))`).run();
+  ok(getDataFreshness(db).sources.find(s => s.kind === 'audit')?.state === 'interrupted', 'an old run with no status and no finish reads interrupted');
+  db.prepare(`DELETE FROM audit_runs WHERE run_id IN ('r-fail','r-dead')`).run();
+  for (const r of origStarts) db.prepare(`UPDATE audit_runs SET started_at=? WHERE run_id=?`).run(r.started_at, r.run_id);
+  // Missing canonical excludes non-indexable pages.
+  const before = (getDashboardData(dataDir, site).crawlHealth?.urlFlow ?? []).find(r => r.label === 'Missing canonical')?.count ?? 0;
+  page('https://smoke.test/noindex-tag', { status_code: 200, indexable: 0, indexable_reason: 'noindex', noindex: 1, canonical_url: null });
+  const after = (getDashboardData(dataDir, site).crawlHealth?.urlFlow ?? []).find(r => r.label === 'Missing canonical')?.count ?? 0;
+  ok(after === before, `Missing canonical ignores noindex pages (${before} → ${after})`);
+  // A crawled-but-unsynced property still reports freshness in the empty payload.
+  const site2 = 'sc-domain:nosync.test';
+  const db2 = new AuditDatabase(dbPathFor(dataDir, site2)).db;
+  db2.prepare(`INSERT INTO crawl_metadata (crawl_id,base_url,base_domain,status,urls_crawled) VALUES ('x1','https://nosync.test','nosync.test','completed',3)`).run();
+  const emptyDash = getDashboardData(dataDir, site2);
+  ok(emptyDash.empty === true && Array.isArray(emptyDash.freshness?.sources) && emptyDash.freshness.sources.some(s => s.kind === 'crawl' && s.state === 'completed'), 'empty (no GSC) payload still carries freshness');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 rmSync(dataDir, { recursive: true, force: true });
