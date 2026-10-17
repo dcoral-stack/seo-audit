@@ -14,31 +14,9 @@ const tableExists = (db: Database.Database, name: string): boolean =>
 
 // ── GSC row shapes: count each day once ──────────────────────────────────────────────────────
 //
-// search_analytics should hold ONE row shape per property (GscSync's mode guard): either
-// all-country "lite" rows (device = '' AND country = '') or segmented rows. Real databases have
-// been found holding BOTH for the same days (simracingcockpit.gg: 111 days, 18 May to 5 Sep 2026),
-// and a plain SUM over those days counts every click twice. The Summary's own GSC sums therefore
-// pick one shape per mixed day: clicks from the all-country rows (they carry the clicks in full),
-// impressions from the segmented rows (all-country rows written before mid-August 2026 held only
-// queries that got clicks, so their impressions are short). A single-shape property is unaffected.
-export interface GscShape { mixedDays: number; from: string; to: string }
-interface ShapeRules { shape: GscShape | null; mixed: string; clicksRow: string; imprRow: string }
-
-const LITE = `(device = '' AND country = '')`;
-/** Days holding both shapes, and the per-row predicates that count each such day once. */
-export function gscShapeRules(db: Database.Database): ShapeRules {
-  const dates = (db.prepare(
-    `SELECT date FROM search_analytics GROUP BY date HAVING SUM(${LITE}) > 0 AND SUM(NOT ${LITE}) > 0 ORDER BY date`,
-  ).all() as { date: string }[]).map(r => r.date);
-  const mixed = JSON.stringify(dates);
-  const onMixed = `date IN (SELECT value FROM json_each(@mixed))`;
-  return {
-    shape: dates.length ? { mixedDays: dates.length, from: dates[0], to: dates[dates.length - 1] } : null,
-    mixed,
-    clicksRow: dates.length ? `(NOT ${onMixed} OR ${LITE})` : '1',
-    imprRow: dates.length ? `(NOT ${onMixed} OR NOT ${LITE})` : '1',
-  };
-}
+// Every GSC total here reads the `gsc_rows` view (core/gscRows.ts, issue #61): a day stored in two
+// row shapes (all-country and segmented rows) is read from ONE of them, so it is counted once.
+export { type GscShape } from './gscRows.js';
 
 // ── Panel 3: monthly clicks (up to 16 months) + year-on-year ─────────────────────────────────
 
@@ -79,9 +57,9 @@ const addMonths = (ym: string, n: number): string => { const [y, m] = ym.split('
 /**
  * Monthly clicks and impressions, oldest first, for at most the last 16 months up to `maxDate` (the
  * finalised GSC date: trailing unfinalised days are already trimmed by the caller). Summed with the
- * same all-rows convention as the rest of the payload's GSC totals.
+ * same rows as every other GSC total in the payload (`gsc_rows`: each day counted once).
  */
-export function monthlyClicks(db: Database.Database, maxDate: string, rules: ShapeRules = gscShapeRules(db)): MonthlyClicks | null {
+export function monthlyClicks(db: Database.Database, maxDate: string): MonthlyClicks | null {
   const span = db.prepare(`SELECT MIN(date) lo FROM search_analytics`).get() as { lo: string | null };
   if (!span.lo) return null;
   const minDate = span.lo;
@@ -92,10 +70,9 @@ export function monthlyClicks(db: Database.Database, maxDate: string, rules: Sha
   const from = `${shown[0]}-01` < minDate ? minDate : `${shown[0]}-01`;
   const rows = db.prepare(
     `SELECT substr(date,1,7) m, COUNT(DISTINCT date) days,
-            SUM(CASE WHEN ${rules.clicksRow} THEN clicks ELSE 0 END) clicks,
-            SUM(CASE WHEN ${rules.imprRow} THEN impressions ELSE 0 END) impressions
-     FROM search_analytics WHERE date >= @from AND date <= @to GROUP BY m`,
-  ).all({ from, to: maxDate, mixed: rules.mixed }) as { m: string; days: number; clicks: number; impressions: number }[];
+            SUM(clicks) clicks, SUM(impressions) impressions
+     FROM gsc_rows WHERE date >= @from AND date <= @to GROUP BY m`,
+  ).all({ from, to: maxDate }) as { m: string; days: number; clicks: number; impressions: number }[];
   const got = new Map(rows.map(r => [r.m, r]));
   const months: MonthPoint[] = shown.map(m => {
     const dim = daysInMonth(m);
@@ -122,7 +99,7 @@ export function monthlyClicks(db: Database.Database, maxDate: string, rules: Sha
  * The latest 28-day window vs the same 28 days 364 days earlier (52 weeks, so weekdays align).
  * Available only when the prior-year window is inside the held history; otherwise a reason.
  */
-export function yearOnYear(db: Database.Database, maxDate: string, rules: ShapeRules = gscShapeRules(db)): YearOnYear | null {
+export function yearOnYear(db: Database.Database, maxDate: string): YearOnYear | null {
   const span = db.prepare(`SELECT MIN(date) lo FROM search_analytics`).get() as { lo: string | null };
   if (!span.lo) return null;
   const end = maxDate;
@@ -130,25 +107,25 @@ export function yearOnYear(db: Database.Database, maxDate: string, rules: ShapeR
   const pEnd = iso(ms(end) - 364 * DAY);
   const pStart = iso(ms(start) - 364 * DAY);
   if (span.lo > pStart) return { available: false, reason: 'needs-13-months', gscMinDate: span.lo, neededFrom: pStart };
-  const sum = (a: string, b: string): { clicks: number; days: number } => clicksBetween(db, a, b, rules);
+  const sum = (a: string, b: string): { clicks: number; days: number } => clicksBetween(db, a, b);
   const cur = sum(start, end);
   const prior = sum(pStart, pEnd);
   return { available: true, window: { start, end }, priorWindow: { start: pStart, end: pEnd }, clicks: cur.clicks, priorYearClicks: prior.clicks, priorYearDays: prior.days };
 }
 
-function clicksBetween(db: Database.Database, a: string, b: string, rules: ShapeRules): { clicks: number; days: number } {
+function clicksBetween(db: Database.Database, a: string, b: string): { clicks: number; days: number } {
   return db.prepare(
-    `SELECT COALESCE(SUM(CASE WHEN ${rules.clicksRow} THEN clicks ELSE 0 END),0) clicks, COUNT(DISTINCT date) days
-     FROM search_analytics WHERE date >= @a AND date <= @b`,
-  ).get({ a, b, mixed: rules.mixed }) as { clicks: number; days: number };
+    `SELECT COALESCE(SUM(clicks),0) clicks, COUNT(DISTINCT date) days
+     FROM gsc_rows WHERE date >= @a AND date <= @b`,
+  ).get({ a, b }) as { clicks: number; days: number };
 }
 
 /** Clicks for the last 28 days and the prior 28, each day counted once (see GscShape). */
 export interface ClickWindows { current: number; prior: number; window: { start: string; end: string }; priorWindow: { start: string; end: string } }
-export function clickWindows(db: Database.Database, maxDate: string, rules: ShapeRules = gscShapeRules(db)): ClickWindows {
+export function clickWindows(db: Database.Database, maxDate: string): ClickWindows {
   const start = iso(ms(maxDate) - 27 * DAY), pEnd = iso(ms(maxDate) - 28 * DAY), pStart = iso(ms(maxDate) - 55 * DAY);
   return {
-    current: clicksBetween(db, start, maxDate, rules).clicks, prior: clicksBetween(db, pStart, pEnd, rules).clicks,
+    current: clicksBetween(db, start, maxDate).clicks, prior: clicksBetween(db, pStart, pEnd).clicks,
     window: { start, end: maxDate }, priorWindow: { start: pStart, end: pEnd },
   };
 }
@@ -340,13 +317,13 @@ export interface PageMovers { gaining: PageMove[]; losing: PageMove[]; minPriorC
 export const MOVER_MIN_PRIOR = 10;
 
 /** Largest absolute click changes, last 28 days vs the prior 28, across ALL pages (not a top-N subset). */
-export function pageMovers(db: Database.Database, maxDate: string, limit = 3, rules: ShapeRules = gscShapeRules(db)): PageMovers {
+export function pageMovers(db: Database.Database, maxDate: string, limit = 3): PageMovers {
   const rows = db.prepare(
-    `WITH cur AS (SELECT page_key, SUM(clicks) c FROM search_analytics WHERE page_key IS NOT NULL AND date <= @max AND date > date(@max, '-28 days') AND ${rules.clicksRow} GROUP BY page_key),
-          prev AS (SELECT page_key, SUM(clicks) c FROM search_analytics WHERE page_key IS NOT NULL AND date > date(@max, '-56 days') AND date <= date(@max, '-28 days') AND ${rules.clicksRow} GROUP BY page_key)
+    `WITH cur AS (SELECT page_key, SUM(clicks) c FROM gsc_rows WHERE page_key IS NOT NULL AND date <= @max AND date > date(@max, '-28 days') GROUP BY page_key),
+          prev AS (SELECT page_key, SUM(clicks) c FROM gsc_rows WHERE page_key IS NOT NULL AND date > date(@max, '-56 days') AND date <= date(@max, '-28 days') GROUP BY page_key)
      SELECT prev.page_key urlKey, COALESCE(cur.c,0) clicks, prev.c prevClicks, COALESCE(cur.c,0) - prev.c change
      FROM prev LEFT JOIN cur ON cur.page_key = prev.page_key WHERE prev.c >= @min`,
-  ).all({ max: maxDate, min: MOVER_MIN_PRIOR, mixed: rules.mixed }) as PageMove[];
+  ).all({ max: maxDate, min: MOVER_MIN_PRIOR }) as PageMove[];
   const gaining = rows.filter(r => r.change > 0).sort((a, b) => b.change - a.change).slice(0, limit);
   const losing = rows.filter(r => r.change < 0).sort((a, b) => a.change - b.change).slice(0, limit);
   return { gaining, losing, minPriorClicks: MOVER_MIN_PRIOR, eligible: rows.length };

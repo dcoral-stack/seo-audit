@@ -50,13 +50,6 @@ const SEV_BAR: Record<string, string> = { crit: 'var(--intent-danger)', high: 'v
 /** Clicks, last 28 days vs the prior 28, each day counted once (clickWindows), else the older totals. */
 const clicks28 = (d: any): { current: number; prior: number } | null =>
   d.clickWindows ? { current: d.clickWindows.current, prior: d.clickWindows.prior } : d.summary ? { current: d.summary.current.clicks, prior: d.summary.prior.clicks } : null;
-/** True when the 56 days behind the 28-day comparison include days stored in both GSC row shapes. */
-const windowsMixed = (d: any): boolean => {
-  const sh = d.gscShape, cw = d.clickWindows;
-  if (!sh) return false;
-  const start = cw?.priorWindow?.start ?? '', end = cw?.window?.end ?? d.dateRange?.maxDate ?? '';
-  return !(sh.to < start || sh.from > end);
-};
 
 // ── Panel 0: freshness strip ──────────────────────────────────────────────────────────────────
 function freshness(d: any): string {
@@ -95,7 +88,7 @@ function freshness(d: any): string {
   }
   if (!cells.length) return empty('No data sources recorded yet - run <code>refresh_property</code>.');
   const sh = d.gscShape;
-  const shapeNote = sh ? `<div class="sf-warn">Search Console history holds two row shapes (all-country and per-country rows) on <span class="n">${fmt(sh.mixedDays)}</span> days, ${esc(dayLabel(sh.from))} to ${esc(dayLabel(sh.to))}. This page counts each of those days once; totals elsewhere in the dashboard that span them still count clicks twice.</div>` : '';
+  const shapeNote = sh ? `<div class="sf-warn">Search Console history holds two row shapes (${esc((sh.shapes ?? ['all-country', 'per-country']).join(' and '))} rows) on <span class="n">${fmt(sh.mixedDays)}</span> days, ${esc(dayLabel(sh.from))} to ${esc(dayLabel(sh.to))}. Every figure in the dashboard reads one shape per day (the fuller one), so each of those days counts once.</div>` : '';
   return `<div class="sf-row">${cells.join('')}</div>${problems.join('')}${shapeNote}`;
 }
 
@@ -107,8 +100,7 @@ function verdict(d: any): string {
   const dr = d.drift;
   const v = buildVerdict({
     clicks: sum ? clicks28(d) : null,
-    // The brand split comes from the older totals, so it isn't compared across mixed-shape days.
-    nonBrand: sum && bs && !windowsMixed(d) ? { current: bs.nonBranded.clicks, prior: bs.priorNonBrandedClicks, brand: bs.brand } : null,
+    nonBrand: sum && bs ? { current: bs.nonBranded.clicks, prior: bs.priorNonBrandedClicks, brand: bs.brand } : null,
     criticalOpen: fc ? (fc.byCheck ?? []).filter((b: any) => b.severity === 'crit').reduce((s: number, b: any) => s + b.count, 0) : null,
     resolvedSinceLastAudit: lastDelta && !lastDelta.skipped ? lastDelta.resolved : null,
     pagesChanged: dr?.counts && !dr.staleness ? dr.counts.pagesChanged : null,
@@ -149,12 +141,12 @@ function tiles(d: any): string {
     if (bs) {
       const tot = bs.branded.clicks + bs.nonBranded.clicks;
       const share = tot ? Math.round((bs.nonBranded.clicks / tot) * 100) : null;
-      const nb = bs.priorNonBrandedClicks && !windowsMixed(d) ? ((bs.nonBranded.clicks - bs.priorNonBrandedClicks) / bs.priorNonBrandedClicks) * 100 : null;
+      const nb = bs.priorNonBrandedClicks ? ((bs.nonBranded.clicks - bs.priorNonBrandedClicks) / bs.priorNonBrandedClicks) * 100 : null;
       out.push(tile({
         label: 'Non-brand share', value: share == null ? '–' : `<span class="n">${share}%</span>`,
         foot: nb != null ? `<span class="n">${delta(nb)}</span><span class="tile-note">non-brand clicks</span>` : undefined,
         sub: `of clicks · brand "${esc(bs.brand)}"`,
-        title: `Non-brand = queries without "${bs.brand}" as a whole word, detected from the domain (a heuristic).${windowsMixed(d) ? ' Not compared with the prior 28 days: they include days stored in two row shapes.' : ''}`,
+        title: `Non-brand = queries without "${bs.brand}" as a whole word, detected from the domain (a heuristic).`,
       }));
     } else {
       out.push(tile({ label: 'Non-brand share', value: '–', sub: 'brand not detected from the domain' }));

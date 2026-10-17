@@ -209,8 +209,9 @@ function audit(db, runId, at, crawlId, findings, checkIds = CHECKS) {
 }
 
 // ── 5b. Mixed GSC row shapes (all-country AND per-country rows for the same days) ─────────────
-// Found live on simracingcockpit.gg: a plain SUM counts those days twice. Clicks come from the
-// all-country rows, impressions from the per-country rows, each day once.
+// Found live on simracingcockpit.gg: a plain SUM counts those days twice. Every total reads gsc_rows,
+// which reads one shape per mixed day (the one with more impressions: here the per-country rows), so
+// each day counts once (#61; the full regression is scripts/probe-gsc-rows.mjs).
 {
   const { site, adb, db } = property('mixed');
   const ins = db.prepare(`INSERT INTO search_analytics (date,query,page,page_key,device,country,clicks,impressions,ctr,position) VALUES (?,?,?,?,?,?,?,?,?,?)`);
@@ -224,13 +225,13 @@ function audit(db, runId, at, crawlId, findings, checkIds = CHECKS) {
   })();
   adb.close();
   const d = getDashboardData(dataDir, site);
-  ok(d.gscShape?.mixedDays === 36 && d.gscShape.from === '2026-08-01' && d.gscShape.to === '2026-09-05', `gscShape: 36 mixed days reported (${JSON.stringify(d.gscShape)})`);
+  ok(d.gscShape?.mixedDays === 36 && d.gscShape.from === '2026-08-01' && d.gscShape.to === '2026-09-05' && d.gscShape.shapes.join() === 'all-country,per-country', `gscShape: 36 mixed days reported (${JSON.stringify(d.gscShape)})`);
   const aug = d.monthly.months.find(m => m.month === '2026-08');
-  ok(aug.clicks === 310 && aug.impressions === 3100, `monthly: a mixed month counts each day once - clicks from all-country rows, impressions from per-country (${aug.clicks} / ${aug.impressions})`);
+  ok(aug.clicks === 310 && aug.impressions === 3100, `monthly: a mixed month counts each day once, read from the fuller per-country rows (${aug.clicks} / ${aug.impressions})`);
   const sep = d.monthly.months.find(m => m.month === '2026-09');
   ok(sep.clicks === 300 && sep.impressions === 5 * 100 + 25 * 50, `monthly: a month that changes shape mid-way (${sep.clicks} / ${sep.impressions})`);
   ok(d.clickWindows.current === 280 && d.clickWindows.prior === 280, `clickWindows: 280 vs 280, not inflated by the mixed days (${d.clickWindows.current} vs ${d.clickWindows.prior})`);
-  ok(d.summary.prior.clicks > d.clickWindows.prior, `the older summary totals still double-count (${d.summary.prior.clicks}); the Summary reads clickWindows`);
+  ok(d.summary.prior.clicks === d.clickWindows.prior && d.summary.prior.impressions === 21 * 100 + 7 * 50, `the dashboard KPI totals count each day once too (${d.summary.prior.clicks} / ${d.summary.prior.impressions})`);
   ok(d.pageMovers.gaining.length === 0 && d.pageMovers.losing.length === 0, 'pageMovers: no phantom loser from doubled prior clicks');
 }
 

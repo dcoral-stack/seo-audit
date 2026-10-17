@@ -45,7 +45,7 @@ export async function buildDraftBrief(
       const maxDate = gscFreshness(db.db).effectiveMax;
       if (maxDate) {
         const q = db.db.prepare(
-          `SELECT query FROM search_analytics WHERE page_key = ? AND query IS NOT NULL AND date <= '${maxDate}' AND date > date('${maxDate}','-28 days') GROUP BY query ORDER BY SUM(impressions) DESC LIMIT 1`,
+          `SELECT query FROM gsc_rows WHERE page_key = ? AND query IS NOT NULL AND date <= '${maxDate}' AND date > date('${maxDate}','-28 days') GROUP BY query ORDER BY SUM(impressions) DESC LIMIT 1`,
         ).get(page.url) as { query: string } | undefined;
         topQuery = q?.query ?? null;
       }

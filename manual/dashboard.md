@@ -23,7 +23,7 @@ The landing tab, and the one to hand someone who has never seen the property. It
 - **AI search** - the agent-readiness score, which AI crawlers your robots.txt lets in (grouped into search and citation bots vs training crawlers: blocking GPTBot, a training crawler, doesn't take you out of ChatGPT search), AI Overview presence as *n of M checked queries* from content recon, and a plain "not measured" for answer share in chat assistants, because we don't query them.
 - **Data coverage** - what's held (months of Search Console, crawled pages, URL inspection, lab Core Web Vitals, backlinks) and what isn't collected (field Core Web Vitals, server logs). The CSV exports sit below it.
 
-It works crawl-only: before Search Console is connected, the traffic panels ask you to connect it and everything else still works. If your Search Console history holds two row shapes for the same days (all-country and per-country rows, which double-counts clicks), the Summary says so and counts each day once.
+It works crawl-only: before Search Console is connected, the traffic panels ask you to connect it and everything else still works. If your Search Console history holds two row shapes for the same days (all-country and per-country rows, which a plain sum would count twice), the Summary says so; every figure in the dashboard and the audit reads one shape per day, the fuller one, so each day counts once.
 
 ![The Summary tab on a phone](../assets/dashboard-summary-mobile.png)
 

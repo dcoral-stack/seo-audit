@@ -55,7 +55,7 @@ export async function scoreSitePassages(
     const pages = db.db.prepare(
       `SELECT s.page_key urlKey, s.query query, s.impr impressions, p.body_chunks bc FROM
         (SELECT page_key, query, SUM(impressions) impr, ROW_NUMBER() OVER (PARTITION BY page_key ORDER BY SUM(impressions) DESC) rn
-         FROM search_analytics WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win} GROUP BY page_key, query) s
+         FROM gsc_rows WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win} GROUP BY page_key, query) s
        JOIN pages p ON p.url_key = s.page_key
        WHERE s.rn = 1 AND p.indexable = 1 AND p.body_chunks IS NOT NULL AND s.impr >= ${minImpr}
        ORDER BY s.impr DESC LIMIT ${opts.limit ? Math.floor(opts.limit) : 500}`,

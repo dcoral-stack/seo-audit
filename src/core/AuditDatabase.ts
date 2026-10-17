@@ -11,6 +11,7 @@
  */
 import { ensureFtsSchema } from './fts.js';
 import { ensureExternalSchema } from './externalLinks.js';
+import { ensureGscRows } from './gscRows.js';
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -592,6 +593,9 @@ export class AuditDatabase {
     if (!(this.db.prepare(`PRAGMA table_info(redirect_sources)`).all() as { name: string }[]).some(c => c.name === 'chain')) this.db.exec('ALTER TABLE redirect_sources ADD COLUMN chain TEXT');
     ensureFtsSchema(this.db); // after migrate: triggers reference columns migrate may add
     ensureExternalSchema(this.db);
+    // gsc_rows / gsc_country_rows / gsc_device_rows: every GSC total reads these, so a day stored in
+    // two row shapes is counted once (#61). Recomputes the per-day choice only when the data moved.
+    ensureGscRows(this.db);
   }
 
   /** Idempotent column additions for DBs created before a column existed. */

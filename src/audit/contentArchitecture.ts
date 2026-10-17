@@ -44,7 +44,7 @@ export function contentArchitecture(db: Database.Database, opts: Opts = {}): { c
   const qp = db.prepare(
     `SELECT query, page_key, SUM(impressions) impr, SUM(clicks) clicks,
             SUM(position*impressions)*1.0/NULLIF(SUM(impressions),0) pos
-     FROM search_analytics WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win}
+     FROM gsc_rows WHERE query IS NOT NULL AND page_key IS NOT NULL AND ${win}
      GROUP BY query, page_key`,
   ).all() as { query: string; page_key: string; impr: number; clicks: number; pos: number }[];
   if (!qp.length) return { clusters: [], totalClusters: 0 };

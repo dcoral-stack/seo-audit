@@ -1,5 +1,6 @@
 import { AuditDatabase } from './AuditDatabase.js';
 import { addQueries } from './fts.js';
+import { refreshGscDayShapes } from './gscRows.js';
 import { GscClient } from './GscClient.js';
 import { dbPathFor } from './paths.js';
 import { urlKey, hostFormForProperty } from './url-key.js';
@@ -198,6 +199,9 @@ export class GscSync {
         if (signal.aborted) return { siteUrl, rowsFetched: 0, startDate: options2.startDate, endDate: options2.endDate }; // staged rows discarded with the connection
         if (total > 0) applyStaged(replaceFrom, options2.endDate); // an empty response never wipes stored days
       }
+      // The writer owns the evidence: recompute which row shape each day is read from (gsc_rows, #61)
+      // now, rather than leaving it to the next reader's fingerprint check.
+      if (total > 0) refreshGscDayShapes(db.db);
       db.db.prepare(`UPDATE property_meta SET last_synced_at = datetime('now') WHERE site_url = ?`).run(siteUrl);
       return { siteUrl, rowsFetched: total, startDate: options2.startDate, endDate: options2.endDate };
     } finally {
