@@ -39,6 +39,36 @@ you  › generate the fix for #1 ▍
 
 [![The Network tab - the site-network map of your internal link skeleton, equity vs traffic by template, and the folder-to-folder equity flow](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/network.png)](https://github.com/houtini-ai/seo-audit)
 
+## Quick start
+
+It's on npm, so there's nothing to clone or build. You need Node.js 20 or newer and a Search Console property you own.
+
+**Claude Desktop** - add this to `claude_desktop_config.json`, then restart Claude:
+
+```json
+{
+  "mcpServers": {
+    "seo-audit-console": {
+      "command": "npx",
+      "args": ["-y", "@houtini/seo-audit-console"],
+      "env": {
+        "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json"
+      }
+    }
+  }
+}
+```
+
+**Claude Code** - one command:
+
+```bash
+claude mcp add seo-audit-console --env GOOGLE_APPLICATION_CREDENTIALS=C:/path/to/service-account.json -- npx -y @houtini/seo-audit-console
+```
+
+That one env var is the whole core audit. The step everyone misses: the JSON key belongs to a Google Cloud service account, and that account's email has to be **added as a user on your property** in Search Console, or the tool can't see any of your data. [Getting started](manual/getting-started.md) walks through it with screenshots, plus the one-click Claude Desktop extension and the build-from-source route.
+
+Then ask Claude: *"list properties"*, *"refresh mysite.com"*, *"run an SEO audit"*.
+
 ## The manual
 
 This README is the story and the quick start. The detail lives in the manual:
@@ -136,7 +166,7 @@ Each of these is a real procedure I use, and each is one prompt. The expanded ve
 9. **Reporting.** *"Show me the dashboard"* in the chat, *"serve the dashboard"* for the live version in your browser, or *"export the report"* as one self-contained HTML file you can send a client. → [dashboard.md](manual/dashboard.md)
 10. **The content opportunity report.** If you write for a living, this is your page one: *"Content opportunities for mysite.com"* returns what to WRITE next (demand you already earn impressions for with no winning page), what to REFRESH (pages bleeding clicks), which SNIPPETS to rewrite (ranking well, under-clicked), and which clusters to STRENGTHEN (position 4-20, one push from the money). Every row traces to your own Search Console data - no invented keyword ideas - and *"draft the brief for row 1"* turns any of them into a grounded outline. → [competitive.md](manual/competitive.md)
 11. **Market Sizing and Prioritisation.** *"Size the market: mysite.com vs rival1.com and rival2.com"* - the keyword universe, total monthly demand, and share of voice per topic cluster, from one cached call per domain. The engagement-opening read that used to need a Semrush subscription. → [competitive.md](manual/competitive.md)
-12. **Content recon - why is this page losing?** *"Run content recon on mysite.com"* takes your highest-impression pages sitting at positions 3-15 (the ones a push could move), pulls the live Google SERP for each, and reads whether the **AI Overview** cites you. The verdict is the honest bit: *rank but not cited* is a data-accuracy or freshness problem, not a rewrite. It transcribes the ranking videos (Supadata), reads the reachable competitors (Firecrawl with a free browser-profile fetch behind it, and Reddit through its own JSON), and writes the gaps into a tracked to-do board you can annotate and re-measure. → [recon.md](manual/recon.md)
+12. **Content recon - why is this page losing?** *"Run content recon on mysite.com"* takes your highest-impression pages sitting at positions 3-15 (the ones a push could move), pulls the live Google SERP for each, and reads whether the **AI Overview** cites you. The verdict is the honest bit: *rank but not cited* is a data-accuracy or freshness problem, not a rewrite. It reads the reachable competitors with a free browser-profile fetch (Reddit through its own JSON), lists the ranking videos for you to watch, and writes the gaps into a tracked to-do board you can annotate and re-measure. → [recon.md](manual/recon.md)
 13. **Link prospecting, sorted by authority that's real.** *"Link intersect for mysite.com vs rival1.com, rival2.com"* returns the domains linking to your rivals and not to you - the outreach list, followed-first and spam-filtered. Add a **Majestic** key and it re-sorts on **Trust Flow** and shows each prospect's **Topical Trust Flow**, so the directories drop out and what's left is authority that's on your topic. → [Majestic, below](#link-intersect-and-the-majestic-trust-flow-tier)
 
 [![The Search performance tab - branded vs non-branded, ranking distribution over time (impressions by position bucket) and search visibility over time](https://raw.githubusercontent.com/houtini-ai/seo-audit/master/assets/search-performance.png)](https://github.com/houtini-ai/seo-audit)
@@ -150,8 +180,6 @@ Each of these is a real procedure I use, and each is one prompt. The expanded ve
 Everything above works with just your Search Console data. But GSC can only describe searches where you already appear. The moment your question is "how big is this market?" or "what do competitors rank for that I don't?", you need third-party data - and that's [DataForSEO](https://dataforseo.com/?aff=213701): a pay-as-you-go API for volumes, live rankings, competitor data and Lighthouse runs. No subscription; calls cost fractions of a cent to a few cents, cached for 20 days, and only ever run when you ask. My own usage runs to a few dollars a month.
 
 It unlocks the Semrush-replacement layer: the organic visibility overview for any domain, any site's top pages and ranked keywords (including which of them show an **AI Overview**), the content gap, topic gaps, search intent, lab Core Web Vitals and backlinks. It also drives **content recon** - `recon_targets` pulls the live Google SERP for a losing page, reads whether the AI Overview cites you, and tells you *why* you're behind. The full workflows and setup: [competitive.md](manual/competitive.md).
-
-**Two more optional keys, for content recon only.** When you ask recon to fetch the competitors it finds, it routes each by source: videos to [Supadata](https://supadata.ai) (`SUPADATA_API_KEY`) for transcripts, and competitor pages to [Firecrawl](https://firecrawl.link/2d1PLD8) (`FIRECRAWL_API_KEY`) for clean markdown, with a free browser-profile fetch behind it. Both are pay-as-you-go and entirely optional - recon still classifies the page and lists the competitors without them. Grab a Firecrawl key here: **https://firecrawl.link/2d1PLD8**.
 
 One more thing DataForSEO unlocks gets a section of its own, because the link work has a second, optional service behind it.
 
@@ -193,11 +221,11 @@ Optional, and I mean optional: with no key, `link_intersect` still runs and stil
 
 ## Installation, in brief
 
-Three steps - the full walkthrough with the gotchas is [getting-started.md](manual/getting-started.md):
+Three steps - the [quick start](#quick-start) above is the short version, and the full walkthrough with the gotchas is [getting-started.md](manual/getting-started.md):
 
 1. **Get it:** the quick route is npx - point your MCP config at `npx -y @houtini/seo-audit-console` and there's nothing to build. Or clone this repo, `npm install`, `npm run build` if you want the source. Either way, Node ≥ 20.
 2. **Connect Search Console:** create a Google Cloud service account, download its JSON key, and - the step everyone misses - **add the service account's email as a user on your property** in Search Console. Prefer a walkthrough with pictures? [Setting it up from scratch](https://houtini.com/articles/better-search-console/#setting-it-up-from-scratch) covers the whole flow.
-3. **Point your MCP client at it** (the npx command, or `dist/index.js` from your clone) with `GOOGLE_APPLICATION_CREDENTIALS` set. Works in Claude Desktop and Claude Code; only the one env var is required.
+3. **Point your MCP client at it** with `GOOGLE_APPLICATION_CREDENTIALS` set: `npx -y @houtini/seo-audit-console` for the published package, or `node /path/to/seo-audit-console/dist/index.js` if you built from source. Works in Claude Desktop and Claude Code; only the one env var is required.
 
 The main environment variables, in one block - the first is required and everything below it is optional, so delete the lines for services you don't use:
 
@@ -205,8 +233,8 @@ The main environment variables, in one block - the first is required and everyth
 {
   "mcpServers": {
     "seo-audit-console": {
-      "command": "node",
-      "args": ["C:/path/to/seo-audit-console/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "@houtini/seo-audit-console"],
       "env": {
         "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account.json",
         "SAC_DATA_DIR": "C:/path/to/where/audits/are/stored",
@@ -214,16 +242,16 @@ The main environment variables, in one block - the first is required and everyth
         "DATAFORSEO_PASSWORD": "your-dataforseo-password",
         "DATAFORSEO_CACHE_DAYS": "20",
         "MAJESTIC_API_KEY": "your-majestic-api-key",
-        "MAJESTIC_CACHE_DAYS": "30",
-        "FIRECRAWL_API_KEY": "your-firecrawl-key",
-        "SUPADATA_API_KEY": "your-supadata-key"
+        "MAJESTIC_CACHE_DAYS": "30"
       }
     }
   }
 }
 ```
 
-`GOOGLE_APPLICATION_CREDENTIALS` gets you the whole core audit. DataForSEO adds the market layer, `MAJESTIC_API_KEY` adds the Trust Flow re-sort to `link_intersect`, and Firecrawl and Supadata are content recon's fetchers. Line-by-line, including the advanced ones you'll probably never need (the reranker device, the Majestic sandbox host, and the dashboard server's bind, port and auto-start): [getting-started.md](manual/getting-started.md#environment-variables).
+Built from source instead? Swap the two launch lines for `"command": "node"` and `"args": ["C:/path/to/seo-audit-console/dist/index.js"]`; the `env` block is identical.
+
+`GOOGLE_APPLICATION_CREDENTIALS` gets you the whole core audit. DataForSEO adds the market layer, and `MAJESTIC_API_KEY` adds the Trust Flow re-sort to `link_intersect`. Line-by-line, including the advanced ones you'll probably never need (the reranker device, the Majestic sandbox host, and the dashboard server's bind, port and auto-start): [getting-started.md](manual/getting-started.md#environment-variables).
 
 Then: *"list properties"* to check it's connected, *"refresh"*, *"run an SEO audit"*.
 
@@ -293,7 +321,7 @@ The one-line version - full descriptions, inputs and example prompts for every t
 
 ## Privacy and data
 
-Your Search Console data and the crawl live in local SQLite files under `SAC_DATA_DIR`. The passage-scoring model runs locally too. Nothing leaves your machine except the API calls *you* trigger - Google (your own GSC) and, if you've set them up, DataForSEO, Majestic (`link_intersect` sends prospect domain names; `pull_backlinks` sends your own backlinked page URLs), and Firecrawl/Supadata (content recon sends the competitor URLs it found). Every one of those is keyed by you, called on demand, and cached locally so it isn't called twice. The crawl also reaches beyond your own site in one way: after each crawl it checks the outbound links your pages carry (a HEAD request, or a ranged GET, to each linked URL; `checkExternal:false` turns that off). And the free extras fetch from public sources: the local models download once from Hugging Face, `resolve_entities` queries Wikidata, and `news_discovery` reads the Google News feed. No telemetry. None.
+Your Search Console data and the crawl live in local SQLite files under `SAC_DATA_DIR`. The passage-scoring model runs locally too. Nothing leaves your machine except the API calls *you* trigger - Google (your own GSC) and, if you've set them up, DataForSEO and Majestic (`link_intersect` sends prospect domain names; `pull_backlinks` sends your own backlinked page URLs). Every one of those is keyed by you, called on demand, and cached locally so it isn't called twice. Content recon's competitor fetch requests those public pages directly, with no service in between. The crawl also reaches beyond your own site in one way: after each crawl it checks the outbound links your pages carry (a HEAD request, or a ranged GET, to each linked URL; `checkExternal:false` turns that off). And the free extras fetch from public sources: the local models download once from Hugging Face, `resolve_entities` queries Wikidata, and `news_discovery` reads the Google News feed. No telemetry. None.
 
 ---
 
@@ -322,7 +350,6 @@ SEO Audit Console stands on a few third-party services - all optional except you
 - **[Google Search Console](https://search.google.com/search-console)** - your own search-performance history (the one required credential).
 - **[DataForSEO](https://dataforseo.com/?aff=213701)** - SERP, keyword, Labs and backlink data: keyword volumes, competitor footprints, rank history, and the `link_intersect` domain intersection. Pay-as-you-go, optional.
 - **[Majestic](https://majestic.com)** - **Trust Flow** and **Topical Trust Flow** for the `link_intersect` enrichment tier, which re-sorts link prospects by real editorial authority. Trust Flow and Topical Trust Flow are trademarks of Majestic (Majestic-12 Ltd). Optional; get a key on their [plans page](https://majestic.com/plans-pricing).
-- **[Firecrawl](https://firecrawl.link/2d1PLD8)** and **[Supadata](https://supadata.ai)** - competitor-page and ranking-video fetching for content recon. Optional.
 
 Built with [better-sqlite3](https://github.com/WiseLibs/better-sqlite3), [cheerio](https://cheerio.js.org), [Apache ECharts](https://echarts.apache.org), and a local [ms-marco cross-encoder](https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2) (via [Transformers.js](https://github.com/huggingface/transformers.js)) for on-device passage scoring - no data leaves your machine for that.
 

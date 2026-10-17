@@ -4,7 +4,7 @@ Most audit tools tell you *what* is wrong on a page. Recon answers a harder ques
 
 It's the most data-intensive thing this MCP does, so it's on-demand and it costs a little (live SERP calls). You point it at a property, it does the legwork, and you get back a prioritised to-do board you can annotate and re-measure after you ship the fix.
 
-> **Needs a DataForSEO key** (the live SERP is a paid call, ~$0.004 per page). The competitor-fetching step also uses Firecrawl and Supadata if you have them - but it degrades gracefully without. See [getting-started.md](getting-started.md#environment-variables).
+> **Needs a DataForSEO key** (the live SERP is a paid call, ~$0.004 per page). The competitor-fetching step needs no key at all. See [getting-started.md](getting-started.md#environment-variables).
 
 ## The one prompt
 
@@ -69,11 +69,11 @@ The competitor set - the organic results ranked above you, the AI Overview's cit
 
 ### Optional: pull the competitors as content
 
-Add `scrapeCompetitors: true` and recon also **fetches the ranking competitors as text**, routed by host so each source is fetched the right way. It needs at least one of the Firecrawl and Supadata keys; with neither set, nothing is fetched.
+Add `scrapeCompetitors: true` and recon also **fetches the ranking competitors as text**, routed by host so each source is fetched the right way. It is free and needs no API key.
 
-- **YouTube and other video hosts** (TikTok, X, Vimeo and friends) → Supadata transcript (needs `SUPADATA_API_KEY`) - and video usually *is* what wins these SERPs.
-- **Reddit** → its `.json` endpoint, with a plain HTML fetch as fallback.
-- **Everything else** → Firecrawl (needs `FIRECRAWL_API_KEY`), with a free browser-profile HTTP fetch as fallback. `crawlAs: "googlebot"` sends that free fetch as Googlebot instead.
+- **Reddit** → its `.json` endpoint (the post plus the top comments), with a plain HTML fetch as fallback.
+- **Everything else** → a free browser-profile HTTP fetch, read through the crawler's own extractor. `crawlAs: "googlebot"` sends it as Googlebot instead.
+- **Video** (YouTube, TikTok, X, Vimeo and friends) → listed, not fetched: a video page has no readable text over HTTP, so the ranking videos come back as a list to watch - and video usually *is* what wins these SERPs.
 
 `competitorLimit` (default 5, max 12) caps how many are fetched - with one slot kept for a ranking video when there is one - and **whatever isn't fetched is listed as skipped, never dropped silently**, so you always know the full competitor set even if you only pulled the top five. Cloudflare-challenge sites (PCMag and friends) still can't be fetched from a server and come back as a per-URL error - the SERP still tells you they rank; if one matters, paste its copy in and it'll get diffed alongside the rest.
 
@@ -83,7 +83,7 @@ Recon doesn't just report - it seeds a **trackable to-do board** per page, and t
 
 1. **`recon_targets`** classifies each page and writes the **deterministic** to-dos it can prove without judgement - missing item-level schema on a commercial page, the facts to update and mark up on an accuracy-or-freshness page, a `dateModified` more than 90 days old, a cannibalisation cluster to consolidate, a format gap where the SERP wants video - plus a research to-do to run the competitor diff. A page-cannot-rank page gets just one: resolve the duplicate. Each to-do snapshots the page's rank/citation **baseline** so the fix's effect is measurable later.
 
-2. **`save_recon_todo`** is how the *research* writeback happens. After you (or Claude) diff the fetched competitors and video transcripts against your own content, you write the **judgement** to-dos back - the content gaps and originality findings - against the page. They sort on the same opportunity scale as the deterministic ones.
+2. **`save_recon_todo`** is how the *research* writeback happens. After you (or Claude) diff the fetched competitors (and the ranking videos you watched) against your own content, you write the **judgement** to-dos back - the content gaps and originality findings - against the page. They sort on the same opportunity scale as the deterministic ones.
 
 3. **`recon_todos`** is the board itself. With no id, it lists the to-dos grouped by page with each page's verdict - the pick-a-page-to-work-on surface, and the hand-off to a content workflow. With an id, you update one to-do: move its status (`open → researching → drafted → shipped → dismissed`) and append dated annotations as you work.
 
@@ -95,7 +95,7 @@ Recon doesn't just report - it seeds a **trackable to-do board** per page, and t
 
 ## What it costs
 
-The SERP call is ~$0.004 per page, plus a small refundable surcharge for loading async AI Overviews. A 10-page recon is a few cents. The competitor-fetching step's cost depends on your Firecrawl / Supadata plans; without those keys, recon still runs on the SERP + your own page and simply doesn't pull competitor bodies. Every DataForSEO response is cached, so re-running within the cache window is free.
+The SERP call is ~$0.004 per page, plus a small refundable surcharge for loading async AI Overviews. A 10-page recon is a few cents. The competitor-fetching step is free: plain HTTP requests, no API. Every DataForSEO response is cached, so re-running within the cache window is free.
 
 ## When to reach for it
 
