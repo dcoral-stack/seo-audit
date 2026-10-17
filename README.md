@@ -25,7 +25,7 @@ you  › run an SEO audit on mysite.com
      ⣾ search console  1.8M rows synced (19s - incremental)
      ⣾ crawl           868 pages · HTTP/2 · robots-polite · 8 parallel
      ⣾ link graph      internal PageRank · click depth · in-degree
-     ✓ 139 checks · 220 findings · ranked by expected clicks per dev-hour
+     ✓ 143 checks · 220 findings · ranked by expected clicks per dev-hour
 
      #1  CTR far below position-expected     /pricing                   XL
      #2  Page losing clicks (trend)          site-wide                  XL
@@ -103,7 +103,7 @@ This README is the story and the quick start. The detail lives in the manual:
 |---|---|
 | [Getting started](manual/getting-started.md) | Install, the GSC service-account setup (and the step everyone misses), Claude Desktop and Claude Code config, your first audit, troubleshooting |
 | [Tool reference](manual/tools.md) | Every tool: what it does, inputs, joins, an example prompt |
-| [The check registry](manual/checks.md) | All 139 checks with what each catches, its D/N label, and the fix |
+| [The check registry](manual/checks.md) | All 143 checks with what each catches, its D/N label, and the fix |
 | [Composition](manual/composition.md) | The join keys, the grains, and fourteen recipes for asking your own questions across the data |
 | [Competitive analysis](manual/competitive.md) | The Semrush-replacement workflows, DataForSEO setup, link intersect with the Majestic Trust Flow tier, and the real costs |
 | [SEO Recon](manual/recon.md) | Why a page is losing: the live SERP + AI-Overview citation verdict, the competitor diff, and the trackable to-do ledger |
@@ -141,7 +141,7 @@ Yes. The crawl-plus-GSC merge is not a novelty; it's the method. On one property
 
 ## What the audit checks
 
-`run_audit` executes **139 checks** over the joined data and returns a ranked list - not a wall of everything, a priority order with the traffic at stake attached to each finding. The families, briefly:
+`run_audit` executes **143 checks** over the joined data and returns a ranked list - not a wall of everything, a priority order with the traffic at stake attached to each finding. The families, briefly:
 
 | Family | What it catches |
 |---|---|
@@ -152,7 +152,7 @@ Yes. The crawl-plus-GSC merge is not a novelty; it's the method. On one property
 | **The merged questions** | Cannibalisation, striking distance, ghost pages, traffic to dead URLs, internal authority wasted on no-click pages, titles missing the query you already rank for |
 | **AI-search readiness** | Phrases you rank for but never say, queries your copy never answers in one passage, content that doesn't chunk cleanly for retrieval |
 | **Accessibility** | A deterministic subset of the axe-core rules read straight from the HTML - links and buttons with no accessible name, unlabelled form fields, pinch-zoom disabled, positive tabindex, duplicate ids - alongside alt text, heading order and missing `lang` |
-| **JavaScript rendering & duplication** | On demand: *Response vs Render* (`render_pages`) crawls each page in headless Chromium and flags content and links that exist only after JavaScript, and semantic near-duplicate detection (`find_duplicates`) finds pages that say the same thing - both run locally, no API cost |
+| **JavaScript rendering & duplication** | On demand: *Response vs Render* (`render_pages`) crawls each page in headless Chromium and flags content and links that exist only after JavaScript, and what JavaScript changes (canonical, title, noindex in either direction, server-rendered copy it removes), and semantic near-duplicate detection (`find_duplicates`) finds pages that say the same thing - both run locally, no API cost |
 
 Every check is labelled **D** (deterministic - here are the bytes) or **N** (judgement - off by default, ask for *"the judgement findings"* to see them). In my view a wrong finding is worse than no finding at all, so the heuristic checks have to ask permission. The full registry, check by check, is in [the manual](manual/checks.md).
 

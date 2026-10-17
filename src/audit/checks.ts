@@ -12,6 +12,7 @@ import { ECOMMERCE_CHECKS } from './checks-ecommerce.js';
 import { HREFLANG_CHECKS, HREFLANG_EXISTING_CHECKS } from './checks-hreflang.js';
 import { ASSET_CHECKS } from './checks-assets.js';
 import { PROBE_CHECKS } from './checks-probes.js';
+import { RENDER_CHECKS } from './checks-render.js';
 
 /**
  * Check registry. Each check is a pure read over the AuditDatabase (crawl + GSC +
@@ -1545,6 +1546,8 @@ export const CHECKS: CheckDef[] = [
   ...ASSET_CHECKS,
   // #55 group D: soft-404 handling + host variants, from the crawl's site probes (item 8).
   ...PROBE_CHECKS,
+  // #55 group E: JS-render divergence from render_audit (item 9).
+  ...RENDER_CHECKS,
 ];
 
 // ── Google Discover helpers (article-eligibility + directive/schema parsing) ──

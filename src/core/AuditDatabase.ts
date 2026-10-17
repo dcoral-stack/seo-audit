@@ -703,6 +703,19 @@ export class AuditDatabase {
     // ties them to the crawl that ran them.
     ensure('probes', 'source', 'source TEXT');
     ensure('probes', 'crawl_id', 'crawl_id TEXT');
+    // #55 group E: what JS changed besides links/words/title. NULL on rows rendered before 0.16.0, which
+    // the render-divergence checks report as not collected (re-run render_pages).
+    ensure('render_audit', 'raw_canonical', 'raw_canonical TEXT');          // absolute canonical in the raw HTML
+    ensure('render_audit', 'rendered_canonical', 'rendered_canonical TEXT');
+    ensure('render_audit', 'raw_robots', 'raw_robots TEXT');                // <meta name="robots"> content
+    ensure('render_audit', 'rendered_robots', 'rendered_robots TEXT');
+    ensure('render_audit', 'x_robots_tag', 'x_robots_tag TEXT');            // response header (JS can't change it)
+    ensure('render_audit', 'raw_noindex', 'raw_noindex INTEGER');           // meta or header noindex, before JS
+    ensure('render_audit', 'rendered_noindex', 'rendered_noindex INTEGER'); // meta or header noindex, after JS
+    ensure('render_audit', 'robots_changed', 'robots_changed INTEGER');     // effective noindex differs raw vs rendered
+    ensure('render_audit', 'raw_main_words', 'raw_main_words INTEGER');     // words in the main content (mainWordCount)
+    ensure('render_audit', 'rendered_main_words', 'rendered_main_words INTEGER');
+    ensure('render_audit', 'raw_status', 'raw_status INTEGER');             // HTTP status of the raw fetch
     ensure('pages', 'max_passage_score', 'max_passage_score REAL');
     ensure('pages', 'max_passage_query', 'max_passage_query TEXT');
     ensure('pages', 'max_passage_impr', 'max_passage_impr INTEGER');

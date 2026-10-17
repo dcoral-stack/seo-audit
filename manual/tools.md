@@ -74,7 +74,7 @@ One named check, with every affected URL and its full evidence. The drill-down a
 > Run the keyword-cannibalisation check on mysite.com with evidence
 
 ### `list_checks`
-The whole check catalogue - all 139, with categories and labels. The same list, annotated, is [checks.md](checks.md).
+The whole check catalogue - all 143, with categories and labels. The same list, annotated, is [checks.md](checks.md).
 > What does the audit check for?
 
 ### `list_templates`
@@ -125,7 +125,7 @@ Semantic near-duplicate detection, run locally. A small sentence-embedding model
 > Find near-duplicate pages on mysite.com
 
 ### `render_pages`
-The *Response vs Render* check: render a bounded, sampled set of pages in headless Chromium and diff the rendered DOM against the raw HTML the crawler fetched, surfacing content and internal links that exist **only** after JavaScript (what a first-pass crawl, and Google before it renders, can miss) as `content-only-in-rendered-dom`. Opt-in: it needs the optional browser (`npm i playwright && npx playwright install chromium`), runs as a separate async job (never part of the normal crawl - poll `check_crawl_status`), and degrades with a clear install hint when the browser isn't present. `limit` caps pages (default 10, likeliest JS-dependent first); the HTTP audit is unaffected either way.
+The *Response vs Render* check: render a bounded, sampled set of pages in headless Chromium and diff the rendered DOM against the raw HTML the crawler fetched, surfacing content and internal links that exist **only** after JavaScript (what a first-pass crawl, and Google before it renders, can miss) as `content-only-in-rendered-dom`, and what JavaScript changes: the canonical (`canonical-changed-by-js`), the title (`title-changed-by-js`), noindex in either direction (`noindex-changed-by-js`), and main content it removes (`hydration-content-loss`). Each row records both canonicals, both robots meta values, the X-Robots-Tag header, main-content words on both sides and the raw status. Opt-in: it needs the optional browser (`npm i playwright && npx playwright install chromium`), runs as a separate async job (never part of the normal crawl - poll `check_crawl_status`), and degrades with a clear install hint when the browser isn't present. `limit` caps pages (default 10, likeliest JS-dependent first); the HTTP audit is unaffected either way.
 > Render the top pages on mysite.com and show what only appears after JavaScript
 
 ### `check_agent_readiness`
