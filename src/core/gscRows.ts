@@ -1,83 +1,112 @@
 /**
- * gscRows — count every GSC day ONCE.
+ * gscRows — where GSC rows live, and the views every reader goes through.
  *
- * `search_analytics` stores one row per (date, query, page, device, country). A sync writes one
- * row SHAPE: lite rows (device = '' AND country = '', the all-country totals) or segmented rows
- * (country-only, device-only, or device × country, depending on the dimensions requested). Each
- * shape on its own adds up to the day's totals, but a database can hold MORE than one shape for
- * the same day: simracingcockpit.gg holds lite AND country rows for 111 days (18 May to 5 Sep
- * 2026), because a country-only sync is not caught by GscSync's lite/segmented guard (which keys
- * on `device`). A plain `SUM(clicks)` over those days counts every click twice (issue #61).
+ * Storage (#65). A GSC sync writes one row SHAPE: all-country rows (device = '' AND country = '',
+ * the totals) or segment rows (country-only, device-only, or device × country). They are stored
+ * in two tables:
  *
- * The fix is one row set per day, chosen ONCE and shared by every reader:
+ *   - `search_analytics` holds TOTALS rows only (one row per date × query × page). A guard trigger
+ *     refuses a segment row, so no sync, old or new, can mix shapes in it again.
+ *   - `search_analytics_segments` holds the segment rows (same columns). A guard trigger refuses
+ *     an all-country row there.
  *
- *   - `gsc_day_shape` (table) holds, for each day stored in more than one shape, the shape to
- *     read. Days held in a single shape are not listed and pass through untouched.
- *   - `gsc_rows` (view) = `search_analytics` minus the rows of the shapes not chosen. Every
- *     total (KPIs, trends, movers, audit period comparisons, query_data) reads this view.
- *   - `gsc_country_rows` / `gsc_device_rows` (views) = the rows that carry a country / device,
- *     with the same one-shape-per-day rule among the shapes that carry it (country-only vs
- *     device × country rows). The country and device breakdowns read these on purpose.
+ * The views:
+ *   - `gsc_rows` = `search_analytics`, straight through. Every total (KPIs, trends, movers, audit
+ *     period comparisons, query_data) reads it, and the covering indexes on search_analytics apply.
+ *   - `gsc_country_rows` / `gsc_device_rows` = the segment rows that carry a country / device. The
+ *     country and device breakdowns read these.
  *
- * The rule for a mixed day: read the shape with the MOST impressions (then most clicks, then lite
- * first). One shape is read whole, so clicks, impressions and position stay internally
- * consistent for that day. Why impressions and not "lite wins": on simracingcockpit.gg the lite
- * rows written for 1 Jun to 13 Aug 2026 held only the query/page rows that got a click, so their
- * clicks match the country rows exactly but their impressions are a fraction (June: 1.13M vs
- * 2.52M); and on 5 Sep the country rows are a partial day (141 clicks vs 903). A truncated row
- * set always loses impressions, so the shape with the most impressions is the complete one.
+ * Totals for a day are the fuller of the two sources: the all-country rows, or the segment rows
+ * aggregated to the totals grain (clicks and impressions summed, position impression-weighted).
+ * "Fuller" is the #64 rule: most impressions, then most clicks, then all-country first. On
+ * simracingcockpit.gg the all-country rows for 9 Jun to 12 Aug 2026 held only the rows that got a
+ * click (impressions short, clicks exact), and on 5 Sep the per-country rows were a partial day; a
+ * truncated row set always loses impressions. The writer applies the rule (`settleGscTotals`) after
+ * every sync, so readers never choose.
  *
- * Freshness: the choice depends on the data, so it is recomputed whenever `search_analytics`
- * changes. The writer (GscSync) refreshes it after every sync, and every writable open
- * (AuditDatabase) re-checks a cheap fingerprint (MAX/MIN rowid; ids are AUTOINCREMENT, so any
- * insert or wipe-and-reinsert moves it) and recomputes only when it moved. A read-only handle
- * reads whatever was last computed.
+ * Before #65 both shapes lived in `search_analytics`, and #64 picked one shape per day at READ time
+ * (a per-row shape test the covering indexes cannot serve). A database in that layout is `pending`
+ * until the one-time migration (gscMigrate.ts) moves it; until then the views keep #64's per-day
+ * filter so every figure stays correct, only slower. `gsc_storage_state` records the layout.
+ *
+ * `gsc_day_shape` is #64's per-day table. Before the migration it drives the filtered views. After
+ * it, it is evidence: the days whose all-country and segment rows were both stored when the
+ * migration ran, plus any day where a later sync found the two disagreeing, with `totals_from` =
+ * the shape the totals came from and `shapes` = the per-shape figures behind the choice. Its
+ * `country_shape` / `device_shape` still pick one segment shape on a legacy day holding two segment
+ * shapes that both carry country (or device); with none listed, the segment views are plain
+ * pass-throughs too.
  *
  * Rule for readers: a TOTAL reads `gsc_rows`; a breakdown BY country or device reads
- * `gsc_country_rows` / `gsc_device_rows`. Never `SUM` over `search_analytics` directly.
- * (Raw `search_analytics` is still right for row counts, MIN/MAX(date) and the writers.)
+ * `gsc_country_rows` / `gsc_device_rows`. Raw `search_analytics` is right for row counts,
+ * MIN/MAX(date), distinct queries/pages and the writers.
  */
 import type Database from 'better-sqlite3';
 
-/** Totals view: one row set per day. */
+/** Totals view. */
 export const GSC_ROWS = 'gsc_rows';
-/** Rows that carry a country, one country-carrying shape per day. */
+/** Segment rows that carry a country. */
 export const GSC_COUNTRY_ROWS = 'gsc_country_rows';
-/** Rows that carry a device, one device-carrying shape per day. */
+/** Segment rows that carry a device. */
 export const GSC_DEVICE_ROWS = 'gsc_device_rows';
+/** The segment table. */
+export const SEGMENTS = 'search_analytics_segments';
 
-/** Shape code of a row: 0 lite, 1 country-only, 2 device-only, 3 device × country. NULL counts as ''. */
+/** Columns of search_analytics and search_analytics_segments, in table order (the views select these). */
+const COLS = ['id', 'date', 'query', 'page', 'page_key', 'device', 'country', 'search_appearance',
+  'clicks', 'impressions', 'ctr', 'position', 'created_at', 'search_type'] as const;
+/** The columns a copy carries (id is the target's own). */
+export const DATA_COLS = COLS.filter(c => c !== 'id').join(', ');
+
+/** Shape code of a row: 0 all-country, 1 country-only, 2 device-only, 3 device × country. NULL counts as ''. */
 export const shapeSql = (alias = ''): string => {
   const a = alias ? `${alias}.` : '';
   return `((COALESCE(${a}device,'') <> '') * 2 + (COALESCE(${a}country,'') <> ''))`;
 };
+/** True for a segment row (any shape but all-country). */
+export const segmentSql = (alias = ''): string => {
+  const a = alias ? `${alias}.` : '';
+  return `(COALESCE(${a}device,'') <> '' OR COALESCE(${a}country,'') <> '')`;
+};
 const SHAPE_NAMES = ['all-country', 'per-country', 'per-device', 'per-device-and-country'] as const;
 
-/**
- * View definitions. With no mixed day (every property synced in one shape, the usual case) a view is
- * a plain pass-through, so SQLite keeps using the covering indexes on (date, clicks, impressions...)
- * and nothing gets slower. Only when `gsc_day_shape` lists days does the view carry the per-row shape
- * test, which has to read device and country from the table (no covering index holds them).
- */
-const viewSql = (name: string, filtered: boolean): string => {
-  const col = name === GSC_COUNTRY_ROWS ? 'country_shape' : name === GSC_DEVICE_ROWS ? 'device_shape' : 'total_shape';
-  const carries = name === GSC_COUNTRY_ROWS ? `COALESCE(sa.country,'') <> ''` : name === GSC_DEVICE_ROWS ? `COALESCE(sa.device,'') <> ''` : '';
-  const pick = filtered
-    ? `(sa.date NOT IN (SELECT date FROM gsc_day_shape WHERE ${col} IS NOT NULL)
-       OR ${shapeSql('sa')} = (SELECT g.${col} FROM gsc_day_shape g WHERE g.date = sa.date))`
-    : '';
-  const where = [carries, pick].filter(Boolean).join('\n      AND ');
-  return `CREATE VIEW ${name} AS SELECT sa.* FROM search_analytics sa${where ? `\n    WHERE ${where}` : ''}`;
-};
+export type GscStorageState = 'pending' | 'migrating' | 'done';
 
-/** Create the shape table and its state row (idempotent), then bring the three views in line with it. */
+export const GUARD_MSG_TOTALS = 'search_analytics holds all-country totals rows only (device and country empty); segment rows belong in search_analytics_segments (#65)';
+const GUARD_MSG_SEGMENTS = 'search_analytics_segments holds segment rows only (a device or a country); all-country rows belong in search_analytics (#65)';
+
+/** Create the segment table, the state tables and (once migrated) the guard; then bring the views in line. Idempotent. */
 export function ensureGscRowsSchema(db: Database.Database): void {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS ${SEGMENTS} (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL,
+      query TEXT,
+      page TEXT,
+      page_key TEXT,
+      device TEXT NOT NULL DEFAULT '',
+      country TEXT NOT NULL DEFAULT '',
+      search_appearance TEXT,
+      clicks INTEGER NOT NULL DEFAULT 0,
+      impressions INTEGER NOT NULL DEFAULT 0,
+      ctr REAL NOT NULL DEFAULT 0,
+      position REAL NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      search_type TEXT DEFAULT 'web'
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sas_unique ON ${SEGMENTS}(date, query, page, device, country);
+    -- Covering indexes for the dashboard's country and device breakdowns (a date window, grouped).
+    CREATE INDEX IF NOT EXISTS idx_sas_date_country ON ${SEGMENTS}(date, country, clicks, impressions, position);
+    CREATE INDEX IF NOT EXISTS idx_sas_date_device  ON ${SEGMENTS}(date, device, clicks, impressions, position);
+    CREATE TRIGGER IF NOT EXISTS sas_segments_only BEFORE INSERT ON ${SEGMENTS}
+      WHEN NOT ${segmentSql('NEW')}
+      BEGIN SELECT RAISE(ABORT, '${GUARD_MSG_SEGMENTS}'); END;
+
     CREATE TABLE IF NOT EXISTS gsc_day_shape (
       date TEXT PRIMARY KEY,
-      total_shape INTEGER NOT NULL,   -- the shape gsc_rows reads on this day
-      country_shape INTEGER,          -- the shape gsc_country_rows reads (NULL = only one carries country)
-      device_shape INTEGER,           -- the shape gsc_device_rows reads (NULL = only one carries device)
+      total_shape INTEGER NOT NULL,   -- the shape gsc_rows reads on this day (0 once migrated)
+      country_shape INTEGER,          -- the segment shape gsc_country_rows reads (NULL = only one carries country)
+      device_shape INTEGER,           -- the segment shape gsc_device_rows reads (NULL = only one carries device)
       shapes TEXT NOT NULL            -- JSON [{shape, clicks, impressions, rows}] behind the choice (evidence)
     ) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS gsc_day_shape_state (
@@ -85,19 +114,97 @@ export function ensureGscRowsSchema(db: Database.Database): void {
       fingerprint TEXT NOT NULL,
       computed_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS gsc_storage_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      state TEXT NOT NULL,            -- pending | migrating | done
+      backup TEXT,                    -- the backup file the migration made (NULL when none was needed)
+      detail TEXT,                    -- JSON: migration progress and stats
+      updated_at TEXT NOT NULL
+    );
   `);
+  // totals_from: the shape the stored totals were taken from (set by the migration and by settle).
+  if (!(db.prepare(`PRAGMA table_info(gsc_day_shape)`).all() as { name: string }[]).some(c => c.name === 'totals_from')) {
+    db.exec(`ALTER TABLE gsc_day_shape ADD COLUMN totals_from INTEGER`);
+  }
+  let state = gscStorageState(db);
+  if (!state) {
+    // First open by this version: a database with no segment row in search_analytics (every new
+    // database, and every property only ever synced lite) has nothing to migrate. One scan, once.
+    const legacy = !!db.prepare(`SELECT 1 FROM search_analytics WHERE ${segmentSql()} LIMIT 1`).get();
+    state = legacy ? 'pending' : 'done';
+    setGscStorageState(db, state);
+  }
+  if (state === 'done') ensureTotalsGuard(db);
   syncViews(db);
 }
 
-/** (Re)create each view whose definition no longer matches what `gsc_day_shape` needs. */
-function syncViews(db: Database.Database): void {
+/** The guard: search_analytics refuses a segment row (insert or update). Created once migrated: a
+ *  pending database still holds segment rows, and the migration never writes one. */
+export function ensureTotalsGuard(db: Database.Database): void {
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS sa_totals_only BEFORE INSERT ON search_analytics
+      WHEN ${segmentSql('NEW')}
+      BEGIN SELECT RAISE(ABORT, '${GUARD_MSG_TOTALS}'); END;
+    CREATE TRIGGER IF NOT EXISTS sa_totals_only_upd BEFORE UPDATE OF device, country ON search_analytics
+      WHEN ${segmentSql('NEW')}
+      BEGIN SELECT RAISE(ABORT, '${GUARD_MSG_TOTALS}'); END;
+  `);
+}
+
+export function gscStorageState(db: Database.Database): GscStorageState | null {
+  try {
+    return (db.prepare(`SELECT state FROM gsc_storage_state WHERE id = 1`).get() as { state: GscStorageState } | undefined)?.state ?? null;
+  } catch { return null; } // read-only handle on a database this version never opened
+}
+
+export function setGscStorageState(db: Database.Database, state: GscStorageState, extra: { backup?: string | null; detail?: unknown } = {}): void {
+  db.prepare(`INSERT INTO gsc_storage_state (id, state, backup, detail, updated_at) VALUES (1, ?, ?, ?, datetime('now'))
+              ON CONFLICT(id) DO UPDATE SET state = excluded.state,
+                backup = COALESCE(excluded.backup, gsc_storage_state.backup),
+                detail = COALESCE(excluded.detail, gsc_storage_state.detail),
+                updated_at = excluded.updated_at`)
+    .run(state, extra.backup ?? null, extra.detail === undefined ? null : JSON.stringify(extra.detail));
+}
+
+/**
+ * View SQL. Migrated: `gsc_rows` is search_analytics as is, and the segment views read the segment
+ * table. Pending or migrating: #64's per-day filter on search_analytics, and the segment views read
+ * BOTH tables (UNION ALL), because the migration moves a day's segment rows in one transaction, so
+ * at every commit a day's segment rows sit wholly in one table or the other.
+ */
+const select = `SELECT ${COLS.join(', ')}`;
+const dayPick = (alias: string, col: 'total_shape' | 'country_shape' | 'device_shape'): string =>
+  `(${alias}.date NOT IN (SELECT date FROM gsc_day_shape WHERE ${col} IS NOT NULL)
+       OR ${shapeSql(alias)} = (SELECT g.${col} FROM gsc_day_shape g WHERE g.date = ${alias}.date))`;
+function viewSql(name: string, migrated: boolean, filter: { t: boolean; c: boolean; d: boolean }): string {
+  if (name === GSC_ROWS) {
+    return migrated || !filter.t
+      ? `CREATE VIEW ${name} AS ${select} FROM search_analytics`
+      : `CREATE VIEW ${name} AS ${select} FROM search_analytics sa\n    WHERE ${dayPick('sa', 'total_shape')}`;
+  }
+  const country = name === GSC_COUNTRY_ROWS;
+  const filtered = country ? filter.c : filter.d;
+  const part = (table: string, alias: string): string => {
+    const where = [`COALESCE(${alias}.${country ? 'country' : 'device'},'') <> ''`];
+    if (filtered) where.push(dayPick(alias, country ? 'country_shape' : 'device_shape'));
+    return `${select} FROM ${table} ${alias}\n    WHERE ${where.join('\n      AND ')}`;
+  };
+  return migrated
+    ? `CREATE VIEW ${name} AS ${part(SEGMENTS, 'ss')}`
+    : `CREATE VIEW ${name} AS ${part('search_analytics', 'sa')}\n  UNION ALL ${part(SEGMENTS, 'ss')}`;
+}
+
+/** (Re)create each view whose definition no longer matches the layout and `gsc_day_shape`. */
+export function syncViews(db: Database.Database): void {
+  const migrated = gscStorageState(db) === 'done';
   const need = db.prepare(`SELECT EXISTS(SELECT 1 FROM gsc_day_shape) t,
     EXISTS(SELECT 1 FROM gsc_day_shape WHERE country_shape IS NOT NULL) c,
     EXISTS(SELECT 1 FROM gsc_day_shape WHERE device_shape IS NOT NULL) d`).get() as { t: number; c: number; d: number };
+  const filter = { t: !!need.t, c: !!need.c, d: !!need.d };
   const want: Record<string, string> = {
-    [GSC_ROWS]: viewSql(GSC_ROWS, !!need.t),
-    [GSC_COUNTRY_ROWS]: viewSql(GSC_COUNTRY_ROWS, !!need.c),
-    [GSC_DEVICE_ROWS]: viewSql(GSC_DEVICE_ROWS, !!need.d),
+    [GSC_ROWS]: viewSql(GSC_ROWS, migrated, filter),
+    [GSC_COUNTRY_ROWS]: viewSql(GSC_COUNTRY_ROWS, migrated, filter),
+    [GSC_DEVICE_ROWS]: viewSql(GSC_DEVICE_ROWS, migrated, filter),
   };
   const have = new Map((db.prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'view' AND name IN (?, ?, ?)`)
     .all(GSC_ROWS, GSC_COUNTRY_ROWS, GSC_DEVICE_ROWS) as { name: string; sql: string }[]).map(r => [r.name, r.sql]));
@@ -115,16 +222,20 @@ const fingerprint = (db: Database.Database): string => {
   return `${r.mx}:${r.mn}`;
 };
 
-interface ShapeStat { shape: number; clicks: number; impressions: number; rows: number }
-/** The shape to read: most impressions, then most clicks, then the lower code (lite first). */
-const pick = (stats: ShapeStat[]): number =>
+export interface ShapeStat { shape: number; clicks: number; impressions: number; rows: number }
+/** The fuller shape: most impressions, then most clicks, then the lower code (all-country first). */
+export const pickShape = (stats: ShapeStat[]): number =>
   [...stats].sort((a, b) => b.impressions - a.impressions || b.clicks - a.clicks || a.shape - b.shape)[0].shape;
 
-/** Recompute `gsc_day_shape` from the data. Returns the number of days stored in more than one shape. */
+/**
+ * PENDING layout only: recompute #64's per-day choice from search_analytics. Returns the number of
+ * days stored in more than one shape. Once the migration has started, `gsc_day_shape` is frozen
+ * (the migration keeps it in step day by day), so this returns the listed days and changes nothing.
+ */
 export function refreshGscDayShapes(db: Database.Database): number {
   ensureGscRowsSchema(db);
+  if (gscStorageState(db) !== 'pending') return (db.prepare(`SELECT COUNT(*) n FROM gsc_day_shape`).get() as { n: number }).n;
   const fp = fingerprint(db);
-  // Mixed days first (min shape <> max shape), then per-shape totals for just those days.
   const S = shapeSql();
   const mixed = (db.prepare(`SELECT date FROM search_analytics GROUP BY date HAVING MIN(${S}) <> MAX(${S}) ORDER BY date`).all() as { date: string }[]).map(r => r.date);
   const rows: { date: string; total: number; country: number | null; device: number | null; shapes: string }[] = [];
@@ -137,9 +248,9 @@ export function refreshGscDayShapes(db: Database.Database): number {
       const withDevice = stats.filter(s => s.shape === 2 || s.shape === 3);
       rows.push({
         date,
-        total: pick(stats),
-        country: withCountry.length > 1 ? pick(withCountry) : null,
-        device: withDevice.length > 1 ? pick(withDevice) : null,
+        total: pickShape(stats),
+        country: withCountry.length > 1 ? pickShape(withCountry) : null,
+        device: withDevice.length > 1 ? pickShape(withDevice) : null,
         shapes: JSON.stringify(stats),
       });
     }
@@ -156,13 +267,14 @@ export function refreshGscDayShapes(db: Database.Database): number {
 }
 
 /**
- * Make sure the views exist and the per-day choice matches the data; recompute only when
- * `search_analytics` changed since the last computation. Writable handles only (a read-only
- * handle reads what the last writer computed). Cheap when nothing changed: two index lookups.
+ * Make sure the tables and views exist and match the layout. On a PENDING database (#64 layout,
+ * not yet migrated) also recompute the per-day choice when search_analytics moved since the last
+ * computation. Writable handles only. Cheap when nothing changed: two index lookups.
  */
 export function ensureGscRows(db: Database.Database): void {
   if (db.readonly) return;
   ensureGscRowsSchema(db);
+  if (gscStorageState(db) !== 'pending') return;
   const stored = (db.prepare(`SELECT fingerprint FROM gsc_day_shape_state WHERE id = 1`).get() as { fingerprint: string } | undefined)?.fingerprint;
   if (stored !== fingerprint(db)) refreshGscDayShapes(db);
 }
@@ -172,7 +284,57 @@ export function hasGscRows(db: Database.Database): boolean {
   return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = ?`).get(GSC_ROWS);
 }
 
-/** Days stored in more than one row shape, for the UI note. Null when every day has one shape. */
+/** Insert one day's segment rows of one shape into search_analytics, aggregated to the totals grain
+ *  (date × query × page): clicks and impressions summed, position impression-weighted. */
+export const AGGREGATE_DAY_SQL = `INSERT INTO search_analytics (${DATA_COLS})
+  SELECT date, query, page, MIN(page_key), '', '', MIN(search_appearance), SUM(clicks), SUM(impressions),
+         CASE WHEN SUM(impressions) > 0 THEN 1.0 * SUM(clicks) / SUM(impressions) ELSE 0 END,
+         CASE WHEN SUM(impressions) > 0 THEN 1.0 * SUM(position * impressions) / SUM(impressions) ELSE AVG(position) END,
+         MIN(created_at), MIN(search_type)
+  FROM ${SEGMENTS} WHERE date = ? AND ${shapeSql()} = ? GROUP BY query, page`;
+
+export interface SettleResult { days: number; derivedDays: number; recordedDays: number }
+
+/**
+ * After a sync (migrated layout): for each day in [from, to] that holds segment rows, make the
+ * totals in search_analytics the fuller of (the stored all-country rows, the segment rows
+ * aggregated). A day with no all-country rows gets the aggregate, so a property synced only with
+ * segments keeps its totals. When both exist and disagree, the day goes in `gsc_day_shape` as
+ * evidence. `segmentsReplaced`: a segment sync replaced
+ * the window, so any legacy per-day segment choice in it is cleared (one segment shape per day now).
+ */
+export function settleGscTotals(db: Database.Database, from: string, to: string, segmentsReplaced = false): SettleResult {
+  const days = (db.prepare(`SELECT DISTINCT date FROM ${SEGMENTS} WHERE date >= ? AND date <= ? ORDER BY date`).all(from, to) as { date: string }[]).map(r => r.date);
+  const segStat = db.prepare(`SELECT ${shapeSql()} shape, COALESCE(SUM(clicks),0) clicks, COALESCE(SUM(impressions),0) impressions, COUNT(*) rows
+                              FROM ${SEGMENTS} WHERE date = ? GROUP BY shape ORDER BY shape`);
+  const totStat = db.prepare(`SELECT 0 shape, COALESCE(SUM(clicks),0) clicks, COALESCE(SUM(impressions),0) impressions, COUNT(*) rows FROM search_analytics WHERE date = ?`);
+  const delTotals = db.prepare(`DELETE FROM search_analytics WHERE date = ?`);
+  const aggregate = db.prepare(AGGREGATE_DAY_SQL);
+  const evidence = db.prepare(`INSERT INTO gsc_day_shape (date, total_shape, country_shape, device_shape, shapes, totals_from) VALUES (?, 0, NULL, NULL, ?, ?)
+    ON CONFLICT(date) DO UPDATE SET total_shape = 0, shapes = excluded.shapes, totals_from = excluded.totals_from`);
+  let derived = 0, recorded = 0;
+  db.transaction(() => {
+    if (segmentsReplaced) db.prepare(`UPDATE gsc_day_shape SET country_shape = NULL, device_shape = NULL WHERE date >= ? AND date <= ?`).run(from, to);
+    for (const date of days) {
+      const seg = segStat.all(date) as ShapeStat[];
+      const tot = totStat.get(date) as ShapeStat;
+      const segPick = pickShape(seg); // the fuller segment shape is the aggregate candidate
+      const chosen = pickShape(tot.rows ? [tot, ...seg] : seg);
+      if (chosen !== 0) {
+        delTotals.run(date);
+        aggregate.run(date, segPick);
+        derived++;
+      }
+      const s = seg.find(x => x.shape === segPick)!;
+      const disagree = tot.rows > 0 && (s.clicks !== tot.clicks || s.impressions !== tot.impressions);
+      if (disagree) { evidence.run(date, JSON.stringify([tot, ...seg]), chosen); recorded++; }
+    }
+    syncViews(db);
+  })();
+  return { days: days.length, derivedDays: derived, recordedDays: recorded };
+}
+
+/** Days whose all-country and segment rows were both stored, for the UI note. Null when there are none. */
 export interface GscShape {
   mixedDays: number;
   from: string;

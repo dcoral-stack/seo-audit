@@ -24,6 +24,8 @@ export interface PropertyStorage {
   siteUrl: string | null;
   bytes: number;            // db + -wal + -shm
   searchAnalytics: number;
+  /** Device/country rows (search_analytics_segments, #65). */
+  searchAnalyticsSegments: number;
   pages: number;
   links: number;
   pageSnapshots: number;
@@ -116,6 +118,7 @@ export function storageSummary(dataDir: string, siteUrl?: string): StorageSummar
         siteUrl: meta?.site_url ?? null,
         bytes,
         searchAnalytics: safeCount(db, 'search_analytics'),
+        searchAnalyticsSegments: safeCount(db, 'search_analytics_segments'),
         pages: safeCount(db, 'pages'),
         links: safeCount(db, 'links'),
         pageSnapshots: safeCount(db, 'page_snapshots'),
@@ -183,7 +186,7 @@ export function pruneProperty(
       return {
         ...base, ok: false, detail: { dbFile, bytes: bytesBefore, rows: summary },
         refused: `REFUSED — delete-property is destructive and needs confirm:true. This would permanently delete ${dbFile} (+ -wal/-shm), ${fmtBytes(bytesBefore)}: ` +
-          `${summary?.searchAnalytics ?? '?'} search_analytics rows, ${summary?.pages ?? '?'} pages, ${summary?.links ?? '?'} links, ${summary?.pageSnapshots ?? '?'} snapshots, ${summary?.findings ?? '?'} findings. ` +
+          `${summary?.searchAnalytics ?? '?'} search_analytics rows (+${summary?.searchAnalyticsSegments ?? 0} segment rows), ${summary?.pages ?? '?'} pages, ${summary?.links ?? '?'} links, ${summary?.pageSnapshots ?? '?'} snapshots, ${summary?.findings ?? '?'} findings. ` +
           `GSC history is re-syncable but slow to rebuild. Re-run with confirm:true to proceed.`,
       };
     }
