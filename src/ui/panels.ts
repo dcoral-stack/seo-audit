@@ -155,6 +155,12 @@ function crawlCard(d: Dash): string {
   return bar + legend + `<div class="stat-rows">${statRows}</div>`;
 }
 
+/** Why a mapped page has no in-content link: an orphan, or linked only from navigation / footer. */
+export const isolatedText = (n: { inlinks: number; bodyInlinks: number }): string =>
+  n.inlinks === 0 ? 'Orphan: no internal link points to it.'
+    : n.bodyInlinks === 0 ? `Linked only from navigation or the footer (${fmt(n.inlinks)} internal links in, none in content), so it has no in-content link in this map.`
+      : `${fmt(n.bodyInlinks)} in-content links in, none from the other mapped pages.`;
+
 /** The network force graph - shared by the Overview preview (compact) and the Network tab (full). */
 export function drawNetwork(d: Dash, ctx: OverviewCtx, id: string, opts: { compact: boolean }): boolean {
   const sg = d.structureGraph;
@@ -167,17 +173,21 @@ export function drawNetwork(d: Dash, ctx: OverviewCtx, id: string, opts: { compa
   // Label only the highest-PageRank hubs (the rest are in the tooltip): more labels overlap.
   const narrow = (document.getElementById(id)?.clientWidth ?? 800) < 500;
   const labelled = new Set([...nodes].sort((a: any, b: any) => b.ipr - a.ipr).slice(0, opts.compact || narrow ? 6 : 10).map((n: any) => n.id));
+  // Pages with no in-content link inside the map float free in a force layout: always label them
+  // and draw them hollow, so a detached dot reads as a finding, not a rendering glitch.
+  const isolated = new Map<string, any>((sg.isolated ?? []).map((n: any) => [n.id, n]));
   const gnodes = nodes.map((n: any) => ({
     id: n.id, name: n.id, value: n.ipr, category: catOf(n),
     symbolSize: (opts.compact ? 4 : 5) + Math.round((n.ipr / maxIpr) * (opts.compact ? 18 : 26)),
-    label: (labelled.has(n.id) && !ctx.redacted)
-      ? { show: true, formatter: ctx.shortPath(n.id, 22), color: col.muted, fontSize: 10, fontFamily: monoFont() } : { show: false },
-    _s: n.status, _d: n.depth,
+    label: ((labelled.has(n.id) || isolated.has(n.id)) && !ctx.redacted)
+      ? { show: true, formatter: isolated.has(n.id) ? `${ctx.shortPath(n.id, 22)} (no in-content link)` : ctx.shortPath(n.id, 22), color: col.muted, fontSize: 10, fontFamily: monoFont() } : { show: false },
+    ...(isolated.has(n.id) ? { itemStyle: { color: col.surface, borderColor: catOf(n) === 0 ? col.green : catOf(n) === 1 ? col.amber : col.red, borderWidth: 2, borderType: 'dashed' } } : {}),
+    _s: n.status, _d: n.depth, _iso: isolated.get(n.id),
   }));
   const edgeColor = getComputedStyle(document.documentElement).getPropertyValue('--chart-edge').trim() || col.border;
   ctx.wrap(id).setOption({
     aria: { enabled: true },
-    tooltip: { ...tooltipDefaults(col, 'item'), formatter: (p: any) => p.dataType === 'edge' ? '' : `${esc(ctx.shortPath(p.data.id, 48))}<br/>iPR ${p.data.value} · status ${p.data._s ?? '-'} · depth ${p.data._d ?? '-'}` },
+    tooltip: { ...tooltipDefaults(col, 'item'), formatter: (p: any) => p.dataType === 'edge' ? '' : `${esc(ctx.shortPath(p.data.id, 48))}<br/>iPR ${p.data.value} · status ${p.data._s ?? '-'} · depth ${p.data._d ?? '-'}${p.data._iso ? `<br/>${isolatedText(p.data._iso)}` : ''}` },
     // No in-canvas legend: force-placed nodes ignore the layout box and ran under it. The card's
     // hint names the three colours.
     legend: undefined,

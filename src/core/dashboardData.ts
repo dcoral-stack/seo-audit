@@ -115,6 +115,9 @@ export interface DashboardData {
     nodes: { id: string; ipr: number; depth: number | null; status: number | null; indexable: boolean }[];
     edges: { source: string; target: string }[];
     totalPages: number;
+    /** Mapped pages with no in-content link to or from another mapped page (they float free in the
+     *  force layout): their internal links in, and how many of those sit in content. */
+    isolated?: { id: string; inlinks: number; bodyInlinks: number }[];
   };
   findings?: {
     runId: string;
@@ -220,8 +223,9 @@ interface Totals { clicks: number; impressions: number; position: number }
 // 26: backlinkProfile (#47), merged onto the summary stack (its branch numbered it 24).
 // 27: crawlHealth.responseCodes gains the rate-limited bucket (#54; its branch numbered it 25).
 // (#65 changed where segment rows live, not the payload; the version probe reads both tables.)
-// 28: the real-data dashboard fixes (#68 follow-up): small-base clicksChangePct, cwvField detail, brand on exact-match domains, network inlinks.
-const PAYLOAD_VERSION = '28';
+// 28: the real-data dashboard fixes (#68 follow-up): small-base clicksChangePct, cwvField detail, brand on exact-match domains.
+// 29: structureGraph.isolated (mapped pages with no in-content link, named in the Network tab).
+const PAYLOAD_VERSION = '29';
 
 /** Build the dashboard payload for a property from its synced GSC history. */
 export function getDashboardData(dataDir: string, siteUrl: string): DashboardData {
@@ -682,10 +686,17 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         ).all(thr, thr, MAX_EDGES) as { s: string; t: string; w: number }[];
         const ids = new Set(nodeRows.map(n => n.url_key));
         const keptEdges = edges.filter(e => ids.has(e.s) && ids.has(e.t)).map(e => ({ source: e.s, target: e.t }));
+        const linked = new Set(keptEdges.flatMap(e => [e.source, e.target]));
+        const inl = db.db.prepare(`SELECT COUNT(DISTINCT source_key) n, COUNT(DISTINCT CASE WHEN placement='body' THEN source_key END) body FROM links WHERE is_internal=1 AND target_key=? AND source_key <> target_key`);
+        const isolated = nodeRows.filter(n => !linked.has(n.url_key)).slice(0, 20).map(n => {
+          const r = inl.get(n.url_key) as { n: number; body: number };
+          return { id: n.url_key, inlinks: r.n, bodyInlinks: r.body };
+        });
         structureGraph = {
           nodes: nodeRows.map(n => ({ id: n.url_key, ipr: Math.round(n.ipr), depth: n.click_depth, status: n.status_code, indexable: !!n.indexable })),
           edges: keptEdges,
           totalPages,
+          isolated,
         };
       }
     }

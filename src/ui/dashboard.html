@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SEO Audit Console</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='%2310946b'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
@@ -322,6 +323,7 @@
           <div class="hint">The top pages by internal PageRank and the in-content links between them. Node size = internal PageRank; <span style="color:var(--intent-success)">green</span> = healthy and indexable, <span style="color:var(--intent-warning)">amber</span> = indexable: no (noindex / canonicalised), <span style="color:var(--intent-danger)">red</span> = broken or redirected. Drag to explore; scroll to zoom.</div>
           <p class="sr-only" id="structureSummary"></p>
           <div class="chart chart-network" id="structureChart" role="img" aria-label="Force-directed map of the internal link structure"></div>
+          <div class="sum-note" id="structureNote"></div>
         </div>
         <div class="chart-card">
           <h3>Where your link equity flows vs where traffic comes from</h3>

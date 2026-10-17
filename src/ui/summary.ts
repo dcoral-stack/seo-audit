@@ -403,7 +403,7 @@ function actions(d: any, ctx: SummaryCtx): string {
     const risk = b.clicksAtRisk != null && d.summary
       ? ` · <span class="n">${fmt(b.clicksAtRisk)}</span> clicks (28d) on affected pages` : '';
     return `<li class="df-row" data-check="${esc(f.check_id)}" tabindex="0" role="button" title="Show this check's findings">` +
-      `<span class="df-n">${i + 1}</span><div class="df-main"><div class="df-title">${esc(rec.title || f.check_id)}</div>` +
+      `<span class="df-n">${i + 1}</span><div class="df-main"><div class="df-title" title="${esc(rec.title || f.check_id)}">${esc(rec.title || f.check_id)}</div>` +
       `<div class="df-sub">${pages ? `<span class="n">${fmt(pages)}</span> ${pages === 1 ? 'page' : 'pages'}` : 'site-wide'}${risk}</div></div>` +
       `<span class="df-chips"><span class="impact impact-${(sz || 's').toLowerCase()}" title="Impact band ${esc(sz)}: XL 50-100, L 20-49, M 5-19, S under 5">${esc(sz)}</span>` +
       `<span class="tag-badge ${judgement ? 'tag-warning' : 'tag-neutral'}" title="${esc(evidenceTitle(labels))}">${esc(evidenceLabel(labels))}</span></span>` +

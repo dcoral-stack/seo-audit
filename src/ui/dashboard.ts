@@ -6,7 +6,7 @@ import {
 } from './lib/index.js';
 import { shareText, sharePct, quickWinsEmptyReason, trappedEmptyReason } from '../core/displayRules.js';
 import { TITLE_MAX_CHARS, META_DESC_MAX_CHARS } from '../core/onPageLimits.js';
-import { renderSearchTop, renderHealthTop, renderSideFreshness, drawNetwork, pctChg, SEV_ORDER, SEV_LABEL, type OverviewCtx } from './panels.js';
+import { renderSearchTop, renderHealthTop, renderSideFreshness, drawNetwork, isolatedText, pctChg, SEV_ORDER, SEV_LABEL, type OverviewCtx } from './panels.js';
 import { renderSummary, type SummaryCtx } from './summary.js';
 import { renderFieldCwv } from './cwv.js';
 
@@ -532,6 +532,7 @@ function render(data: DashboardData): void {
   document.querySelectorAll<HTMLButtonElement>('.tab-btn').forEach(b => { b.disabled = false; b.removeAttribute('title'); });
   $('content').style.display = 'block';
   $('site').textContent = data.siteUrl;
+  $('site').title = data.siteUrl;
   const dr = data.dateRange;
   $('range').textContent = dr?.maxDate ? `last 28 days to ${fmtDate(dr.maxDate)}` : '';
   // Trailing unfinalised GSC days are excluded upstream (gscFreshness); the range already
@@ -666,11 +667,17 @@ function render(data: DashboardData): void {
   };
   if (sg?.nodes?.length) {
     const broken = sg.nodes.filter((n: any) => n.status == null || n.status >= 300).length;
+    const iso: any[] = (sg as any).isolated ?? [];
+    $('structureNote').innerHTML = iso.length
+      ? `<b>${iso.length} mapped page${iso.length === 1 ? ' has' : 's have'} no in-content link to or from the other pages here</b> (dashed outline, they float free of the cluster): ` +
+        iso.slice(0, 6).map(n => `<code>${esc(shortPath(n.id, 40))}</code> ${esc(isolatedText(n).replace(/, so it has no in-content link in this map\.$/, '.'))}`).join(' ') + (iso.length > 6 ? ` And ${iso.length - 6} more.` : '')
+      : '';
     $('structureSummary').textContent = `Internal link skeleton of the top ${sg.nodes.length} pages by internal PageRank (of ${fmt(sg.totalPages)} crawled); node size = iPR, ${broken} broken or redirected. Scroll to zoom, drag to pan, click a node to open the page.`;
     const networkVisible = !!document.querySelector('.tab-panel.active[data-panel="architecture"]');
     if (networkVisible) { pendingNetworkDraw = null; drawFullNetwork(); } else pendingNetworkDraw = drawFullNetwork;
   } else {
     pendingNetworkDraw = null;
+    $('structureNote').innerHTML = '';
     $('structureSummary').textContent = 'Run a crawl (refresh_property) to map your internal link structure.';
   }
 
@@ -718,6 +725,7 @@ function render(data: DashboardData): void {
   if (icCard) icCard.style.display = ic && ic.states.length ? '' : 'none';
   if (ic && ic.states.length) {
     const s = ic.states.slice().reverse();
+    $('indexCoverageChart').style.height = `${Math.max(120, s.length * 34 + 56)}px`;
     const stateColor = (st: string) => (/indexed/i.test(st) && !/not indexed/i.test(st)) ? col.success
       : /redirect|error|not found|excluded|noindex|not indexed|blocked|soft 404/i.test(st) ? col.danger : col.warning;
     wrap('indexCoverageChart').setOption({
@@ -911,10 +919,11 @@ function render(data: DashboardData): void {
       if (el.querySelector('.sf-empty')) el.innerHTML = '';
       const rev = rows.slice().reverse(); // horizontal bars read top-down
       el.classList.add('sf-chart');
-      el.style.height = `${rev.length * 26 + 12}px`;
-      const pctOf = (n: number): string => shareText(n, base);
-      // Long labels truncate to a width that fits the card (the full label stays in the tooltip).
+      // Long labels wrap onto two lines (the row grows to fit) instead of being cut off.
       const lw = labelW(190);
+      const wraps = (l: string): boolean => l.length * 6.6 > lw;
+      el.style.height = `${rev.reduce((h, r) => h + (wraps(r.label) ? 38 : 26), 0) + 12}px`;
+      const pctOf = (n: number): string => shareText(n, base);
       wrap(id).setOption({
         ...ARIA,
         grid: { left: 8, right: 96, top: 6, bottom: 6, containLabel: true },
@@ -923,7 +932,7 @@ function render(data: DashboardData): void {
         yAxis: {
           type: 'category', data: rev.map(r => r.label),
           axisLine: { show: false }, axisTick: { show: false },
-          axisLabel: { color: col.text, fontSize: 12, width: lw, overflow: 'truncate' },
+          axisLabel: { color: col.text, fontSize: 12, width: lw, overflow: 'break', lineHeight: 14 },
         },
         series: [{
           type: 'bar', barWidth: 8,
