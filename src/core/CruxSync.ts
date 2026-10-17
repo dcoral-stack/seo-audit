@@ -13,6 +13,7 @@
  * The windows OVERLAP (each is 28 days, a week apart): show them as a trend, never sum them.
  */
 import type Database from 'better-sqlite3';
+import { gscTotalsSource } from './gscRows.js';
 import { AuditDatabase } from './AuditDatabase.js';
 import { dbPathFor } from './paths.js';
 import { urlKey, hostFormForProperty, type UrlKeyOptions } from './url-key.js';
@@ -76,7 +77,7 @@ export function cwvBand(metric: CwvMetric, p75: number | null): CwvBand | null {
 export function cruxOrigin(db: Database.Database, siteUrl: string): string {
   const max = gscFreshness(db).effectiveMax;
   if (max) {
-    const r = db.prepare(`SELECT page FROM search_analytics WHERE page IS NOT NULL AND date > date(?, '-28 days') AND date <= ? GROUP BY page ORDER BY SUM(clicks) DESC LIMIT 1`).get(max, max) as { page: string } | undefined;
+    const r = db.prepare(`SELECT page FROM ${gscTotalsSource(db)} WHERE page IS NOT NULL AND date > date(?, '-28 days') AND date <= ? GROUP BY page ORDER BY SUM(clicks) DESC LIMIT 1`).get(max, max) as { page: string } | undefined;
     if (r) { try { return new URL(r.page).origin; } catch { /* fall through */ } }
   }
   const pages = db.prepare(`SELECT url FROM pages WHERE status_code=200 LIMIT 500`).all() as { url: string }[];
@@ -93,7 +94,7 @@ export function topClickedUrls(db: Database.Database, limit: number, keyOpts: Ur
   const max = gscFreshness(db).effectiveMax;
   if (!max || limit <= 0) return [];
   const rows = db.prepare(
-    `SELECT page, page_key, SUM(clicks) c FROM search_analytics
+    `SELECT page, page_key, SUM(clicks) c FROM ${gscTotalsSource(db)}
      WHERE page IS NOT NULL AND date > date(?, '-28 days') AND date <= ? GROUP BY page HAVING c > 0 ORDER BY c DESC LIMIT ?`,
   ).all(max, max, limit * 4) as { page: string; page_key: string | null; c: number }[];
   const seen = new Set<string>();

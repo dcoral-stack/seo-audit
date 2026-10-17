@@ -320,6 +320,12 @@ export function hasGscRows(db: Database.Database): boolean {
   return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = ?`).get(GSC_ROWS);
 }
 
+/**
+ * Where a TOTAL reads from: the `gsc_rows` view, or raw search_analytics on a read-only handle to a
+ * database this version never opened (no views; days stored in two shapes then count twice).
+ */
+export const gscTotalsSource = (db: Database.Database): string => (hasGscRows(db) ? GSC_ROWS : 'search_analytics');
+
 /** Insert one day's segment rows of one shape into search_analytics, aggregated to the totals grain
  *  (date × query × page): clicks and impressions summed, position impression-weighted. */
 export const AGGREGATE_DAY_SQL = `INSERT INTO search_analytics (${DATA_COLS})

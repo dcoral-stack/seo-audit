@@ -42,6 +42,7 @@
  * text is ever interpolated into SQL.
  */
 import type Database from 'better-sqlite3';
+import { gscTotalsSource } from './gscRows.js';
 import { brandToken } from './url-key.js';
 
 /** The run of consecutive whole words in `query` that, joined, spells `token` (lower-cased, single-spaced), or null. */
@@ -109,7 +110,8 @@ export function loadBrandQueries(db: Database.Database, siteUrl: string): BrandM
   const cands = db.prepare(`SELECT q FROM (SELECT DISTINCT query q FROM search_analytics WHERE query IS NOT NULL) WHERE INSTR(${strip}, ?) > 0`)
     .all(token) as { q: string }[];
   // Totals per matched query over the held history (an index lookup per query on query).
-  const sums = db.prepare(`SELECT COALESCE(SUM(clicks),0) c, COALESCE(SUM(impressions),0) i FROM search_analytics WHERE query = ?`);
+  // Totals read the gsc_rows view: a day stored in two row shapes counts once.
+  const sums = db.prepare(`SELECT COALESCE(SUM(clicks),0) c, COALESCE(SUM(impressions),0) i FROM ${gscTotalsSource(db)} WHERE query = ?`);
   type Hit = { q: string; run: string; spaced: boolean; c: number; i: number };
   const matched: Hit[] = [];
   for (const { q } of cands) {
