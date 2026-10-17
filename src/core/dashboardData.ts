@@ -165,7 +165,7 @@ interface Totals { clicks: number; impressions: number; position: number }
 // invalidated even if the underlying GSC/crawl data hasn't changed. Part of the cache version key.
 // 22: crawl-health urlFlow counts redirects from redirect_sources. 23: healthHistory + auditDeltas (#48).
 // 24: backlinkProfile (#47).
-const PAYLOAD_VERSION = '24';
+const PAYLOAD_VERSION = '25'; // 25: crawlHealth.responseCodes gains the rate-limited bucket (#54)
 
 /** Build the dashboard payload for a property from its synced GSC history. */
 export function getDashboardData(dataDir: string, siteUrl: string): DashboardData {
@@ -709,6 +709,7 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
             SUM(CASE WHEN status_code BETWEEN 400 AND 499 THEN 1 ELSE 0 END) r4,
             SUM(CASE WHEN status_code BETWEEN 500 AND 599 THEN 1 ELSE 0 END) r5,
             SUM(CASE WHEN indexable_reason='robots-disallowed' THEN 1 ELSE 0 END) rb,
+            SUM(CASE WHEN fetch_state='rate_limited' THEN 1 ELSE 0 END) rl,
             SUM(CASE WHEN ${HTML_CT} AND response_time_ms < 200 THEN 1 ELSE 0 END) s1,
             SUM(CASE WHEN ${HTML_CT} AND response_time_ms BETWEEN 200 AND 499 THEN 1 ELSE 0 END) s2,
             SUM(CASE WHEN ${HTML_CT} AND response_time_ms BETWEEN 500 AND 999 THEN 1 ELSE 0 END) s3,
@@ -742,6 +743,8 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
           { label: '4xx client error', count: num(g1.r4), tone: 'warn' },
           { label: '5xx server error', count: num(g1.r5), tone: 'bad' },
           { label: 'Blocked by robots', count: num(g1.rb), tone: 'warn' },
+          // #54: the host rate limited these after every retry: status unknown, not an error.
+          { label: 'Not fetched (rate limited)', count: num(g1.rl), tone: 'muted' },
           { label: 'Fetch failed', count: one(`SELECT COUNT(*) n FROM errors WHERE error_type='fetch'`), tone: 'bad' },
         ]);
         const indexability = stats((db.db.prepare(

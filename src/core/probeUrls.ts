@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import * as cheerio from 'cheerio';
 import { isInternalHost } from './extract.js';
 import { CHROME_HEADERS, looksBotBlocked, type FetchedAs } from './userAgents.js';
+import { isRateLimited, parseRetryAfter } from './rateLimit.js';
 
 export interface ProbeHop { url: string; status: number; location: string | null }
 export interface ProbeResult {
@@ -33,6 +34,9 @@ export interface ProbeResult {
   /** Set when a redirect points off the property: the target was recorded (as finalUrl, with the
    * redirect's own status as finalStatus) but NOT fetched. */
   redirectsOffProperty?: string;
+  /** #54: the host still rate limited the request (429, or 503 + Retry-After) after one wait.
+   * status/finalStatus are then null (unknown) - a throttle is not the page's status. */
+  rateLimited?: boolean;
   error?: string;
 }
 
@@ -47,10 +51,27 @@ async function probeOne(url: string, o: Required<ProbeOptions>, deadline: number
   const t0 = Date.now();
   const out: ProbeResult & { botBlocked?: boolean } = { ...emptyResult(url), fetchedAs: chrome ? 'chrome' : 'bot' };
   let current = url;
+  let rateWaited = false;
   try {
     for (let hop = 0; hop <= 10; hop++) {
       const left = Math.max(1000, Math.min(10000, deadline - Date.now()));
       const res = await fetch(current, { redirect: 'manual', headers: chrome ? CHROME_HEADERS : { 'user-agent': o.userAgent, accept: 'text/html,*/*;q=0.8' }, signal: AbortSignal.timeout(left) });
+      // #54: rate limited (and not a bot wall, which the Chrome retry handles). Wait out Retry-After
+      // once if the budget allows (capped at 5 s), then report "unknown" rather than a 429 status.
+      if (isRateLimited(res.status, n => res.headers.get(n)) && !looksBotBlocked(res.status, n => res.headers.get(n))) {
+        try { await res.body?.cancel(); } catch { /* already closed */ }
+        const waitMs = Math.min(parseRetryAfter(res.headers.get('retry-after')) ?? 1000, 5000);
+        if (!rateWaited && Date.now() + waitMs < deadline - 2000) {
+          rateWaited = true;
+          await new Promise(r => setTimeout(r, waitMs));
+          hop--; // the retry is the same hop
+          continue;
+        }
+        out.rateLimited = true;
+        out.finalUrl = current;
+        out.error = `rate limited by the host (HTTP ${res.status}${res.headers.get('retry-after') ? `, Retry-After ${res.headers.get('retry-after')}` : ''}): status unknown, probe again later`;
+        break;
+      }
       if (out.status == null) out.status = res.status;
       const loc = res.headers.get('location');
       if (res.status >= 300 && res.status < 400 && loc) {

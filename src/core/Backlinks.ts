@@ -4,6 +4,7 @@ import { MajesticClient } from './MajesticClient.js';
 import { dbPathFor } from './paths.js';
 import { urlKey, hostFormForProperty } from './url-key.js';
 import { brandTokens, classifyAnchor } from './backlinkProfile.js';
+import { isRateLimited } from './rateLimit.js';
 
 const n = (v: unknown): number => Number(v) || 0;
 const domainFromProperty = (siteUrl: string): string =>
@@ -17,6 +18,10 @@ async function statusOf(url: string, ua: string): Promise<number | null> {
       headers: { 'user-agent': ua, 'cache-control': 'no-cache' },
       signal: AbortSignal.timeout(10000),
     });
+    try { await res.body?.cancel(); } catch { /* already closed */ }
+    // #54: a 429 (or 503 + Retry-After) says the host is throttling us, not what the page is.
+    // Stored as NULL = unchecked, so backlinks-to-404 never reads a throttle as a dead page.
+    if (isRateLimited(res.status, n => res.headers.get(n))) return null;
     return res.status;
   } catch { return null; }
 }

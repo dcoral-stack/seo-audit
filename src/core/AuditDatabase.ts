@@ -135,7 +135,7 @@ export class AuditDatabase {
         depth INTEGER,
         is_internal INTEGER,
         indexable INTEGER,               -- derived: 200 + HTML + not noindex + self-canonical
-        indexable_reason TEXT,           -- why NOT indexable: http-404/http-500/noindex-meta/noindex-header/canonicalised/non-html/robots-disallowed/redirect
+        indexable_reason TEXT,           -- why NOT indexable: http-404/http-500/noindex-meta/noindex-header/canonicalised/non-html/robots-disallowed/redirect (rate-limited: not fetched, indexable NULL)
         noindex INTEGER,
         title TEXT,
         title_length INTEGER,
@@ -681,6 +681,9 @@ export class AuditDatabase {
     ensure('pages', 'max_passage_at', 'max_passage_at TEXT');
     ensure('pages', 'click_depth', 'click_depth INTEGER');
     ensure('pages', 'indexable_reason', 'indexable_reason TEXT');
+    // #54: NULL = fetched normally (or robots-disallowed, see indexable_reason); 'rate_limited' = the
+    // host still answered 429 after every retry, so status_code and indexable are NULL (unknown), not an error.
+    ensure('pages', 'fetch_state', 'fetch_state TEXT');
     // Majestic per-URL authority on backlinked pages (trapped-authority v2) — filled by
     // pull_backlinks when MAJESTIC_API_KEY is set. topical_trust_flow is JSON [{topic,value}].
     ensure('page_backlinks', 'trust_flow', 'trust_flow INTEGER');

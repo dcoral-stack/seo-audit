@@ -1631,7 +1631,9 @@ function hreflangFindings(ctx: CheckContext): HreflangOut {
   const pageRows = ctx.db.prepare(`SELECT url_key, url, status_code, noindex, hreflang FROM pages WHERE hreflang IS NOT NULL AND hreflang != ''`).all() as
     { url_key: string; url: string; status_code: number | null; noindex: number | null; hreflang: string }[];
   const status = new Map<string, { status: number | null; noindex: number | null }>();
-  for (const p of ctx.db.prepare(`SELECT url_key, status_code, noindex FROM pages`).all() as { url_key: string; status_code: number | null; noindex: number | null }[])
+  // A target the host rate limited (#54) was never fetched: its status is unknown, so it is neither
+  // a broken alternate nor one we can check for a return tag. Leave it out of the map entirely.
+  for (const p of ctx.db.prepare(`SELECT url_key, status_code, noindex FROM pages WHERE fetch_state IS NOT 'rate_limited'`).all() as { url_key: string; status_code: number | null; noindex: number | null }[])
     status.set(p.url_key, { status: p.status_code, noindex: p.noindex });
 
   // declared[sourceKey] = set of internal alternate targetKeys (excluding self)
