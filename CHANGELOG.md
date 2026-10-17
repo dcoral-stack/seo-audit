@@ -10,6 +10,8 @@ Each release is tagged `vX.Y.Z` on the release commit (tagging lapsed between 0.
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-10-17
+
 ### Changed
 - **Dashboard redesign: crawl and network intelligence (#38 part 1).** Direction from a Google Stitch round (`design/stitch/`), built on the existing data contracts:
   - A sticky sidebar (property, navigation, data freshness) replaces the pill tabs, under a slim top bar. The graphite dark and cool-paper light themes share one signal-green accent.
