@@ -151,7 +151,7 @@ Add this to `claude_desktop_config.json` (Settings → Developer → Edit Config
 }
 ```
 
-That's the everything block - every variable the server reads, so you can see the shape. Delete the lines for services you don't have; only `GOOGLE_APPLICATION_CREDENTIALS` is required, and each optional key just switches its own tier on (`MAJESTIC_API_KEY`, for instance, only ever does anything when you run `link_intersect`). Then **fully restart Claude Desktop** - quit it from the system tray, not just the window. Claude Desktop keeps the old server process running until you do, which catches people out constantly.
+That's the everything block - every variable the server reads, so you can see the shape. Delete the lines for services you don't have, or leave their values blank to disable them; only `GOOGLE_APPLICATION_CREDENTIALS` is required, and each optional key just switches its own tier on (`MAJESTIC_API_KEY`, for instance, only ever does anything when you run `link_intersect`). Then **fully restart Claude Desktop** - quit it from the system tray, not just the window. Claude Desktop keeps the old server process running until you do, which catches people out constantly.
 
 ## 3b. Configure Claude Code
 
@@ -195,7 +195,7 @@ Don't commit real credential paths to a shared repo unless the team shares the s
 | `GOOGLE_APPLICATION_CREDENTIALS` | yes | Path to the GSC service-account JSON key |
 | `SAC_DATA_DIR` | optional | Where per-property SQLite databases and reports live (default: `~/Documents/seo-audit-console`) |
 | `DATAFORSEO_USERNAME` / `DATAFORSEO_PASSWORD` | optional | Switches on the keyword / SERP / competitor / CWV / backlink tools |
-| `DATAFORSEO_CACHE_DAYS` | optional | DataForSEO response cache TTL (default 7 days) |
+| `DATAFORSEO_CACHE_DAYS` | optional | DataForSEO response cache TTL (default 20 days) |
 | `MAJESTIC_API_KEY` | optional | Switches on the **Majestic** tier in `link_intersect`: every prospect gains **Trust Flow** and **Topical Trust Flow**, and the list re-sorts by real editorial authority instead of DataForSEO's link-volume rank. Get a key on [Majestic's plans page](https://majestic.com/plans-pricing). `link_intersect` works without it. |
 | `MAJESTIC_CACHE_DAYS` | optional | Majestic response cache TTL (default 30 days). Cache hits cost no Majestic units, so leave this generous. |
 
@@ -206,7 +206,7 @@ Two more exist for people who need them, and you almost certainly don't:
 | `SAC_RERANK_DEVICE` | optional | Pins the local passage-scoring model to a device: `dml` (any DirectX 12 GPU on Windows) or `cpu`. Unset, it tries the GPU and falls back to CPU on its own - set it only if that fallback misbehaves. |
 | `MAJESTIC_API_HOST` | optional | Points the Majestic client at a different host. The default is the live API (`api.majestic.com`); Majestic's developer sandbox is a frozen 2015 subset, useful for testing the wiring without spending units. |
 
-Each optional key only affects its own tier, and none of those services is called until you ask a question that needs it.
+Each optional key only affects its own tier, and none of those services is called until you ask a question that needs it. **Leave a key blank to disable its tier.** A value that's still a placeholder - `your-majestic-api-key`, `<your key>`, `changeme`, `xxx`, anything containing `example`, or an unsubstituted `${...}` from your MCP host - counts as blank too: the tier stays off and the server writes one line to its log, e.g. `MAJESTIC_API_KEY looks like a placeholder; Majestic tier disabled.` So if a tier you expected is off, check the log for that line.
 
 You can also move the data directory later without touching config - ask *"where is my audit data stored?"* or *"set the data location to D:/seo-data"* (the `data_location` tool persists the choice).
 

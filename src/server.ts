@@ -68,6 +68,7 @@ import { triage404s, verifyLive } from './core/triage404.js';
 import { gscFreshness } from './core/gscFreshness.js';
 import { clusterKeywordList } from './audit/keywordList.js';
 import type { FetchOptions } from './core/types.js';
+import { dataForSeoCredentials, optionalSecret } from './core/secrets.js';
 
 const SERVER_NAME = 'seo-audit-console';
 const SERVER_VERSION = (
@@ -292,16 +293,16 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   const inspector = gsc ? new UrlInspector(gsc, dataDir()) : null;
   const crawler = new Crawler(dataDir()); // no GSC credentials required
 
-  const dfsUser = process.env.DATAFORSEO_USERNAME;
-  const dfsPass = process.env.DATAFORSEO_PASSWORD;
+  // Optional keys are read placeholder-safe (#58): blank, "${...}", "<...>" or template text = off.
+  const dfsCreds = dataForSeoCredentials();
   const dfsCacheDays = dfsCacheDaysFromEnv();
-  const dfs = dfsUser && dfsPass
-    ? new DataForSeoClient(dfsUser, dfsPass, path.join(dataDir(), 'dataforseo-cache.db'), dfsCacheDays)
+  const dfs = dfsCreds
+    ? new DataForSeoClient(dfsCreds.user, dfsCreds.pass, path.join(dataDir(), 'dataforseo-cache.db'), dfsCacheDays)
     : null;
   const rankTracker = dfs ? new RankTracker(dfs, dataDir()) : null;
   const linkIntersect = dfs ? new LinkIntersect(dfs, dataDir()) : null;
   // Majestic (Trust Flow / Topical Trust Flow) — optional link_intersect + trapped-authority tier.
-  const majesticKey = process.env.MAJESTIC_API_KEY;
+  const majesticKey = optionalSecret('MAJESTIC_API_KEY');
   const majesticCacheDays = Number(process.env.MAJESTIC_CACHE_DAYS) || 30;
   const majestic = majesticKey ? new MajesticClient(majesticKey, path.join(dataDir(), 'majestic-cache.db'), majesticCacheDays) : null;
   // Backlinks after Majestic, so pull_backlinks can enrich per-URL pages with Trust Flow.
@@ -320,7 +321,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     return v;
   };
   const requireDfs = <T>(v: T | null): T => {
-    if (!v) throw new Error('DATAFORSEO_USERNAME / DATAFORSEO_PASSWORD not set — required for DataForSEO.');
+    if (!v) throw new Error('DATAFORSEO_USERNAME / DATAFORSEO_PASSWORD not set (or still a placeholder such as "your-..." or "${...}") — required for DataForSEO.');
     return v;
   };
   // Which optional integrations have a key set — drives the dashboard's key-gated tabs

@@ -18,6 +18,7 @@ import { crawlRate, fmtDuration } from '../dist/core/crawlProgress.js';
 import { brandTokens, classifyAnchor, monthlyFromHistory } from '../dist/core/backlinkProfile.js';
 import { buildBacklinkProfile } from '../dist/core/dashboardData.js';
 import { urlKey } from '../dist/core/url-key.js';
+import { optionalSecret, placeholderReason, dataForSeoCredentials, cruxApiKey } from '../dist/core/secrets.js';
 
 const k = (u) => urlKey(u, { hostForm: 'apex' });
 const dataDir = path.join(tmpdir(), `sac-smoke-${Date.now()}`);
@@ -321,6 +322,36 @@ ok(Array.isArray(dash2?.freshness?.sources) && dash2.freshness.sources.length ==
   const r2 = crawlRate(3900, 100, 5000, 4000, 60_000);
   ok(r2.pagesRemaining === 100 && r2.pagesPerSec === 66.7, `crawlRate: the queue is capped by maxPages and failures count toward the rate (${JSON.stringify(r2)})`);
   ok(fmtDuration(4700) === '1h 18m' && fmtDuration(252) === '4m 12s' && fmtDuration(9) === '9s' && fmtDuration(null) === 'unknown', 'fmtDuration formats s / m s / h m');
+}
+
+// #58: optional API keys are read placeholder-safe.
+{
+  const placeholders = ['your-majestic-key-here', 'YOUR_API_KEY', 'your key', '<your key>', '${user_config.majestic_api_key}', 'key-here', 'keyhere', 'changeme', 'xxx', 'XXXXXXXX', 'placeholder', 'you@example.com', 'Example'];
+  const bad = placeholders.filter(v => placeholderReason(v) == null);
+  ok(bad.length === 0, `optionalSecret: placeholders are rejected${bad.length ? ` — ACCEPTED ${JSON.stringify(bad)}` : ''}`);
+  const real = ['d41d8cd98f00b204e9800998ecf8427e', 'richard@houtini.com', 'Tr0ub4dor&3', 'xx', 'axxxb'];
+  const wrong = real.filter(v => placeholderReason(v) != null);
+  ok(wrong.length === 0, `optionalSecret: real-looking values pass${wrong.length ? ` — REJECTED ${JSON.stringify(wrong)}` : ''}`);
+  ok(placeholderReason('') === 'empty' && placeholderReason('   ') === 'empty' && placeholderReason(undefined) === 'unset', 'optionalSecret: blank / whitespace / missing are unset');
+  ok(optionalSecret('MAJESTIC_API_KEY', { MAJESTIC_API_KEY: '  abc123  ' }) === 'abc123', 'optionalSecret: values are trimmed');
+  // Exactly one stderr line per rejected name, naming the tier; blank stays silent.
+  const lines = [];
+  const orig = console.error;
+  console.error = (...a) => lines.push(a.join(' '));
+  let a, c, d, good;
+  try {
+    a = optionalSecret('MAJESTIC_API_KEY', { MAJESTIC_API_KEY: 'your-majestic-key-here' });
+    optionalSecret('MAJESTIC_API_KEY', { MAJESTIC_API_KEY: '<your key>' });
+    optionalSecret('CRUX_API_KEY', { CRUX_API_KEY: '' });
+    c = cruxApiKey({ CRUX_API_KEY: '${user_config.crux_api_key}' });
+    d = dataForSeoCredentials({ DATAFORSEO_USERNAME: 'me@houtini.com', DATAFORSEO_PASSWORD: 'your-dataforseo-password' });
+    good = dataForSeoCredentials({ DATAFORSEO_USERNAME: ' me@houtini.com ', DATAFORSEO_PASSWORD: 's3cret' });
+  } finally { console.error = orig; }
+  ok(a === undefined && c === undefined && d === null && good?.user === 'me@houtini.com' && good.pass === 's3cret', 'optionalSecret: placeholders read as unset (Majestic, CrUX, the DataForSEO pair)');
+  ok(lines.length === 3
+    && lines[0] === 'MAJESTIC_API_KEY looks like a placeholder; Majestic tier disabled.'
+    && lines.includes('CRUX_API_KEY looks like a placeholder; CrUX tier disabled.')
+    && lines.includes('DATAFORSEO_PASSWORD looks like a placeholder; DataForSEO tier disabled.'), `optionalSecret: one stderr line per rejected key (${JSON.stringify(lines)})`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
