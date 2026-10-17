@@ -679,9 +679,9 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     };
   const oneLineJob = (job: Job, detail = false): string => {
     const head = `Job ${job.id} (${job.type}): ${job.state}`;
+    if (job.state === 'queued') return `${head}: ${job.note ?? 'waiting for the job runner'}`; // #56
     if (job.state === 'failed') return `${head}: ${job.error ?? 'unknown error'}${corruptionHint(job.error)}`;
     if (job.state === 'interrupted') return `${head}: ${job.error ?? 'the process running it exited before it finished.'}`;
-    if (job.state === 'queued') return `${head}: ${job.note ?? 'waiting for the job runner'}`; // #56
     const prog = Object.keys(job.progress).length ? ` ${JSON.stringify(job.progress).slice(0, 300)}` : '';
     if (!detail || job.state !== 'completed' || !DATA_JOBS.has(job.type)) return head + prog;
     const link = (job.result as { dashboard?: string } | undefined)?.dashboard;
