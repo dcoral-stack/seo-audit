@@ -94,6 +94,8 @@ The structural story - where your internal link equity goes versus where your tr
 
 ![The Links tab - link intersect, competitors' links you don't have](../assets/links.png)
 
+**Backlink profile** (top of the tab): your own links, from `pull_backlinks`. A KPI strip (backlinks, referring domains, DataForSEO Domain Rank, broken backlinks, nofollow share), a new-vs-lost referring-domains chart per month from DataForSEO's daily history, the top referring domains by rank, the anchor mix (branded, keyword, URL, generic, empty, by share of backlinks), your most-linked pages with the live HTTP status the pull resolved, and the backlinked pages that answer 4xx/5xx. Every number is a stored row; a section whose table was never filled says **not collected** rather than showing zero, and a pull made before 0.16 shows the summary and pages only until you re-run it.
+
 Link intersect: the domains linking to your competitors but not to you - a ready-made outreach list. Run `link_intersect` for a property (a DataForSEO Backlinks call) and this fills with the prospects, sorted followed-first then by domain trust. With a **Majestic** key set, each prospect is re-sorted by **Trust Flow** and shows its top topic, so directory noise sinks and genuinely on-topic authority rises. No DataForSEO key? The tab shows a one-click prompt to connect one.
 
 ## Content research

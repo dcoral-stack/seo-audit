@@ -19,6 +19,18 @@ import {
   type MonthlyClicks, type YearOnYear, type SummaryEvent, type DriftSummary, type CategoryRow, type AiOverviewSummary, type PageMovers, type Coverage,
   type GscShape, type ClickWindows,
 } from './summaryData.js';
+import { monthlyFromHistory, type HistoryRow, type MonthRow } from './backlinkProfile.js';
+
+export interface BacklinkProfile {
+  summary: { backlinks: number; referringDomains: number; domainRank: number | null; brokenBacklinks: number; brokenPages: number; nofollowPct: number | null; fetchedAt: string | null } | null;
+  topPages: { url: string; backlinks: number; referringDomains: number; dofollow: number; status: number | null; trustFlow: number | null }[];
+  brokenPages: { url: string; backlinks: number; referringDomains: number; status: number }[];
+  pagesTotal: number;
+  pagesUnchecked: number;
+  referringDomains: { snapshotAt: string; live: number; lost: number; top: { domain: string; rank: number | null; backlinks: number; referringPages: number; nofollowPages: number; spamScore: number | null; firstSeen: string | null }[] } | null;
+  anchors: { snapshotAt: string; mix: { kind: string; anchors: number; backlinks: number; referringDomains: number }[]; top: { anchor: string; kind: string; backlinks: number; referringDomains: number }[] } | null;
+  history: { fetchedAt: string | null; months: MonthRow[] } | null;
+}
 
 export interface DashboardData {
   siteUrl: string;
@@ -137,6 +149,9 @@ export interface DashboardData {
   // Trapped authority — pages with real external authority (referring domains) buried deep
   // internally (high click depth / low iPR), so their link equity isn't reaching money pages.
   trappedAuthority?: { url: string; referringDomains: number; backlinks: number; clickDepth: number | null; ipr: number; trustFlow: number | null; topTopic: string | null }[];
+  // Backlink profile (#47) — our OWN links, from pull_backlinks. Every number traces to a stored row;
+  // a section that was never collected is null (the panel says "not collected"), never zero.
+  backlinkProfile?: BacklinkProfile | null;
   // Site Health Score (the headline every paid tool has): % of crawled internal pages with no
   // error-class (critical/high) finding. Honest + defensible; banded Weak/Fair/Good/Excellent.
   healthScore?: { score: number; band: string; errorPages: number; totalPages: number; definition: string } | null;
@@ -196,7 +211,8 @@ interface Totals { clicks: number; impressions: number; position: number }
 //     pageMovers, coverage, agentReadiness.bots, gscShape, clickWindows) and the crawl-only payload
 //     when there is no GSC.
 // 25: every GSC total reads gsc_rows (each day counted once, #61); brandedSplit.terms (spaced brand variants).
-const PAYLOAD_VERSION = '25';
+// 26: backlinkProfile (#47), merged onto the summary stack (its branch numbered it 24).
+const PAYLOAD_VERSION = '26';
 
 /** Build the dashboard payload for a property from its synced GSC history. */
 export function getDashboardData(dataDir: string, siteUrl: string): DashboardData {
@@ -223,8 +239,9 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
               (SELECT COUNT(*)||':'||COALESCE(MAX(fetched_at),'') FROM link_prospects) lp,
               (SELECT COALESCE(MAX(rowid),0) FROM page_snapshots)||':'||(SELECT COUNT(*)||':'||COALESCE(MAX(finished_at),'') FROM crawl_metadata) cr,
               (SELECT COUNT(*)||':'||COALESCE(MAX(researched_at),'') FROM recon_page) rp,
-              (SELECT COUNT(*)||':'||COALESCE(MAX(inspected_at),'') FROM url_inspection) ui`).get() as { sa: string | null; run: string | null; pg: number; ar: string | null; rh: string | null; sf: number; ms: number; pb: string | null; lp: string | null; cr: string | null; rp: string | null; ui: string | null };
-    const version = `${PAYLOAD_VERSION}|${ver.sa ?? 'none'}|${ver.run ?? 'none'}|${ver.pg}|${ver.ar ?? ''}|${ver.rh ?? ''}|${ver.sf}|${ver.ms}|${ver.pb ?? ''}|${ver.lp ?? ''}|${ver.cr ?? ''}|${ver.rp ?? ''}|${ver.ui ?? ''}`;
+              (SELECT COUNT(*)||':'||COALESCE(MAX(inspected_at),'') FROM url_inspection) ui,
+              (SELECT COALESCE(MAX(snapshot_at),'')||':'||(SELECT COALESCE(MAX(snapshot_at),'') FROM backlink_anchors)||':'||(SELECT COUNT(*) FROM backlink_history) FROM referring_domains) bp`).get() as { sa: string | null; run: string | null; pg: number; ar: string | null; rh: string | null; sf: number; ms: number; pb: string | null; lp: string | null; cr: string | null; rp: string | null; ui: string | null; bp: string | null };
+    const version = `${PAYLOAD_VERSION}|${ver.sa ?? 'none'}|${ver.run ?? 'none'}|${ver.pg}|${ver.ar ?? ''}|${ver.rh ?? ''}|${ver.sf}|${ver.ms}|${ver.pb ?? ''}|${ver.lp ?? ''}|${ver.cr ?? ''}|${ver.rp ?? ''}|${ver.ui ?? ''}|${ver.bp ?? ''}`;
     const hit = db.db.prepare('SELECT payload FROM dashboard_cache WHERE id=1 AND version=?').get(version) as { payload: string } | undefined;
     // A corrupt/truncated cache row must fall through to a rebuild, not throw forever.
     if (hit) { try { return { ...(JSON.parse(hit.payload) as DashboardData), freshness: getDataFreshness(db.db, liveJobTypes(dataDir, jobScopeFor(dataDir, siteUrl))) }; } catch { /* rebuild below */ } }
@@ -925,10 +942,13 @@ export function getDashboardData(dataDir: string, siteUrl: string): DashboardDat
         .map(({ _s, ...rest }) => rest);
     } catch { /* no page_backlinks / no crawl */ }
 
+    const backlinkProfile = buildBacklinkProfile(db.db, siteUrl);
+
     const payload: DashboardData = {
       siteUrl,
       linkProspects,
       trappedAuthority,
+      backlinkProfile,
       dateRange: { current: `last 28d to ${maxDate}`, prior: 'prior 28d', maxDate, rawMaxDate: fresh.rawMax ?? maxDate, trimmedDays: fresh.trimmedDays },
       equityScatter,
       templateMismatch,
@@ -1167,4 +1187,50 @@ function reconcileRanges(
       ? `GSC ${gsc.start}–${gsc.end} (daily) overlaps DataForSEO ${dfs.start}–${dfs.end} (monthly) at ${oStart}–${oEnd}; time charts share that window.`
       : `No overlap: GSC ends ${geM}, DataForSEO covers ${dfs.start}–${dfs.end}. Render on separate axes.`,
   };
+}
+
+/**
+ * Backlink profile for the Links tab (#47). Reads only what pull_backlinks stored: property_meta's
+ * summary, page_backlinks, and the latest referring_domains / backlink_anchors snapshot plus
+ * backlink_history. Returns null when nothing was ever pulled; each section is null when its own
+ * table is empty, so the UI can say "not collected" instead of showing zero.
+ */
+export function buildBacklinkProfile(db: Database.Database, siteUrl: string): BacklinkProfile | null {
+  try {
+    const meta = db.prepare(`SELECT total_backlinks, referring_domains, backlinks_rank, broken_backlinks, broken_pages, backlinks_nofollow_pct, backlinks_fetched_at FROM property_meta WHERE site_url=?`).get(siteUrl) as
+      { total_backlinks: number | null; referring_domains: number | null; backlinks_rank: number | null; broken_backlinks: number | null; broken_pages: number | null; backlinks_nofollow_pct: number | null; backlinks_fetched_at: string | null } | undefined;
+    const pageRows = db.prepare(`SELECT url, backlinks, referring_domains rd, dofollow, status_code status, trust_flow tf FROM page_backlinks ORDER BY referring_domains DESC, backlinks DESC`).all() as
+      { url: string; backlinks: number; rd: number; dofollow: number; status: number | null; tf: number | null }[];
+    const summary = meta?.backlinks_fetched_at
+      ? { backlinks: meta.total_backlinks ?? 0, referringDomains: meta.referring_domains ?? 0, domainRank: meta.backlinks_rank ?? null, brokenBacklinks: meta.broken_backlinks ?? 0, brokenPages: meta.broken_pages ?? 0, nofollowPct: meta.backlinks_nofollow_pct ?? null, fetchedAt: meta.backlinks_fetched_at }
+      : null;
+    if (!summary && !pageRows.length) return null;
+
+    const topPages = pageRows.slice(0, 15).map(r => ({ url: r.url, backlinks: r.backlinks, referringDomains: r.rd, dofollow: r.dofollow, status: r.status, trustFlow: r.tf }));
+    const brokenPages = pageRows.filter(r => r.status != null && r.status >= 400).slice(0, 25).map(r => ({ url: r.url, backlinks: r.backlinks, referringDomains: r.rd, status: r.status as number }));
+    const pagesUnchecked = pageRows.filter(r => r.status == null).length;
+
+    let referringDomains: BacklinkProfile['referringDomains'] = null;
+    const rdSnap = (db.prepare('SELECT MAX(snapshot_at) s FROM referring_domains').get() as { s: string | null }).s;
+    if (rdSnap) {
+      const counts = db.prepare('SELECT SUM(lost_date IS NULL) live, SUM(lost_date IS NOT NULL) lost FROM referring_domains WHERE snapshot_at=?').get(rdSnap) as { live: number | null; lost: number | null };
+      const top = db.prepare(`SELECT domain, rank, backlinks, referring_pages rp, nofollow_pages np, spam_score ss, first_seen fs FROM referring_domains WHERE snapshot_at=? AND lost_date IS NULL ORDER BY rank DESC, backlinks DESC LIMIT 25`).all(rdSnap) as
+        { domain: string; rank: number | null; backlinks: number; rp: number; np: number; ss: number | null; fs: string | null }[];
+      referringDomains = { snapshotAt: rdSnap, live: counts.live ?? 0, lost: counts.lost ?? 0, top: top.map(t => ({ domain: t.domain, rank: t.rank, backlinks: t.backlinks ?? 0, referringPages: t.rp ?? 0, nofollowPages: t.np ?? 0, spamScore: t.ss, firstSeen: t.fs })) };
+    }
+
+    let anchors: BacklinkProfile['anchors'] = null;
+    const anSnap = (db.prepare('SELECT MAX(snapshot_at) s FROM backlink_anchors').get() as { s: string | null }).s;
+    if (anSnap) {
+      const mix = db.prepare(`SELECT kind, COUNT(*) anchors, SUM(backlinks) backlinks, SUM(referring_domains) rd FROM backlink_anchors WHERE snapshot_at=? AND lost_date IS NULL GROUP BY kind ORDER BY backlinks DESC`).all(anSnap) as { kind: string | null; anchors: number; backlinks: number | null; rd: number | null }[];
+      const top = db.prepare(`SELECT anchor, kind, backlinks, referring_domains rd FROM backlink_anchors WHERE snapshot_at=? AND lost_date IS NULL ORDER BY backlinks DESC LIMIT 20`).all(anSnap) as { anchor: string; kind: string | null; backlinks: number; rd: number }[];
+      anchors = { snapshotAt: anSnap, mix: mix.map(m => ({ kind: m.kind ?? 'keyword', anchors: m.anchors, backlinks: m.backlinks ?? 0, referringDomains: m.rd ?? 0 })), top: top.map(t => ({ anchor: t.anchor, kind: t.kind ?? 'keyword', backlinks: t.backlinks ?? 0, referringDomains: t.rd ?? 0 })) };
+    }
+
+    let history: BacklinkProfile['history'] = null;
+    const hist = db.prepare('SELECT date, backlinks, referring_domains, new_referring_domains, lost_referring_domains, fetched_at FROM backlink_history ORDER BY date').all() as (HistoryRow & { fetched_at: string | null })[];
+    if (hist.length) history = { fetchedAt: hist[hist.length - 1].fetched_at ?? null, months: monthlyFromHistory(hist).slice(-13) };
+
+    return { summary, topPages, brokenPages, pagesTotal: pageRows.length, pagesUnchecked, referringDomains, anchors, history };
+  } catch { return null; } // pre-#47 database without the tables, or no property_meta row
 }

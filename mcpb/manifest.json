@@ -97,7 +97,7 @@
       "type": "number",
       "title": "Majestic cache days",
       "description": "How many days to cache Majestic responses locally. Cache hits cost no Majestic resource units.",
-      "default": 20,
+      "default": 30,
       "min": 1,
       "max": 90,
       "required": false

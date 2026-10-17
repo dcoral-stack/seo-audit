@@ -355,6 +355,49 @@ export class AuditDatabase {
       CREATE INDEX IF NOT EXISTS idx_pbl_backlinks ON page_backlinks(backlinks DESC);
     `);
 
+    // ── Backlink profile (#47): referring domains + anchors per pull (snapshot_at = the pull), and
+    // DataForSEO's daily history for the new/lost trend. Filled by pull_backlinks; a panel reads
+    // "not collected" when a table is empty, never zero.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS referring_domains (
+        snapshot_at TEXT NOT NULL,         -- the pull this row belongs to (ISO date-time)
+        domain TEXT NOT NULL,
+        rank INTEGER,                      -- DataForSEO domain rank (0-1000)
+        backlinks INTEGER,
+        referring_pages INTEGER,
+        nofollow_pages INTEGER,            -- referring pages whose link is nofollow
+        spam_score INTEGER,
+        broken_backlinks INTEGER,
+        first_seen TEXT,
+        lost_date TEXT,                    -- set when every link from the domain is gone
+        PRIMARY KEY (snapshot_at, domain)
+      );
+      CREATE INDEX IF NOT EXISTS idx_refdom_snapshot ON referring_domains(snapshot_at, rank DESC);
+      CREATE TABLE IF NOT EXISTS backlink_anchors (
+        snapshot_at TEXT NOT NULL,
+        anchor TEXT NOT NULL,              -- '' for an empty / image anchor
+        kind TEXT,                         -- branded | keyword | url | generic | empty
+        backlinks INTEGER,
+        referring_domains INTEGER,
+        nofollow_pages INTEGER,
+        first_seen TEXT,
+        lost_date TEXT,
+        PRIMARY KEY (snapshot_at, anchor)
+      );
+      CREATE INDEX IF NOT EXISTS idx_anchor_snapshot ON backlink_anchors(snapshot_at, backlinks DESC);
+      CREATE TABLE IF NOT EXISTS backlink_history (
+        date TEXT PRIMARY KEY,             -- one row per day as DataForSEO reports it
+        rank INTEGER,
+        backlinks INTEGER,
+        new_backlinks INTEGER,
+        lost_backlinks INTEGER,
+        referring_domains INTEGER,
+        new_referring_domains INTEGER,
+        lost_referring_domains INTEGER,
+        fetched_at TEXT
+      );
+    `);
+
     // ── Page subresources (latest crawl) — recorded from the HTML parse, never downloaded (#37) ──
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS page_resources (

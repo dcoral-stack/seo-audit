@@ -3,7 +3,6 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { registerAppTool, registerAppResource, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -36,7 +35,8 @@ import { detectTemplates } from './audit/templates.js';
 import { suggestPages } from './audit/opportunities.js';
 import { computeTopicGaps, type GapKeywordRow } from './audit/topicGaps.js';
 import { AuditDatabase } from './core/AuditDatabase.js';
-import { dbPathFor, sanitizeProperty, jobScopeFor } from './core/paths.js';
+import { dbPathFor, sanitizeProperty, jobScopeFor, CONFIG_PATH, DEFAULT_DATA_DIR, resolveDataDir } from './core/paths.js';
+import { fmtDuration } from './core/crawlProgress.js';
 import Database from 'better-sqlite3';
 import { runQueryData, QUERYABLE_TABLES, FILTER_OPS, METRIC_FNS, truncateCell } from './core/queryData.js';
 import { ftsIndexFor, pendingBackfills, backfillInWorker, INLINE_BACKFILL_MAX_ROWS, type FtsIndex } from './core/fts.js';
@@ -77,16 +77,11 @@ const SERVER_VERSION = (
 // Where per-property crawl/audit DBs live. Resolution order (computed once per run):
 //   SAC_DATA_DIR env  >  persisted choice (~/.seo-audit-console.json)  >  Documents default.
 // The user can set the persisted choice through the `data_location` tool (no JSON editing).
-const CONFIG_PATH = path.join(homedir(), '.seo-audit-console.json');
-const DEFAULT_DATA_DIR = path.join(homedir(), 'Documents', 'seo-audit-console');
-
-function readConfigDataDir(): string | undefined {
-  try { return (JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as { dataDir?: string }).dataDir; } catch { return undefined; }
-}
-
+// CONFIG_PATH / DEFAULT_DATA_DIR / resolveDataDir live in core/paths.ts so the dashboard sidecar
+// resolves the same directory (it used to read SAC_DATA_DIR only and ignore data_location, #50).
 let RESOLVED_DATA_DIR: string | null = null;
 export function dataDir(): string {
-  if (!RESOLVED_DATA_DIR) RESOLVED_DATA_DIR = process.env.SAC_DATA_DIR?.trim() || readConfigDataDir() || DEFAULT_DATA_DIR;
+  if (!RESOLVED_DATA_DIR) RESOLVED_DATA_DIR = resolveDataDir();
   return RESOLVED_DATA_DIR;
 }
 
@@ -122,7 +117,7 @@ GRAIN (one line per source):
 - pages / links: the LATEST crawl only, one row per url_key (history lives in page_snapshots, diffed by detect_changes). Carries title/H1/meta, canonical, schema (json_ld), body_chunks, iPR, click_depth, inlink_count.
 - url_inspection: one row per inspected URL — Google's own view (coverage_state, google_canonical vs user_canonical, last_crawl_time, crawled_as, rich_results).
 - rank_history: month × domain (DataForSEO rank distribution + ETV).
-- page_backlinks: one row per backlinked URL (counts + live HTTP status).
+- page_backlinks: one row per backlinked URL (counts + live HTTP status). referring_domains / backlink_anchors: one row per domain / anchor per pull (snapshot_at; anchors carry kind). backlink_history: one row per day (new/lost referring domains).
 - Labs tools: keyword × target, or month × target; cached 20 days; each call costs money — never loop them in bulk.
 
 ARCHETYPE CHAINS (compose along these lines):
@@ -159,33 +154,41 @@ This server's value is composition: joining Search Console, the crawl, URL Inspe
 | url_inspection | one row per inspected URL (top pages by clicks, quota-limited) | coverage_state, page_fetch_state, google_canonical, user_canonical, last_crawl_time, crawled_as, rich_results | url_key | inspect_urls | free (GSC quota) |
 | sitemap_urls | one row per sitemap URL | lastmod | url_key | captured at crawl time | free |
 | rank_history | month × domain | rank distribution (1–3/4–10/11–20/21–100), ETV | period | track_ranks | paid, 20-day cache |
+| referring_domains | one row per referring domain per pull (snapshot_at) | rank, backlinks, referring_pages, nofollow_pages, spam_score, first_seen, lost_date | domain | pull_backlinks | paid, 20-day cache |
+| backlink_anchors | one row per anchor text per pull (snapshot_at) | kind (branded/keyword/url/generic/empty), backlinks, referring_domains | anchor | pull_backlinks | paid, 20-day cache |
+| backlink_history | one row per day | backlinks, referring_domains, new_/lost_referring_domains | date | pull_backlinks (12 months) | paid, 20-day cache |
 | page_backlinks | one row per backlinked URL | backlinks, referring_domains, live status_code | url_key, domain | pull_backlinks (needs the DataForSEO Backlinks subscription) | paid, 20-day cache |
 | link_prospects | one row per prospect domain (links to competitors, not you) | intersections, domain_trust, spam_score, dofollow, trust_flow, topical_trust_flow | domain | link_intersect (needs the DataForSEO Backlinks subscription; Majestic optional) | paid, 20-day cache |
 | keyword_intent | one row per keyword | intent + probability | query | search_intent (pass siteUrl to persist) | paid (cheap), cached |
 | page_cwv | one row per audited URL | performance, LCP, CLS, TBT | url_key | page_lighthouse (pass siteUrl to persist) | paid, cached |
 | page_entity + entity_edge | one row per page / edge per relation | QID, label, subclass-of / part-of | url_key, qid | resolve_entities (free Wikidata) | free |
-| Labs (ranked_keywords, domain_visibility, top_pages, competitors_domain, page_intersection, topic_gaps) | keyword × target, or month × target | volume, ETV, position, KD, intent, SERP features, AIO citations | domain, query | on demand | paid, 20-day cache |
+| Labs (ranked_keywords, domain_visibility, top_pages, competitors_domain, page_intersection, topic_gaps) | keyword × target, or month × target | volume, ETV, position, KD, intent, SERP features, AI Overview exposure (aioOnly) | domain, query | on demand | paid, 20-day cache |
 | findings (audit_runs) | finding per check × URL | priority, evidence JSON | url_key, check_id | run_audit | free |
+| redirect_sources | one row per crawled URL that redirected | status, final_url, hops, chain (every hop) | url_key → final_key | every crawl | free |
+| external_link_status | one row per distinct outbound link target | verdict (ok / redirected / broken / unverifiable), status, final_url, error, fetched_as | url_key = links.target_key | after every crawl, cached 7 days | free |
+| page_resources / resource_assets | one row per subresource a page loads / per distinct css-js-font asset | type, first/third party, head/body, async/defer/preload; status, size, cache-control | page_key; resource_url | every crawl (assets with headResources:true) | free |
+| image_assets | one row per sampled image | bytes, status, content_type, used_on | url | every crawl (top 500 by use) | free |
+| probes | one row per probe_urls fetch (persist:true) | status, redirect chain, canonical, verdict | url | on demand | free |
 
-Raw access: query_audit runs any single check with full evidence; every table above lives in one SQLite file per property (path via data_location) if you need direct SQL.
+Raw access: query_data reads any of these tables (aggregate by default; filters eq/ne/gt/gte/lt/lte/like/in, and "match" for full-text search over GSC queries, page titles/H1s/body text and anchor text); query_audit runs any single check with full evidence; every table lives in one SQLite file per property (path via data_location) if you need direct SQL.
 
 ## Worked recipes
 
-1. **AI Overview exposure & citation loss.** ranked_keywords target:<your domain> aioOnly:true → keywords you rank for where the SERP shows an AI Overview (exposure). For citation (are YOU a source?) check specific keywords with related_terms/serpOrganic — the ai_overview item's references[] carries domain/url/quoted text. For each exposed keyword's ranking page, pull its per-day clicks from search_analytics (page_key × date). Pages whose clicks fell while the AIO citation appeared = you are feeding the answer without earning the visit.
+1. **AI Overview exposure & citation loss.** ranked_keywords target:<your domain> aioOnly:true → keywords you rank for where the SERP shows an AI Overview (exposure). For citation (are YOU a source?) run recon_targets on the ranking pages: it reads the live SERP and reports aioCitesUs per page (null = unresolved, never "not cited"). For each exposed keyword's ranking page, pull its per-day clicks from search_analytics (page_key × date). Pages whose clicks fell while the AIO citation appeared = you are feeding the answer without earning the visit.
 2. **Striking distance without body coverage.** query_audit check:striking-distance (GSC rank 11–20) → for each page, check pages.body_chunks for the query's terms. The automated versions: body-missing-top-query, rag-answer-gap, and score_passages for the dense-answer test. Pages ranking 11–20 that never answer the query in one passage are the highest-yield rewrites.
 3. **Not indexed + no equity.** url_inspection.coverage_state ~ 'not indexed' joined to pages.ipr + inlink_count. Low-iPR unindexed pages need internal links, not resubmission; high-iPR unindexed pages are the real anomalies. (Checks: coverage-not-indexed, underlinked-high-demand.)
 4. **Cannibalisation with semantic overlap.** run_audit → keyword-cannibalisation evidence lists the competing URLs per query → compare those pages' body_chunks: heavy chunk overlap = consolidate (301 the loser); light overlap = differentiate the titles/H1s and interlink with distinct anchors.
-5. **Stable rank, falling CTR → SERP feature shift.** In search_analytics find queries where weekly position is flat but ctr declines → related_terms / ranked_keywords serpFeatures for that keyword shows what now sits above you (AIO, featured snippet, shopping). ctr-below-expected is the deterministic starting list.
+5. **Stable rank, falling CTR → SERP feature shift.** In search_analytics find queries where weekly position is flat but ctr declines → ranked_keywords (SERP features per keyword) or serp_features (the volume-weighted footprint) shows what now sits above you (AIO, featured snippet, shopping). ctr-below-expected is the deterministic starting list.
 6. **Schema vs rich-result reality.** pages.json_ld (declared @types) joined to url_inspection.rich_results (what Google actually detected + issues). The rich-result-issues check automates the per-URL diff; the composition question is per-TEMPLATE (list_templates): which template's schema never earns its rich result?
 7. **Migration signal transfer.** pages.redirects (recorded chains) → url_inspection.google_canonical of the target (has Google accepted the move?) → search_analytics clicks by page_key before/after the migration date. Equity that didn't follow the 301 shows up as a target with no canonical adoption and no click recovery.
-8. **404s with backlinks.** pages.status_code = 404 joined to page_backlinks.backlinks (run pull_backlinks first) → run_audit surfaces backlinks-to-404; fix_finding generates the 301 that recovers the equity.
+8. **404s with backlinks.** pages.status_code = 404 joined to page_backlinks.backlinks (run pull_backlinks first) → run_audit surfaces backlinks-to-404; triage_404s produces the 301 map (live-verified) that recovers the equity.
 9. **Competitor topic gap.** topic_gaps (bounded + cached: competitor ranked_keywords minus your GSC queries and page titles/H1s, clustered and scored) — or do it manually with ranked_keywords per competitor when you want the raw rows.
 10. **Link gap (what links do rivals have that we don't).** link_intersect over the competitor set (or a single company) → link_prospects: domains linking to them but not you, followed-first and sorted by domain trust. DataForSEO domain rank surfaces spam directories at the top; MAJESTIC_API_KEY re-sorts by Trust Flow (a rank-227 domain is often TF 0) and Topical Trust Flow shows whether that authority is on-topic. data_storage flags when a property's prospect set is going stale (competitors keep earning links).
 
 ## Novel combinations (nothing else surfaces these)
 
 - **Crawl budget vs equity:** url_inspection.last_crawl_time × pages.ipr — your highest-iPR pages should be recrawled often; a high-iPR page Google rarely revisits is a freshness/priority problem (and vice versa: junk crawled daily = wasted budget).
-- **AIO text vs your content:** the ai_overview items in a SERP call (related_terms' underlying serpOrganic) × pages.body_chunks — is the text Google quotes actually on your page, and in one extractable chunk?
+- **AIO sources vs your content:** recon_targets' per-page SERP read (which pages the AI Overview cites, and whether one is yours) × score_passages on your page — do you have one dense, extractable passage that answers the query the Overview is answering?
 - **Crawl-to-first-impression latency:** url_inspection.last_crawl_time vs the first date a page appears in search_analytics — how fast does Google turn a crawl into impressions, per template? Slow templates have an indexing-pipeline problem.
 - **Crawled-as vs response times:** url_inspection.crawled_as (mobile/desktop agent) × pages.response_time_ms — slow responses specifically on the agent Google uses against you.
 
@@ -253,7 +256,7 @@ A technical-SEO audit that fuses **Search Console + a site crawl + DataForSEO**,
 - **page_intersection** — keywords competitor pages rank for but yours doesn’t (content gap). _"Content gap: competitorUrls [\\"https://rival.com/guide\\"], excludePages [\\"https://example.com/guide\\"]"_
 - **domain_visibility** — monthly ranking-keyword distribution + ETV trend for ANY domain/subdomain (Semrush-style organic overview). _"Show visibility over time for competitor.com"_
 - **top_pages** — a domain's top organic pages by estimated traffic. _"Top pages on competitor.com"_
-- **ranked_keywords** — keywords a domain / subdomain / URL / subfolder ranks for (+ difficulty, intent, SERP features). _"What does competitor.com/blog/ rank for?"_ · \`scope:url|folder\` · \`aioOnly:true\` = keywords where the target is cited in AI Overviews
+- **ranked_keywords** — keywords a domain / subdomain / URL / subfolder ranks for (+ difficulty, intent, SERP features). _"What does competitor.com/blog/ rank for?"_ · \`scope:url|folder\` · \`aioOnly:true\` = keywords where the SERP shows an AI Overview (exposure; citation needs a SERP read, e.g. recon_targets)
 - **youtube_discovery / news_discovery** — the YouTube videos and recent news ranking for a keyword (live SERPs). _"What news is there on direct drive wheelbases this month?"_
 - **market_sizing** — total demand and share of voice for you plus up to four competitors, per topic cluster. _"Size the market: example.com vs rival1.com and rival2.com"_
 - **topic_gaps** — what related topics should this site cover to be expert in its space: competitor keyword footprints minus everything you already rank or have a page for, clustered into ranked topics with volumes, the owning competitor and your nearest existing page. _"What topics should example.com cover? Compare against rival.com"_
@@ -675,11 +678,24 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       const base = dashboardServerUrl();
       return base && r && typeof r === 'object' ? { ...(r as Record<string, unknown>), dashboardUrl: base, dashboard: `${base}/dashboard?siteUrl=${encodeURIComponent(siteUrl)}` } : r;
     };
+  // #52: a crawl's progress as one readable line (stage, counts, rate, ETA) instead of raw JSON.
+  const crawlProgressLine = (p: Record<string, unknown>): string | null => {
+    if (typeof p.stage !== 'string' || typeof p.crawled !== 'number') return null;
+    const n = (v: unknown) => (typeof v === 'number' ? v.toLocaleString('en-GB') : '?');
+    const secs = (v: unknown) => fmtDuration(typeof v === 'number' ? v : null);
+    if (p.stage === 'fetching') {
+      const rate = typeof p.pagesPerSec === 'number' ? `${p.pagesPerSec} pages/s` : 'rate pending';
+      const eta = typeof p.etaSeconds === 'number' ? `ETA ${fmtDuration(p.etaSeconds)}` : 'ETA pending';
+      return `fetching: ${n(p.crawled)}/${n(p.maxPages)} pages, ${n(p.pagesRemaining)} queued, ${n(p.failed)} failed (${rate}, ${eta}, ${secs(p.elapsedSeconds)} elapsed)`;
+    }
+    if (p.stage === 'external-links' && typeof p.checked === 'number') return `external-links: ${n(p.checked)}/${n(p.total)} outbound targets checked, after ${n(p.crawled)} pages fetched`;
+    return `${p.stage}: post-crawl stage after ${n(p.crawled)} pages fetched${typeof p.linksSeen === 'number' ? ` and ${n(p.linksSeen)} links` : ''} (${secs(p.elapsedSeconds)} elapsed)`;
+  };
   const oneLineJob = (job: Job, detail = false): string => {
     const head = `Job ${job.id} (${job.type}): ${job.state}`;
     if (job.state === 'failed') return `${head}: ${job.error ?? 'unknown error'}${corruptionHint(job.error)}`;
     if (job.state === 'interrupted') return `${head}: ${job.error ?? 'the process running it exited before it finished.'}`;
-    const prog = Object.keys(job.progress).length ? ` ${JSON.stringify(job.progress).slice(0, 300)}` : '';
+    const prog = Object.keys(job.progress).length ? ` ${crawlProgressLine(job.progress) ?? JSON.stringify(job.progress).slice(0, 300)}` : '';
     if (!detail || job.state !== 'completed' || !DATA_JOBS.has(job.type)) return head + prog;
     const link = (job.result as { dashboard?: string } | undefined)?.dashboard;
     const siteUrl = (job.result as { siteUrl?: string } | undefined)?.siteUrl;
@@ -1027,7 +1043,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'check_sync_status',
     {
       title: 'Check sync status',
-      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A failed job\'s reason is in the text reply as well as in structuredContent.error. A job whose server process exited before it finished reads as "interrupted" (see README, Docker).',
+      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A running crawl reports its stage (fetching, writing-links, image-weights, resource-headers, link-graph, revalidation-probe, snapshot, external-links), pages crawled vs the cap, pages/sec and an ETA for the fetch stage, so a long crawl is never mistaken for a stalled one; poll every 60-120 s. A failed job\'s reason is in the text reply as well as in structuredContent.error. A job whose server process exited before it finished reads as "interrupted" (see README, Docker).',
       inputSchema: { jobId: z.string().optional() },
     },
     jobStatus,
@@ -1052,7 +1068,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'start_crawl',
     {
       title: 'Crawl a site (just the crawl)',
-      description: 'Update just the crawl: fetch the site into the local database (async job — poll with check_crawl_status). HTTP crawl; respects robots.txt; asset file-types are HEAD-only (no body download); internal-search / cart / wp-json / builder junk URLs are skipped by default. For a full refresh use refresh_property. excludePatterns adds extra URL regexes to skip (e.g. ["/author/","/tag/","/page/"]) to keep big crawls light. Every crawl also records each page\'s subresources (CSS, JS, fonts, images: type, first/third party, head/body, async/defer/preload) into page_resources without downloading them; headResources:true adds a header-only pass over the CSS/JS/font ones. After the crawl, every distinct outbound link target is checked (HEAD, ranged-GET fallback, host-throttled, cached 7 days in external_link_status; bot walls are "unverifiable", not broken) and run_audit reports external-broken / external-redirected — checkExternal:false skips it. Grain: one row per url_key, latest crawl. Joins: url_key → GSC/inspection/backlinks.',
+      description: 'Update just the crawl: fetch the site into the local database (async job — poll with check_crawl_status every 60-120 s; it reports the stage, pages crawled vs maxPages, pages/sec and an ETA). Large sites: maxPages up to 50000 (default 4000); a 10k-page crawl is typically 20-40 minutes and streams pages/links to SQLite as it goes, then runs the post-crawl stages (link graph, snapshot, outbound-link check). HTTP crawl; respects robots.txt; asset file-types are fetched with GET and the body is aborted unread (no download; HEAD can lie about status); internal-search / cart / wp-json / builder junk URLs are skipped by default. For a full refresh use refresh_property. excludePatterns adds extra URL regexes to skip (e.g. ["/author/","/tag/","/page/"]) to keep big crawls light. Every crawl also records each page\'s subresources (CSS, JS, fonts, images: type, first/third party, head/body, async/defer/preload) into page_resources without downloading them; headResources:true adds a header-only pass over the CSS/JS/font ones. After the crawl, every distinct outbound link target is checked (HEAD, ranged-GET fallback, host-throttled, cached 7 days in external_link_status; bot walls are "unverifiable", not broken) and run_audit reports external-broken / external-redirected — checkExternal:false skips it. Grain: one row per url_key, latest crawl. Joins: url_key → GSC/inspection/backlinks.',
       inputSchema: {
         siteUrl: z.string(),
         maxPages: z.number().int().min(1).max(50000).optional(),
@@ -1186,7 +1202,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'check_crawl_status',
     {
       title: 'Check crawl status',
-      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A failed job\'s reason is in the text reply as well as in structuredContent.error. A job whose server process exited before it finished reads as "interrupted" (see README, Docker).',
+      description: 'Poll any async job (sync, crawl, refresh, inspect, render, recon, backlinks, …) by id, or omit jobId to list recent jobs. check_sync_status and check_crawl_status are the same tool under two names. A running crawl reports its stage (fetching, writing-links, image-weights, resource-headers, link-graph, revalidation-probe, snapshot, external-links), pages crawled vs the cap, pages/sec and an ETA for the fetch stage, so a long crawl is never mistaken for a stalled one; poll every 60-120 s. A failed job\'s reason is in the text reply as well as in structuredContent.error. A job whose server process exited before it finished reads as "interrupted" (see README, Docker).',
       inputSchema: { jobId: z.string().optional() },
     },
     jobStatus,
@@ -1456,7 +1472,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'recon_targets',
     {
       title: 'Content recon: why a page is losing, and what to do about it',
-      description: '[Paid: DataForSEO SERP per page (~$0.004 each, plus a small refundable surcharge for loading async AI Overviews), bounded to the batch | Use for: the deep "why are we behind and what to add" recon] For each of your worst declining / striking-distance pages (auto-selected by impressions x decline, position 3-15; or pass explicit urls), this fetches OUR live page with the crawler, pulls the live Google SERP (DataForSEO SERP-advanced, depth 20 organic), and classifies WHY we are behind using the organic-rank x AI-Overview-citation matrix: defend-and-deepen (cited + strong), accuracy-or-freshness (rank but the AIO will not quote us - the sharpest, most actionable class), consolidate-weak-page, competitive-gap, or page-cannot-rank (the crawl says the URL is noindex/canonicalised away, so its GSC history is legacy and the SERP read belongs to another page). Honesty rules baked in: every GSC figure carries its 28-day window; organicRank:null means "absent from the top 20 ORGANIC results", never a position; and an AI Overview whose citations could not be resolved reports aioCitesUs:null (UNKNOWN) rather than "not cited". To-dos are prioritised by OPPORTUNITY (impressions x the CTR gap between where you rank and a realistic target, damped by the verdict), not by raw impressions, and cannibalisation is counted across the whole query cluster. Set scrapeCompetitors:true to also pull the top competitors as content, free and with no API key, routed by host: Reddit → its .json, other pages → a browser-profile HTTP fetch, and ranking videos are listed rather than fetched (a video page has no readable text over HTTP); competitorLimit (default 5) caps how many are fetched and everything above the cap is listed as skipped. Cloudflare-challenge sites (e.g. PCMag) still can\'t be fetched from a server and come back as a per-URL error — the SERP still tells you they rank; if one matters, ask the user to paste its copy or supply a text file and diff that in. Watch the ranking videos (usually what wins these SERPs) and use the fetched pages. Then write findings back with save_recon_todo; track with recon_todos. **Async job:** returns a jobId immediately - poll check_sync_status; the finished job carries the per-page verdicts, to-dos and a summary. (Each page is persisted to the ledger as it completes, so recon_todos shows results even mid-run.)',
+      description: '[Paid: DataForSEO SERP per page (~$0.004 each, plus a small refundable surcharge for loading async AI Overviews), bounded to the batch | Use for: the deep "why are we behind and what to add" recon] For each of your striking-distance pages (auto-selected: the page\'s top query at positions 3-15, highest impressions first; or pass explicit urls), this fetches OUR live page with the crawler, pulls the live Google SERP (DataForSEO SERP-advanced, depth 20 organic), and classifies WHY we are behind using the organic-rank x AI-Overview-citation matrix: defend-and-deepen (cited + strong), accuracy-or-freshness (rank but the AIO will not quote us - the sharpest, most actionable class), consolidate-weak-page, competitive-gap, or page-cannot-rank (the crawl says the URL is noindex/canonicalised away, so its GSC history is legacy and the SERP read belongs to another page). Honesty rules baked in: every GSC figure carries its 28-day window; organicRank:null means "absent from the top 20 ORGANIC results", never a position; and an AI Overview whose citations could not be resolved reports aioCitesUs:null (UNKNOWN) rather than "not cited". To-dos are prioritised by OPPORTUNITY (impressions x the CTR gap between where you rank and a realistic target, damped by the verdict), not by raw impressions, and cannibalisation is counted across the whole query cluster. Set scrapeCompetitors:true to also pull the top competitors as content, free and with no API key, routed by host: Reddit → its .json, other pages → a browser-profile HTTP fetch, and ranking videos are listed rather than fetched (a video page has no readable text over HTTP); competitorLimit (default 5) caps how many are fetched and everything above the cap is listed as skipped. Cloudflare-challenge sites (e.g. PCMag) still can\'t be fetched from a server and come back as a per-URL error — the SERP still tells you they rank; if one matters, ask the user to paste its copy or supply a text file and diff that in. Watch the ranking videos (usually what wins these SERPs) and use the fetched pages. Then write findings back with save_recon_todo; track with recon_todos. **Async job:** returns a jobId immediately - poll check_sync_status; the finished job carries the per-page verdicts, to-dos and a summary. (Each page is persisted to the ledger as it completes, so recon_todos shows results even mid-run.)',
       inputSchema: {
         siteUrl: z.string(),
         limit: z.number().int().min(1).max(50).optional().describe('Pages per batch (default 5; async so large batches are fine)'),
@@ -2156,7 +2172,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       if (!kws.length) {
         return {
           content: [{ type: 'text', text: aioOnly
-            ? `No AI Overview citations found for ${scopeLabel} (scope: ${mode}) — the target isn't cited as an AIO source for any tracked keyword in this market.`
+            ? `No AI Overview exposure for ${scopeLabel} (scope: ${mode}) — none of the target's ranked keywords shows an AI Overview in this market.`
             : `No ranked keywords found for ${scopeLabel} (scope: ${mode}) — check the target, scope and location.` }],
           structuredContent: { target: dfsTarget, scope: mode, aioOnly: aioOnly ?? false, keywords: [], cached: r.cached, cost: r.cost },
         };
@@ -2182,7 +2198,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         ` ${k.url ? String(k.url).replace(/\|/g, '\\|') : '—'} |`,
       );
       const md = capMdRows(header, rows,
-        `\n\nTotals: ${fmtNum(totalCount)} keywords ${aioOnly ? 'citing the target in AI Overviews' : 'ranked'}, listed rows sum ${fmtNum(sumEtv)} ETV. ${r.cached ? 'Cached.' : `Live ($${r.cost.toFixed(4)}).`}`);
+        `\n\nTotals: ${fmtNum(totalCount)} keywords ${aioOnly ? 'whose SERP shows an AI Overview (exposure, not citation)' : 'ranked'}, listed rows sum ${fmtNum(sumEtv)} ETV. ${r.cached ? 'Cached.' : `Live ($${r.cost.toFixed(4)}).`}`);
       return {
         content: [{ type: 'text', text: md }],
         structuredContent: { target: dfsTarget, scope: mode, aioOnly: aioOnly ?? false, totalCount, rowsTotal: kws.length, keywords: kws.slice(0, 100), cached: r.cached, cost: r.cost },
@@ -2551,12 +2567,20 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'pull_backlinks',
     {
       title: 'Pull backlink profile (DataForSEO)',
-      description: '[Paid: Backlinks subscription (separate - 40204 = not activated), cached 20d | Use for: authority + dead-backlink recovery] Fetch the property’s backlink profile (overall summary — total backlinks, referring domains, Domain Rank, broken backlinks/pages, nofollow share — plus per-page backlink/referring-domain counts) into page_backlinks, and resolve each backlinked page’s live HTTP status so run_audit can flag external backlinks pointing to dead (4xx/5xx) pages. Paid DataForSEO call, 20-day cached, on-demand only. Async job — poll check_sync_status. Grain: one row per backlinked URL. Joins: url_key → pages/GSC; domain → Labs tools.',
-      inputSchema: { siteUrl: z.string(), limit: z.number().int().min(1).max(1000).optional(), statusLimit: z.number().int().min(0).max(1000).optional() },
+      description: '[Paid: Backlinks subscription (separate - 40204 = not activated), cached 20d | Use for: authority + dead-backlink recovery] Fetch the property’s backlink profile (overall summary — total backlinks, referring domains, Domain Rank, broken backlinks/pages, nofollow share — plus per-page backlink/referring-domain counts) into page_backlinks, and resolve each backlinked page’s live HTTP status so run_audit can flag external backlinks pointing to dead (4xx/5xx) pages. Also collects the profile behind the dashboard\'s Links tab (#47): referring domains (live and lost, with rank, spam score, first seen) into referring_domains, anchor texts classified branded / keyword / url / generic / empty into backlink_anchors, and 12 months of daily new/lost history into backlink_history — three more cheap Backlinks calls, each reported separately if it fails (profile:false skips them). Paid DataForSEO calls, 20-day cached, on-demand only. Async job — poll check_sync_status. Grain: one row per backlinked URL (page_backlinks), per domain / anchor per pull (snapshot_at), per day (history). Joins: url_key → pages/GSC; domain → Labs tools.',
+      inputSchema: {
+        siteUrl: z.string(),
+        limit: z.number().int().min(1).max(1000).optional().describe('Backlinked pages to store (default 1000)'),
+        statusLimit: z.number().int().min(0).max(1000).optional().describe('Backlinked pages to live-check when the crawl has no status for them (default 150)'),
+        profile: z.boolean().optional().describe('Also collect referring domains, anchors and history (default true)'),
+        domainLimit: z.number().int().min(10).max(1000).optional().describe('Referring domains to store per pull (default 1000, best rank first)'),
+        anchorLimit: z.number().int().min(10).max(1000).optional().describe('Anchors to store per pull (default 500, most backlinks first)'),
+        historyMonths: z.number().int().min(1).max(36).optional().describe('Months of daily history to pull (default 12)'),
+      },
     },
-    async ({ siteUrl, limit, statusLimit }) => {
+    async ({ siteUrl, limit, statusLimit, profile, domainLimit, anchorLimit, historyMonths }) => {
       const bl = requireDfs(backlinks);
-      const jobId = startFor(siteUrl, 'backlinks', (update, signal) => bl.run(siteUrl, { limit, statusLimit }, update, signal));
+      const jobId = startFor(siteUrl, 'backlinks', (update, signal) => bl.run(siteUrl, { limit, statusLimit, profile, domainLimit, anchorLimit, historyMonths }, update, signal));
       return jobStarted({ jobId, status: 'running', siteUrl }, `Backlink pull started for ${siteUrl} (job ${jobId}). Poll check_sync_status, then run_audit for backlinks-to-404.`);
     },
   );

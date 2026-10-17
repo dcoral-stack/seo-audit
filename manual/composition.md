@@ -28,6 +28,9 @@ Grain is the thing that trips people up when composing - what one row means, per
 | `sitemap_urls` | one sitemap URL | With its declared lastmod, captured at crawl time. |
 | `rank_history` | month × domain | DataForSEO rank distribution plus estimated traffic value. |
 | `page_backlinks` | one backlinked URL | Counts plus a live HTTP status. |
+| `referring_domains` | one referring domain per pull (`snapshot_at`) | Rank, backlinks, pages, nofollow pages, spam score, first seen, lost date. |
+| `backlink_anchors` | one anchor text per pull (`snapshot_at`) | `kind` (branded / keyword / url / generic / empty), backlinks, referring domains. |
+| `backlink_history` | one day | Backlinks and referring domains, new and lost that day. |
 | `link_prospects` | one prospect domain (links to your rivals, not to you) | Intersections, DataForSEO domain trust, worst spam score, followed flag, anchor mix - plus **Trust Flow**, Citation Flow and **Topical Trust Flow** when `MAJESTIC_API_KEY` is set. Captured per `link_intersect` run and dated, so treat it as a snapshot: rivals keep earning links. |
 | `keyword_intent` / `page_cwv` | one keyword / one URL | Persisted when you pass `siteUrl` to `search_intent` / `page_lighthouse`. |
 | Labs tools | keyword × target, or month × target | Cached 20 days; each live call costs money, so plan the fewest calls that answer the question. |

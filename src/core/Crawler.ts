@@ -6,6 +6,7 @@ import { urlKey, hostFormForProperty, type UrlKeyOptions } from './url-key.js';
 import { extractPage, isInternalHost, decodeHtmlBody } from './extract.js';
 import { fetchRobots } from './robots.js';
 import { finalizeLinkGraph } from './linkGraph.js';
+import { crawlRate, type CrawlStage } from './crawlProgress.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { snapshotCrawl } from '../audit/drift.js';
 import { checkExternalLinks, type ExternalSummary } from './externalLinks.js';
@@ -448,10 +449,19 @@ export class Crawler {
       if (linkBuf.length && (final || linkBuf.length >= FLUSH_EVERY)) { flushLinks(linkBuf.splice(0)); }
       if (resourceBuf.length && (final || resourceBuf.length >= FLUSH_EVERY)) { ensureWiped(); flushResources(resourceBuf.splice(0)); }
     };
+    // Progress the client can read (#52): counts, pages/sec and an ETA for the fetch stage, then a
+    // stage name for each post-crawl phase so a long run never looks stalled.
+    const t0 = Date.now();
+    let linksSeen = 0;
+    const stage = (name: CrawlStage, extra: Record<string, unknown> = {}): void => {
+      const rate = crawlRate(crawled, failed, frontier.length, maxPages, Date.now() - t0);
+      update({ crawlId, stage: name, crawled, discovered, failed, skipped, maxPages, linksSeen, elapsedSeconds: rate.elapsedSeconds,
+        pagesPerSec: rate.pagesPerSec, pagesRemaining: name === 'fetching' ? rate.pagesRemaining : 0, etaSeconds: name === 'fetching' ? rate.etaSeconds : null, ...extra });
+    };
     const saveProgress = (): void => {
       db.db.prepare(`UPDATE crawl_metadata SET urls_discovered=?, urls_crawled=?, urls_failed=?, urls_skipped=? WHERE crawl_id=?`)
         .run(discovered, crawled, failed, skipped, crawlId);
-      update({ crawlId, crawled, discovered, failed, skipped });
+      stage('fetching');
     };
 
     // Adaptive pacing: start at the configured delay; ramp UP when the host throttles (429/503)
@@ -548,6 +558,7 @@ export class Crawler {
             if (res.type !== 'img') { const ref = resourceRefs.get(res.url); if (ref) ref.usedOn++; else resourceRefs.set(res.url, { type: res.type, usedOn: 1 }); }
           }
           for (const l of ex.links) {
+            linksSeen++;
             linkBuf.push({
               crawl_id: crawlId, source_url: r.finalUrl, source_key: finalKey,
               target_url: l.targetUrl, target_key: l.targetKey, anchor_text: l.anchor,
@@ -591,13 +602,16 @@ export class Crawler {
       pump();
     });
 
+    stage('writing-links');
     flush(true);
+    saveProgress();
 
     // Post-crawl: sample image weights. One request per distinct <img> src, most-used first,
     // reading ONLY the response headers (content-length + content-type) — the body is cancelled
     // immediately, so no image bytes are ever downloaded. Bounded so a huge site can't stall
     // the crawl; feeds the Site health image-weight report.
     if (!signal.aborted && wipedPrior) { // wipedPrior = the crawl really wrote pages; keep old sample otherwise
+      stage('image-weights');
       db.db.exec('DELETE FROM image_assets');
     }
     // Shared header-only probe for the two post-crawl passes: fetch, read headers, cancel the
@@ -651,6 +665,7 @@ export class Crawler {
     // Optional (#37): header-only pass over css/js/font subresources — status, size and caching —
     // most-used first, capped, through the same paced pool. Bodies are never downloaded.
     if (opts.headResources && !signal.aborted && wipedPrior && resourceRefs.size) {
+      stage('resource-headers');
       const MAX_RESOURCES = 500;
       const sample = [...resourceRefs.entries()]
         .filter(([url]) => { try { const u = new URL(url); return !isInternalHost(u.hostname, baseHost) || robots.isAllowed(u.pathname); } catch { return false; } })
@@ -666,6 +681,7 @@ export class Crawler {
     }
 
     // Post-crawl: in-degree (orphans), internal PageRank (iPR) + body-only click depth.
+    stage('link-graph');
     finalizeLinkGraph(db.db, crawlId, urlKey(seed, keyOpts));
 
     // Post-crawl: conditional-revalidation probe. Pages that advertised validators
@@ -673,6 +689,7 @@ export class Crawler {
     // answers 304 Not Modified; a 200 means it re-serves the full body to every revalidating
     // crawler and cache, wasting crawl budget. Bounded sample, most-linked pages first.
     if (!signal.aborted) {
+      stage('revalidation-probe');
       const cands = db.db.prepare(
         `SELECT url, url_key, last_modified lm, etag FROM pages
          WHERE status_code=200 AND is_internal=1 AND (last_modified IS NOT NULL OR etag IS NOT NULL)
@@ -709,6 +726,7 @@ export class Crawler {
       // Never fail a good crawl over its history — but say so, because a silently missing
       // snapshot is the exact failure this fix exists to remove. diffLatest also reports the gap.
       try {
+        stage('snapshot');
         snapshotCrawl(db.db, crawlId, finishedAt);
       } catch (e) {
         console.error(`[crawl ${crawlId}] snapshot failed (change-detection will report this crawl as missing):`, e);
@@ -721,12 +739,14 @@ export class Crawler {
     let external: ExternalSummary | undefined;
     if (opts.checkExternal !== false && !signal.aborted && wipedPrior) {
       try {
-        external = await checkExternalLinks(db.db, { userAgent: ua, chromeFallback: uaState.fallback, dispatcher, signal, update: p => update({ crawlId, ...p }), cacheDays: opts.externalCacheDays });
+        stage('external-links');
+        external = await checkExternalLinks(db.db, { userAgent: ua, chromeFallback: uaState.fallback, dispatcher, signal, update: p => update({ crawlId, stage: 'external-links', ...p }), cacheDays: opts.externalCacheDays });
       } catch (e) { console.error(`[crawl ${crawlId}] external link check skipped:`, e instanceof Error ? e.message : String(e)); }
     }
 
     // Report blocking only when Chrome actually got past it: a 403 that Chrome also gets is a
     // forbidden URL, not bot protection.
+    stage('done');
     const blocking = uaState.okAsChrome ? { blockedAsBot: uaState.blockedAsBot, okAsChrome: uaState.okAsChrome, blockedForBoth: uaState.blockedAsChrome, switchedToChrome: uaState.preferChrome } : undefined;
     return { crawlId, siteUrl, crawled, failed, skipped, ...(sitemaps ? { sitemaps } : {}), ...(external ? { external } : {}), ...(blocking ? { blocking } : {}) };
     } catch (err) {

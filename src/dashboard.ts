@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Copyright (c) 2026 Richard Baxter / Houtini — Apache-2.0 (see LICENSE)
 import path from 'node:path';
-import os from 'node:os';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { startDashboardServer } from './core/webServer.js';
 import { buildWebCallHandlers } from './core/webHandlers.js';
 import { DataForSeoClient, dfsCacheDaysFromEnv } from './core/DataForSeoClient.js';
+import { resolveDataDir } from './core/paths.js';
 
 /**
  * Standalone dashboard server — the Docker-aware delivery surface.
@@ -28,7 +28,8 @@ import { DataForSeoClient, dfsCacheDaysFromEnv } from './core/DataForSeoClient.j
  */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = process.env.SAC_DATA_DIR || path.join(os.homedir(), 'Documents', 'seo-audit-console');
+// Same resolution as the MCP server: SAC_DATA_DIR > the data_location choice > Documents default (#50).
+const DATA_DIR = resolveDataDir();
 const dataDir = (): string => DATA_DIR;
 
 const dfsUser = process.env.DATAFORSEO_USERNAME;
