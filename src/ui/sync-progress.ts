@@ -3,7 +3,8 @@ import { App, applyDocumentTheme, applyHostStyleVariables } from '@modelcontextp
 // seo-audit-console refresh is phase-based: gsc → crawl → inspect → ranks → done.
 // check_sync_status returns { id, state, startedAt, progress:{phase, rowsFetched, crawled,
 // discovered, inspected, periods, siteUrl}, result? }. The opening tool result is
-// { jobId, status, siteUrl }. We poll check_sync_status until state != 'running'.
+// { jobId, status, siteUrl }. We poll check_sync_status until the job finishes. With the job
+// runner (#56) it starts as 'queued' (note says whether a runner is there) before 'running'.
 
 interface JobProgress {
   phase?: string; siteUrl?: string; rowsFetched?: number;
@@ -13,6 +14,8 @@ interface JobProgress {
 interface Job {
   id?: string; jobId?: string; state?: string; status?: string;
   startedAt?: string; siteUrl?: string; progress?: JobProgress; result?: any; error?: string;
+  /** A queued job's status line: waiting for the job runner, or that none seems to be running. */
+  note?: string;
 }
 
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
@@ -84,7 +87,7 @@ function render(job: Job): void {
   if (startedAt) $('elapsed').textContent = formatDuration(Date.now() - startedAt);
 
   const done = state === 'completed' || state === 'failed' || state === 'cancelled' || state === 'interrupted';
-  const curIdx = done ? PHASES.length : Math.max(0, PHASES.findIndex(ph => ph.key === p.phase));
+  const curIdx = done ? PHASES.length : state === 'queued' ? -1 : Math.max(0, PHASES.findIndex(ph => ph.key === p.phase));
 
   // Phase stepper
   $('phases').innerHTML = PHASES.map((ph, i) => {
@@ -94,7 +97,15 @@ function render(job: Job): void {
 
   // Active phase detail
   const cur = $('current');
-  if (!done && p.phase) {
+  if (state === 'queued') {
+    cur.style.display = 'block';
+    $('cur-label').textContent = 'Queued: waiting for the job runner';
+    $('cur-count').textContent = '';
+    // The default note just repeats the label; anything longer is the "no runner" advice.
+    $('cur-meta').textContent = job.note && job.note !== 'waiting for the job runner' ? job.note : '';
+    const fill = $('cur-fill');
+    fill.classList.add('indeterminate'); fill.style.width = '100%';
+  } else if (!done && p.phase) {
     cur.style.display = 'block';
     let label = '', count = '', meta = '', pct = -1;
     if (p.phase === 'gsc') { label = 'Fetching Search Console history'; count = `${formatNumber(p.rowsFetched ?? 0)} rows`; }

@@ -46,7 +46,7 @@ export function ago(at: string | null | undefined, now = Date.now()): string {
 }
 
 const stateDot = (state: string): string =>
-  state === 'completed' ? 'dot-ok' : state === 'running' ? 'dot-run' : state === 'never' ? 'dot-never' : 'dot-bad';
+  state === 'completed' ? 'dot-ok' : state === 'running' || state === 'queued' ? 'dot-run' : state === 'never' ? 'dot-never' : 'dot-bad';
 const KIND_LABEL: Record<string, string> = { sync: 'Sync', crawl: 'Crawl', audit: 'Audit', inspect: 'Inspect', ranks: 'Ranks', sitemap: 'Sitemap' };
 
 // ── KPI strip ─────────────────────────────────────────────────────────────
