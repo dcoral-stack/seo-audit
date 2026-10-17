@@ -669,7 +669,7 @@ function render(data: DashboardData): void {
     const broken = sg.nodes.filter((n: any) => n.status == null || n.status >= 300).length;
     const iso: any[] = (sg as any).isolated ?? [];
     $('structureNote').innerHTML = iso.length
-      ? `<b>${iso.length} mapped page${iso.length === 1 ? ' has' : 's have'} no in-content link to or from the other pages here</b> (dashed outline, they float free of the cluster): ` +
+      ? `<b>${iso.length} mapped page${iso.length === 1 ? ' has' : 's have'} no in-content link to or from the other pages here</b> (dashed outline, set apart at the bottom left): ` +
         iso.slice(0, 6).map(n => `<code>${esc(shortPath(n.id, 40))}</code> ${esc(isolatedText(n).replace(/, so it has no in-content link in this map\.$/, '.'))}`).join(' ') + (iso.length > 6 ? ` And ${iso.length - 6} more.` : '')
       : '';
     $('structureSummary').textContent = `Internal link skeleton of the top ${sg.nodes.length} pages by internal PageRank (of ${fmt(sg.totalPages)} crawled); node size = iPR, ${broken} broken or redirected. Scroll to zoom, drag to pan, click a node to open the page.`;

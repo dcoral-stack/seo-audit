@@ -176,12 +176,15 @@ export function drawNetwork(d: Dash, ctx: OverviewCtx, id: string, opts: { compa
   // Pages with no in-content link inside the map float free in a force layout: always label them
   // and draw them hollow, so a detached dot reads as a finding, not a rendering glitch.
   const isolated = new Map<string, any>((sg.isolated ?? []).map((n: any) => [n.id, n]));
+  const isoIndex = new Map<string, number>([...isolated.keys()].map((id, i) => [id, i]));
+  const H = document.getElementById(id)?.clientHeight || 560;
   const gnodes = nodes.map((n: any) => ({
     id: n.id, name: n.id, value: n.ipr, category: catOf(n),
     symbolSize: (opts.compact ? 4 : 5) + Math.round((n.ipr / maxIpr) * (opts.compact ? 18 : 26)),
     label: ((labelled.has(n.id) || isolated.has(n.id)) && !ctx.redacted)
       ? { show: true, formatter: isolated.has(n.id) ? `${ctx.shortPath(n.id, 22)} (no in-content link)` : ctx.shortPath(n.id, 22), color: col.muted, fontSize: 10, fontFamily: monoFont() } : { show: false },
-    ...(isolated.has(n.id) ? { itemStyle: { color: col.surface, borderColor: catOf(n) === 0 ? col.green : catOf(n) === 1 ? col.amber : col.red, borderWidth: 2, borderType: 'dashed' } } : {}),
+    // Pinned in a column at the bottom left, so they never drift to (and clip at) the canvas edge.
+    ...(isolated.has(n.id) ? { itemStyle: { color: col.surface, borderColor: catOf(n) === 0 ? col.green : catOf(n) === 1 ? col.amber : col.red, borderWidth: 2, borderType: 'dashed' }, fixed: true, x: 28, y: H - 26 - isoIndex.get(n.id)! * 28 } : {}),
     _s: n.status, _d: n.depth, _iso: isolated.get(n.id),
   }));
   const edgeColor = getComputedStyle(document.documentElement).getPropertyValue('--chart-edge').trim() || col.border;
