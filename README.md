@@ -284,16 +284,34 @@ Then: *"list properties"* to check it's connected, *"refresh"*, *"run an SEO aud
 
 ### Docker and the Docker MCP gateway
 
-Crawls, syncs and refreshes run as background jobs: the tool returns a job id at once and the work carries on inside the server process while you poll `check_crawl_status`. So the process has to stay alive between calls.
+Crawls, syncs and refreshes run as background jobs: the tool returns a job id at once and the work carries on while you poll `check_crawl_status`. Run normally (npx, or `node dist/index.js` from Claude Desktop), the server process is long-lived and does that work itself. Nothing below applies.
 
-The Docker MCP gateway runs the server in a worker container that it can remove and replace (when a client disconnects, when the gateway is recreated, or when it reaps idle workers), and a job running in that worker dies with it. To keep the server alive:
+The Docker MCP gateway is different. It runs the server in a worker container per client connection, and it replaces workers freely: on disconnect, on a router recreate, when it reaps idle ones. A job running inside a worker dies with it. The fix is to move the work out of the worker into one long-running **job runner** container that the gateway never touches:
 
-- set `longLived: true` on this server's entry in your gateway catalog, or start the gateway with `--long-lived`;
-- mount named volumes for the data directory and the credentials, so audits and the job list survive a container restart: for example `-v seo-audit-data:/data -e SAC_DATA_DIR=/data` and `-v seo-audit-creds:/creds:ro -e GOOGLE_APPLICATION_CREDENTIALS=/creds/service-account.json`.
+- the MCP server, started with `SAC_JOB_RUNNER=external`, only queues each job in `_jobs.db` in the data directory and reads its status;
+- the runner (`seo-audit-runner`, in the same npm package) claims queued jobs, runs them and writes progress back to the same database.
 
-Plain `docker run -i --rm` with those volumes works too: it is one long-lived stdio process for the whole session.
+The workers become disposable: recreate the router mid-crawl and the crawl carries on in the runner.
 
-Jobs are also recorded in `_jobs.db` in the data directory. If the process running a job exits before it finishes, the job reads as `interrupted` (with this advice) rather than disappearing, and a finished job's result can still be read after a restart.
+**1. Start the runner** on the same data volume, with the same credentials as the gateway's catalog entry:
+
+```bash
+docker run -d --init --name seo-audit-runner --restart unless-stopped \
+  -v mcp-sac-data:/data -v mcp-sac-creds:/creds:ro \
+  -e SAC_DATA_DIR=/data -e GOOGLE_APPLICATION_CREDENTIALS=/creds/gsc.json \
+  -e DATAFORSEO_USERNAME -e DATAFORSEO_PASSWORD -e MAJESTIC_API_KEY -e CRUX_API_KEY \
+  node:22-slim npx -y -p @houtini/seo-audit-console seo-audit-runner
+```
+
+The four `-e NAME` flags with no value pass those variables through from your shell, so the keys stay out of the command line; leave out any you don't use. On Windows in Git Bash, prefix the command with `MSYS_NO_PATHCONV=1`, otherwise MSYS rewrites `/data` and `/creds` into Windows paths (PowerShell doesn't need it). `--init` makes `docker stop` reach the runner as a clean SIGTERM. The first start takes about a minute while npx installs the package; `docker logs seo-audit-runner` shows it start and every job it claims.
+
+**2. Switch the gateway to queueing.** Add `SAC_JOB_RUNNER=external` to the env of this server's catalog entry, and remove `longLived: true` (it was only ever a stopgap for this).
+
+**What you'll see.** A job reads `queued: waiting for the job runner` until the runner picks it up, then `running` as before. If a job stays queued for over a minute and no runner has checked in, the status says so and prints the `docker run` line above. One runner runs one job at a time by default; set `SAC_RUNNER_CONCURRENCY` to run more, though two jobs for the same property never run at once. To update, recreate the runner container (`docker rm -f seo-audit-runner`, then the `docker run` line again, so npx installs the new release; a plain `docker restart` can keep running the copy npx already installed in the container). Keep the runner and the gateway on the same release: pin `@houtini/seo-audit-console@<version>` in both if you want updates to be deliberate. A job running when the runner stops is recorded as `interrupted`, so re-run it.
+
+**Without the runner,** the older options still work: `longLived: true` on the catalog entry (or `--long-lived` on the gateway), or plain `docker run -i --rm` with the volumes mounted, which is one long-lived stdio process for the session. Either way, mount named volumes for the data directory and the credentials (for example `-v seo-audit-data:/data -e SAC_DATA_DIR=/data` and `-v seo-audit-creds:/creds:ro -e GOOGLE_APPLICATION_CREDENTIALS=/creds/service-account.json`) so audits and the job list survive a restart.
+
+Every job is recorded in `_jobs.db` in the data directory. If the process running a job exits before it finishes, the job reads as `interrupted` with the reason rather than disappearing, and a finished job's result can still be read after a restart.
 
 ---
 

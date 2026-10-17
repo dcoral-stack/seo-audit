@@ -80,7 +80,7 @@ function freshness(d: any): string {
       rule += ' The latest audit ran before the latest completed crawl, so its findings describe the previous crawl: run run_audit.';
     }
     const bad = s.state === 'failed' || s.state === 'interrupted';
-    const dot = bad ? 'dot-bad' : flag ? 'dot-high' : s.state === 'never' ? 'dot-never' : s.state === 'running' ? 'dot-run' : 'dot-ok';
+    const dot = bad ? 'dot-bad' : flag ? 'dot-high' : s.state === 'never' ? 'dot-never' : s.state === 'running' || s.state === 'queued' ? 'dot-run' : 'dot-ok';
     const tip = [s.detail, rule].filter(Boolean).join(' ');
     cells.push(`<div class="sf-cell" title="${esc(tip)}"><div class="sf-k"><span class="dot ${dot}"></span>${esc(LABEL[kind])}</div>` +
       `<div class="sf-v">${esc(line)}${flag ? ` <span class="sf-flag">${esc(flag)}</span>` : ''}</div></div>`);

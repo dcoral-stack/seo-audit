@@ -7,7 +7,8 @@
   "main": "dist/index.js",
   "bin": {
     "seo-audit-console": "dist/index.js",
-    "seo-audit-dashboard": "dist/dashboard.js"
+    "seo-audit-dashboard": "dist/dashboard.js",
+    "seo-audit-runner": "dist/runner.js"
   },
   "files": [
     "dist",
@@ -49,7 +50,7 @@
     "build:mcpb": "npm run build && node scripts/build-mcpb.mjs",
     "dev": "tsc -p tsconfig.server.json --watch",
     "start": "node dist/index.js",
-    "test": "npm run build:server && npm run smoke && npm run probe:jobs && npm run probe:fts && npm run probe:review-0-15 && npm run probe:summary && npm run probe:gsc-rows && npm run probe:brand && npm run probe:ratelimit && npm run probe:signals",
+    "test": "npm run build:server && npm run smoke && npm run probe:jobs && npm run probe:runner && npm run probe:fts && npm run probe:review-0-15 && npm run probe:summary && npm run probe:gsc-rows && npm run probe:brand && npm run probe:ratelimit && npm run probe:signals",
     "smoke": "node scripts/smoke.mjs",
     "demo:property": "node scripts/demo-property.mjs",
     "demo:screenshots": "node scripts/demo-screenshots.mjs",
@@ -62,6 +63,7 @@
     "probe:signals": "node scripts/probe-signals.mjs",
     "probe:extract": "node scripts/probe-extract.mjs",
     "probe:jobs": "node scripts/probe-jobs.mjs",
+    "probe:runner": "node scripts/probe-runner.mjs",
     "probe:crawl-local": "node scripts/probe-crawl-local.mjs",
     "probe:checks-v2": "node scripts/probe-checks-v2.mjs",
     "probe:integrity": "node scripts/probe-integrity.mjs",
