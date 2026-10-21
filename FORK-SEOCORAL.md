@@ -40,9 +40,9 @@ inglés. Con el modelo multilingüe hay que revisarlo con páginas reales y ajus
 - User agent propio: `seocoral-audit/0.1 (+https://seocoral.com; based on houtini-ai/seo-audit)`.
 
 ### 4. Volúmenes de búsqueda gratis con Google Ads (Keyword Planner)
-`keyword_volume` usa la API de Google Ads con el MCC de la agencia cuando está configurada; DataForSEO
-queda como alternativa. Nueva herramienta `keyword_ideas`: ideas de keywords desde palabras semilla,
-una URL o un dominio entero, con volumen, competencia y CPC.
+`keyword_volume` usa la API de Google Ads con el MCC de la agencia. Nueva herramienta `keyword_ideas`:
+ideas de keywords desde palabras semilla, una URL o un dominio entero, con volumen, competencia y CPC.
+Las respuestas traen tendencia y mes pico; la serie de 12 meses solo con `includeMonthly`.
 
 - Es la misma fuente que revende DataForSEO. Con una cuenta cliente con gasto, los volúmenes son exactos; si no, Google da rangos redondeados.
 - Google agrupa variantes cercanas (plurales, tildes): una keyword agrupada sale con `groupedUnder`.
@@ -52,6 +52,24 @@ una URL o un dominio entero, con volumen, competencia y CPC.
 Configuración: `node scripts/google-ads-auth.mjs <client_secret.json>`. Pide el developer token y el
 ID del MCC, abre el navegador para autorizar, guarda `credenciales/google-ads.json`, hace una
 consulta real de prueba y lo añade a la configuración de Claude Desktop. `node scripts/google-ads-check.mjs` repite la prueba y la conexión sin volver a autorizar (por ejemplo, cuando aprueban el acceso Basic).
+
+### 5. Sin DataForSEO ni Majestic
+Eliminados por ser de pago. Se han retirado 20 herramientas que dependían de ellos (ranked_keywords,
+serp_features, domain_visibility, competitors_domain, top_pages, page_intersection, topic_gaps,
+market_sizing, search_intent, page_lighthouse, related_terms, youtube_discovery, topic_trend,
+trend_categories, recon_*, pull_backlinks, link_intersect, track_ranks), las pestañas Links y Content
+research del panel, las tarjetas de market sizing y SERP features, y los enlaces de afiliado.
+`news_discovery` queda solo con Google News (gratis). Los módulos internos siguen en el código pero
+nunca se instancian, así que ninguna ruta puede llamar a esas APIs.
+
+### 6. Keywords por cliente y pestaña Keywords
+`keyword_volume` y `keyword_ideas` con `siteUrl` guardan las keywords en la base de datos del cliente
+(tabla `keyword_planner`). Nueva herramienta `keyword_demand` y nueva pestaña **Keywords** en el panel
+y en `export_report`: cada keyword con volumen, competencia, CPC y tendencia, cruzada con Search
+Console (últimos 90 días, tildes y plurales agrupados): página que muestra Google, posición, clics y
+estado (top 3, página 1, 11-20, >20, hueco). Para los huecos sugiere la página de la web que mejor
+encaja, usando solo las palabras que distinguen una página de otra; si ninguna encaja: "Crear
+contenido". Exportable a CSV.
 
 ## Variables de entorno nuevas
 
@@ -68,7 +86,6 @@ consulta real de prueba y lo añade a la configuración de Claude Desktop. `node
 | `GOOGLE_ADS_CUSTOMER_ID` | el MCC | Cuenta con la que se consulta el planificador |
 | `GOOGLE_ADS_API_VERSION` | `v26` | Versión de la API de Google Ads |
 | `GOOGLE_ADS_CACHE_DAYS` | `30` | Días de caché |
-| `SAC_VOLUME_PROVIDER` | automático | `google-ads` o `dataforseo` |
 
 Cualquier herramienta sigue aceptando `location` y `languageCode` por llamada.
 
@@ -77,7 +94,9 @@ Cualquier herramienta sigue aceptando `location` y `languageCode` por llamada.
 casos en español: acentos, stopwords, plurales, marca con tilde, canibalización con y sin acento,
 valores por defecto).
 
-`scripts/probe-google-ads.mjs`: 32 comprobaciones contra una API simulada (forma de las peticiones,
+`scripts/probe-keyword-demand.mjs`: 14 comprobaciones del cruce keywords × Search Console × crawl.
+
+`scripts/probe-google-ads.mjs`: 34 comprobaciones contra una API simulada (forma de las peticiones,
 parseo, variantes, lotes, caché, errores y elección de proveedor).
 
 ## Próximas fases

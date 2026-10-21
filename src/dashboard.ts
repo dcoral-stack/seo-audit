@@ -5,10 +5,9 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { startDashboardServer } from './core/webServer.js';
 import { buildWebCallHandlers } from './core/webHandlers.js';
-import { DataForSeoClient, dfsCacheDaysFromEnv } from './core/DataForSeoClient.js';
+import type { DataForSeoClient } from './core/DataForSeoClient.js';
 import { GoogleAdsClient, googleAdsCredentials } from './core/GoogleAdsClient.js';
 import { resolveDataDir } from './core/paths.js';
-import { dataForSeoCredentials, optionalSecret } from './core/secrets.js';
 
 /**
  * Standalone dashboard server — the Docker-aware delivery surface.
@@ -35,17 +34,14 @@ const DATA_DIR = resolveDataDir();
 const dataDir = (): string => DATA_DIR;
 
 // Optional keys are read placeholder-safe (#58), same helper as the MCP server.
-const dfsCreds = dataForSeoCredentials();
-const dfs = dfsCreds
-  ? new DataForSeoClient(dfsCreds.user, dfsCreds.pass, path.join(DATA_DIR, 'dataforseo-cache.db'), dfsCacheDaysFromEnv())
-  : null;
+// SEOCoral fork: DataForSEO and Majestic removed.
+const dfs: DataForSeoClient | null = null;
 // SEOCoral fork: Google Ads Keyword Planner for search volume (shared cache with the MCP server).
 const adsCreds = googleAdsCredentials();
 const ads = adsCreds ? new GoogleAdsClient(adsCreds, path.join(DATA_DIR, 'google-ads-cache.db'), Number(process.env.GOOGLE_ADS_CACHE_DAYS) || 30) : null;
-const majesticOn = !!optionalSecret('MAJESTIC_API_KEY');
 const apiKeys = (): { dataforseo: boolean; majestic: boolean } => ({
-  dataforseo: !!dfs,
-  majestic: majesticOn,
+  dataforseo: false,
+  majestic: false,
 });
 
 // Same built UI the MCP serves (Vite output tree: dist/src/ui/dashboard.html, next to this file).
@@ -59,7 +55,7 @@ async function main(): Promise<void> {
     ...(process.env.SAC_DASHBOARD_PORT ? { port: Number(process.env.SAC_DASHBOARD_PORT) } : {}),
   });
   // Never stdout — parity with the MCP's stdio rule (and harmless here). Log the reachable URL.
-  console.error(`[seo-audit-dashboard] serving ${url} — data dir ${DATA_DIR}, DataForSEO ${dfs ? 'on' : 'off'}`);
+  console.error(`[seo-audit-dashboard] serving ${url} — data dir ${DATA_DIR}, Google Ads ${ads ? "on" : "off"}`);
   // startDashboardServer unref()s its listener so it can't hold an MCP process open; this is a
   // dedicated process whose whole job is to stay up, so keep the event loop alive explicitly.
   setInterval(() => { /* keep-alive */ }, 1 << 30);

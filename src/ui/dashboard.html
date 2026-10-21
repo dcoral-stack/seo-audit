@@ -19,8 +19,7 @@
         <button class="tab-btn nav-item" data-panel="architecture" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M11 7.2 6.2 15.8M13 7.2l4.8 8.6M7.5 18h9"/></svg><span>Network</span></button>
         <button class="tab-btn nav-item" data-panel="search" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></svg><span>Search performance</span></button>
         <button class="tab-btn nav-item" data-panel="opportunities" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.8V16h5v-.3c0-.7.4-1.4 1-1.8A6 6 0 0 0 12 3z"/></svg><span>Opportunities</span></button>
-        <button class="tab-btn nav-item" data-panel="links" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg><span>Links</span></button>
-        <button class="tab-btn nav-item" data-panel="research" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.6" y2="16.6"/></svg><span>Content research</span></button>
+        <button class="tab-btn nav-item" data-panel="keywords" role="tab" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 12h10M4 17h7"/><circle cx="18" cy="16" r="3"/><line x1="20.2" y1="18.2" x2="22" y2="20"/></svg><span>Keywords</span></button>
       </nav>
       <div class="side-fresh" id="sideFresh" aria-label="Data freshness"></div>
     </aside>
@@ -211,18 +210,6 @@
           <div class="hint">The highest-opportunity queries, scored by clicks you could recover by closing the CTR gap or reaching page 1. Every row is grounded in real Search Console data.</div>
           <div id="quickWinsTable" class="findings-table"></div>
         </div>
-        <div class="chart-card" id="marketSizingCard" style="display:none">
-          <h3>Market sizing - share of voice by topic</h3>
-          <div class="hint" id="marketSizingHint">Each bar is a topic cluster in your market's keyword universe, split by estimated share of voice (ETV share) per domain. Deterministic: the ranked keywords behind it. Judgement: ETV is a CTR-curve traffic estimate. Run <code>market_sizing</code> with your competitors to populate.</div>
-          <p class="sr-only" id="marketSizingSummary"></p>
-          <div class="chart chart-tall" id="marketSizingChart" role="img" aria-label="Share of voice per topic cluster, stacked to 100 percent"></div>
-        </div>
-        <div class="chart-card" id="serpFeaturesCard" style="display:none">
-          <h3>SERP-feature footprint - AI Overviews, snippets and friends</h3>
-          <div class="hint">Share of your sampled search volume whose results pages carry each SERP feature. The solid segment is volume where you already rank page 1 (an ownership proxy - feature presence is deterministic, ownership needs per-keyword SERP checks); the pale remainder is exposure you don't yet capture. Run <code>serp_features</code> to populate or refresh.</div>
-          <p class="sr-only" id="serpFeaturesSummary"></p>
-          <div class="chart" id="serpFeaturesChart" role="img" aria-label="SERP-feature footprint: volume share per feature, split by page-1 presence"></div>
-        </div>
         <div class="chart-card">
           <h3>Content decay - pages to refresh</h3>
           <div class="hint">Pages that earned real clicks last period and have since dropped 20%+, ranked by clicks lost (the upside from refreshing the content and checking for lost rankings). Matched 28-day windows.</div>
@@ -374,24 +361,19 @@
         </div>
       </section>
 
-      <section class="tab-panel" data-panel="links" role="tabpanel">
-        <div id="backlinkProfilePanel"></div>
-        <div class="chart-card" id="backlinkTrendCard" hidden>
-          <h3>Referring domains — new vs lost per month</h3>
-          <div class="hint" id="backlinkTrendHint"></div>
-          <div class="chart" id="backlinkTrendChart" role="img" aria-label="New and lost referring domains per month"></div>
+      <section class="tab-panel" data-panel="keywords" role="tabpanel">
+        <div class="chart-card">
+          <h3>Demanda de búsqueda - Google Keyword Planner</h3>
+          <div class="hint">Keywords con volumen real de Google Ads guardadas para esta web, cruzadas con Search Console (últimos 90 días; plurales y tildes se cuentan juntos). <span style="color:var(--intent-success)">Verde</span> = en top 10, <span style="color:var(--intent-warning)">ámbar</span> = posiciones 11-20, <span style="color:var(--intent-danger)">rojo</span> = sin impresiones (hueco). Cuando no posiciona, se sugiere la página de la web que mejor encaja.</div>
+          <div class="kpis" id="kwDemandKpis"></div>
+          <div class="seg" role="tablist" aria-label="Filtrar por estado" id="kwDemandFilter"></div>
+          <div id="kwDemandTable" class="findings-table"></div>
         </div>
-        <div id="backlinkDetailPanel"></div>
-        <div id="linksPanel"></div>
-      </section>
-
-      <section class="tab-panel" data-panel="research" role="tabpanel">
-        <div id="researchPanel"></div>
       </section>
     </div>
     <div class="empty" id="empty" style="display:none">No data yet - run <code>refresh_property</code> or <code>sync_gsc</code> for this property first.</div>
     <footer class="app-footer">
-      <a href="https://houtini.com" target="_blank" rel="noopener noreferrer">By Houtini.com</a>
+      <span>SEOCoral · basado en <a href="https://github.com/houtini-ai/seo-audit" target="_blank" rel="noopener noreferrer">SEO Audit Console</a> de Houtini</span>
     </footer>
       </div>
     </div>

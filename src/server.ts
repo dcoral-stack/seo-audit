@@ -10,10 +10,6 @@ import { z } from 'zod';
 import { getDashboardData } from './core/dashboardData.js';
 import { startDashboardServer, stopDashboardServer, dashboardServerUrl, dashboardReachable, containerDashboardNote, type WebServerOptions } from './core/webServer.js';
 import { buildWebCallHandlers } from './core/webHandlers.js';
-import { computeSerpFootprint, persistSerpFootprint } from './core/serpFootprint.js';
-import { computeMarketSizing, persistMarketSizing } from './core/marketSizing.js';
-import { parseSerpForRecon } from './core/serpRecon.js';
-import { insertTodos, opportunityBasis } from './audit/recon.js';
 
 /** The dashboard fields for a structured result: an openable URL, or (in a container the host
  * can't reach) a null URL plus the in-container address and what to do instead. */
@@ -44,7 +40,6 @@ import { diffLatest, buildDriftMarkdown } from './audit/drift.js';
 import { checkAgentReadiness, buildAgentReadinessMarkdown } from './core/agentReadiness.js';
 import { detectTemplates } from './audit/templates.js';
 import { suggestPages } from './audit/opportunities.js';
-import { computeTopicGaps, type GapKeywordRow } from './audit/topicGaps.js';
 import { AuditDatabase } from './core/AuditDatabase.js';
 import { dbPathFor, sanitizeProperty, jobScopeFor, CONFIG_PATH, DEFAULT_DATA_DIR, resolveDataDir } from './core/paths.js';
 import { fmtDuration, crawlNotes } from './core/crawlProgress.js';
@@ -62,13 +57,12 @@ import { GscSync, FULL_DIMENSIONS } from './core/GscSync.js';
 import { UrlInspector } from './core/UrlInspector.js';
 import { Crawler } from './core/Crawler.js';
 import { Refresh } from './core/Refresh.js';
-import { DataForSeoClient, historicalDateFrom, dfsCacheDaysFromEnv } from './core/DataForSeoClient.js';
+import type { DataForSeoClient } from './core/DataForSeoClient.js';
 import { GoogleAdsClient, googleAdsCredentials } from './core/GoogleAdsClient.js';
 import { keywordVolumes, compactMonthly } from './core/volume.js';
-import { RankTracker } from './core/RankTracker.js';
-import { Backlinks } from './core/Backlinks.js';
-import { LinkIntersect } from './core/LinkIntersect.js';
-import { MajesticClient } from './core/MajesticClient.js';
+import { saveKeywords, deleteKeywords, keywordDemandPayload } from './core/keywordDemand.js';
+import type { RankTracker } from './core/RankTracker.js';
+import type { Backlinks } from './core/Backlinks.js';
 import { fetchGoogleNews } from './core/googleNews.js';
 import { WikidataClient } from './core/WikidataClient.js';
 import { Entities } from './core/Entities.js';
@@ -80,8 +74,8 @@ import { triage404s, verifyLive } from './core/triage404.js';
 import { gscFreshness } from './core/gscFreshness.js';
 import { clusterKeywordList } from './audit/keywordList.js';
 import type { FetchOptions } from './core/types.js';
-import { DEFAULT_LANGUAGE, DEFAULT_MARKET_LABEL } from './core/locale.js';
-import { dataForSeoCredentials, optionalSecret, cruxApiKey } from './core/secrets.js';
+import { DEFAULT_MARKET_LABEL } from './core/locale.js';
+import { cruxApiKey } from './core/secrets.js';
 import { CruxSync, CRUX_DEFAULT_URL_LIMIT } from './core/CruxSync.js';
 
 const SERVER_NAME = 'seo-audit-console';
@@ -120,44 +114,32 @@ function isoDaysAgo(days: number): string {
 
 // Server-level instructions (MCP `initialize` result): teach the assistant how the data
 // sources JOIN so it can COMPOSE bespoke multi-source analyses, not just run presets.
-const SERVER_INSTRUCTIONS = `SEO Audit Console fuses four data sources into one SQLite database per property: Google Search Console history, a first-party site crawl, GSC URL Inspection, and on-demand DataForSEO (SERP/Labs/Backlinks). Its real power is COMPOSITION — joining sources to answer questions no single tool answers.
+const SERVER_INSTRUCTIONS = `SEOCoral Audit (fork of SEO Audit Console for Spanish-language sites) fuses free sources into one SQLite database per property: Google Search Console history, a first-party site crawl, GSC URL Inspection, and Google Ads Keyword Planner volumes. Its power is COMPOSITION — joining sources to answer questions no single tool answers. Text matching is accent-, stop-word- and plural-aware (Spanish and English).
 
-JOIN KEYS (memorise these):
-- url_key — one normalised URL form (https, unified www/apex, sorted params, no tracking params/fragments). Joins the crawl (pages, links) ↔ GSC (search_analytics.page_key) ↔ url_inspection ↔ page_backlinks ↔ page_cwv ↔ page_entity. normalize_url shows the key for any URL.
-- query — the literal search term. Joins GSC search_analytics ↔ DataForSEO keyword tools (keyword_volume, search_intent, ranked_keywords rows) ↔ keyword_intent.
-- domain — a bare host (no scheme, no www). Joins the Labs tools (ranked_keywords, domain_visibility, top_pages, competitors_domain, topic_gaps) ↔ backlinks summary.
+JOIN KEYS:
+- url_key — one normalised URL form. Joins the crawl (pages, links) ↔ GSC (search_analytics.page_key) ↔ url_inspection ↔ page_cwv ↔ page_entity. normalize_url shows the key for any URL.
+- query / keyword — GSC search_analytics.query ↔ keyword_planner.keyword (Keyword Planner rows saved per property).
 
-GRAIN (one line per source):
-- search_analytics: date × query × page, all-country totals rows only. Device/country rows (synced with segments) live in search_analytics_segments, the same columns. Rows are additive; position must be impression-weighted when aggregated. Totals read the gsc_rows view, breakdowns gsc_country_rows / gsc_device_rows (the segment rows); query_data on search_analytics picks the right one from the columns you name.
-- pages / links: the LATEST crawl only, one row per url_key (history lives in page_snapshots, diffed by detect_changes). Carries title/H1/meta, canonical, schema (json_ld), body_chunks, iPR, click_depth, inlink_count.
-- url_inspection: one row per inspected URL — Google's own view (coverage_state, google_canonical vs user_canonical, last_crawl_time, crawled_as, rich_results).
-- rank_history: month × domain (DataForSEO rank distribution + ETV).
-- page_backlinks: one row per backlinked URL (counts + live HTTP status). referring_domains / backlink_anchors: one row per domain / anchor per pull (snapshot_at; anchors carry kind). backlink_history: one row per day (new/lost referring domains).
-- Labs tools: keyword × target, or month × target; cached 20 days; each call costs money — never loop them in bulk.
+GRAIN:
+- search_analytics: date × query × page (all-country totals; device/country rows live in search_analytics_segments). Position must be impression-weighted when aggregated.
+- pages / links: the LATEST crawl, one row per url_key (history in page_snapshots, diffed by detect_changes).
+- url_inspection: one row per inspected URL — Google's own view.
+- keyword_planner: one row per keyword saved to the property (volume, competition, CPC, trend).
 
-ARCHETYPE CHAINS (compose along these lines):
-1. Demand → reality: a GSC query with impressions but weak rank → the ranking page's crawl fields (title/H1/body_chunks) → does the page actually say what the query asks? → fix on-page or draft content.
-2. Authority → waste: iPR / backlinks flowing into non-200, redirected, or orphaned URLs → recover the equity with 301s or internal links (fix_finding generates them).
-3. Competitor → gap: competitor keyword footprints (ranked_keywords / topic_gaps) minus our GSC + crawled-page footprint → topics to cover, each tied to the nearest existing page.
+ARCHETYPE CHAINS:
+1. Demand → reality: Keyword Planner volume or a GSC query with impressions but weak rank → the ranking page's title/H1/body → does the page say what the query asks? → fix on-page or draft content.
+2. Authority → waste: iPR flowing into non-200, redirected or orphaned URLs → 301s or internal links (fix_finding generates them).
+3. Demand → gap: keyword_ideas for a client's services (siteUrl to save) → keyword_demand status gap/striking → pages to create or push.
 
-COST DISCIPLINE (behave like a strategist who knows the margins):
-- Free and instant, use liberally: trend_categories, and everything on synced data — query_data, run_audit, query_audit, suggest_pages, list_templates, detect_changes, get_dashboard, serve_dashboard, export_report.
-- Paid but CHEAP and 20-day cached (Labs/Keywords, ~$0.01–0.13 a call): keyword_volume, topic_trend, search_intent, ranked_keywords, serp_features, domain_visibility, top_pages, competitors_domain, page_intersection, topic_gaps. Top-down pulls only — ONE ranked_keywords call answers "what does this domain rank for"; NEVER loop keywords through SERP endpoints to reconstruct what a Labs call returns.
-- Paid per-keyword (SERP): related_terms, youtube_discovery (ranking videos for a topic — pair with a transcript tool), news_discovery (recent coverage / freshness), and AI-Overview CITATION checks. On-demand for a handful of clicked/explicit keywords, never a list.
-- Content research (what to write / what changed): topic_trend (is a topic rising/seasonal; with a categoryCode from the free trend_categories, is a whole market growing and what is breaking out in it) → youtube_discovery + news_discovery (what the winning videos/articles cover) → draft_content.
-- Separate subscription: pull_backlinks (DataForSEO Backlinks — a 40204 error means it isn't activated).
+COST: every tool is free. Keyword Planner calls are cached 30 days and count against the Google Ads API daily quota, so batch keywords (up to thousands per keyword_volume call) instead of looping. Keep replies lean: keyword tools omit the 12-month series unless includeMonthly is set.
 
-AGENCY MACRO-WORKFLOWS (the engagement arc — each stage feeds the next):
-1. Baseline: refresh_property → run_audit → serve_dashboard (share the URL).
-2. Market: serp_features (feature exposure) + domain_visibility + competitors_domain → topic_gaps vs the named rivals.
-3. Content plan: suggest_pages (demand you already have) + topic_gaps (demand rivals own) → draft_content briefs.
-4. Fix cycle: fix_finding per top finding → re-crawl → detect_changes to prove the fix landed.
+WORKFLOW per client: refresh_property → run_audit → keyword_ideas / keyword_volume with siteUrl → keyword_demand → fix_finding per top finding → export_report (includes the Keywords tab).
 
-Before planning ANY complex multi-source question, call composition_cookbook — it returns the full data-surface map and worked recipes using these exact tool and table names.`;
+Before planning a complex multi-source question, call composition_cookbook.`;
 
 const COOKBOOK_TEXT = `# Composition cookbook — the data surface and how to join it
 
-This server's value is composition: joining Search Console, the crawl, URL Inspection and DataForSEO to answer questions no preset check covers. This page is static (no API calls) — use it to PLAN, then run the tools.
+This server's value is composition: joining Search Console, the crawl, URL Inspection and Google Keyword Planner to answer questions no preset check covers. This page is static (no API calls) — use it to PLAN, then run the tools.
 
 ## The data surface
 
@@ -168,16 +150,7 @@ This server's value is composition: joining Search Console, the crawl, URL Inspe
 | page_snapshots (drift) | url_key × crawl | field-level SEO snapshot per crawl | url_key, captured_at | every crawl, automatically | free |
 | url_inspection | one row per inspected URL (top pages by clicks, quota-limited) | coverage_state, page_fetch_state, google_canonical, user_canonical, last_crawl_time, crawled_as, rich_results | url_key | inspect_urls | free (GSC quota) |
 | sitemap_urls | one row per sitemap URL | lastmod | url_key | captured at crawl time | free |
-| rank_history | month × domain | rank distribution (1–3/4–10/11–20/21–100), ETV | period | track_ranks | paid, 20-day cache |
-| referring_domains | one row per referring domain per pull (snapshot_at) | rank, backlinks, referring_pages, nofollow_pages, spam_score, first_seen, lost_date | domain | pull_backlinks | paid, 20-day cache |
-| backlink_anchors | one row per anchor text per pull (snapshot_at) | kind (branded/keyword/url/generic/empty), backlinks, referring_domains | anchor | pull_backlinks | paid, 20-day cache |
-| backlink_history | one row per day | backlinks, referring_domains, new_/lost_referring_domains | date | pull_backlinks (12 months) | paid, 20-day cache |
-| page_backlinks | one row per backlinked URL | backlinks, referring_domains, live status_code | url_key, domain | pull_backlinks (needs the DataForSEO Backlinks subscription) | paid, 20-day cache |
-| link_prospects | one row per prospect domain (links to competitors, not you) | intersections, domain_trust, spam_score, dofollow, trust_flow, topical_trust_flow | domain | link_intersect (needs the DataForSEO Backlinks subscription; Majestic optional) | paid, 20-day cache |
-| keyword_intent | one row per keyword | intent + probability | query | search_intent (pass siteUrl to persist) | paid (cheap), cached |
-| page_cwv | one row per audited URL | performance, LCP, CLS, TBT | url_key | page_lighthouse (pass siteUrl to persist) | paid, cached |
 | page_entity + entity_edge | one row per page / edge per relation | QID, label, subclass-of / part-of | url_key, qid | resolve_entities (free Wikidata) | free |
-| Labs (ranked_keywords, domain_visibility, top_pages, competitors_domain, page_intersection, topic_gaps) | keyword × target, or month × target | volume, ETV, position, KD, intent, SERP features, AI Overview exposure (aioOnly) | domain, query | on demand | paid, 20-day cache |
 | findings (audit_runs) | finding per check × URL | priority, evidence JSON | url_key, check_id | run_audit | free |
 | redirect_sources | one row per crawled URL that redirected | status, final_url, hops, chain (every hop) | url_key → final_key | every crawl | free |
 | external_link_status | one row per distinct outbound link target | verdict (ok / redirected / broken / unverifiable), status, final_url, error, fetched_as | url_key = links.target_key | after every crawl, cached 7 days | free |
@@ -189,34 +162,30 @@ Raw access: query_data reads any of these tables (aggregate by default; filters 
 
 ## Worked recipes
 
-1. **AI Overview exposure & citation loss.** ranked_keywords target:<your domain> aioOnly:true → keywords you rank for where the SERP shows an AI Overview (exposure). For citation (are YOU a source?) run recon_targets on the ranking pages: it reads the live SERP and reports aioCitesUs per page (null = unresolved, never "not cited"). For each exposed keyword's ranking page, pull its per-day clicks from search_analytics (page_key × date). Pages whose clicks fell while the AIO citation appeared = you are feeding the answer without earning the visit.
 2. **Striking distance without body coverage.** query_audit check:striking-distance (GSC rank 11–20) → for each page, check pages.body_chunks for the query's terms. The automated versions: body-missing-top-query, rag-answer-gap, and score_passages for the dense-answer test. Pages ranking 11–20 that never answer the query in one passage are the highest-yield rewrites.
 3. **Not indexed + no equity.** url_inspection.coverage_state ~ 'not indexed' joined to pages.ipr + inlink_count. Low-iPR unindexed pages need internal links, not resubmission; high-iPR unindexed pages are the real anomalies. (Checks: coverage-not-indexed, underlinked-high-demand.)
 4. **Cannibalisation with semantic overlap.** run_audit → keyword-cannibalisation evidence lists the competing URLs per query → compare those pages' body_chunks: heavy chunk overlap = consolidate (301 the loser); light overlap = differentiate the titles/H1s and interlink with distinct anchors.
-5. **Stable rank, falling CTR → SERP feature shift.** In search_analytics find queries where weekly position is flat but ctr declines → ranked_keywords (SERP features per keyword) or serp_features (the volume-weighted footprint) shows what now sits above you (AIO, featured snippet, shopping). ctr-below-expected is the deterministic starting list.
+5. **Stable rank, falling CTR → SERP feature shift.** In search_analytics find queries where weekly position is flat but ctr declines → check the live results page for that query by hand: a new AI Overview, video carousel or ads block usually explains it.
 6. **Schema vs rich-result reality.** pages.json_ld (declared @types) joined to url_inspection.rich_results (what Google actually detected + issues). The rich-result-issues check automates the per-URL diff; the composition question is per-TEMPLATE (list_templates): which template's schema never earns its rich result?
 7. **Migration signal transfer.** pages.redirects (recorded chains) → url_inspection.google_canonical of the target (has Google accepted the move?) → search_analytics clicks by page_key before/after the migration date. Equity that didn't follow the 301 shows up as a target with no canonical adoption and no click recovery.
-8. **404s with backlinks.** pages.status_code = 404 joined to page_backlinks.backlinks (run pull_backlinks first) → run_audit surfaces backlinks-to-404; triage_404s produces the 301 map (live-verified) that recovers the equity.
-9. **Competitor topic gap.** topic_gaps (bounded + cached: competitor ranked_keywords minus your GSC queries and page titles/H1s, clustered and scored) — or do it manually with ranked_keywords per competitor when you want the raw rows.
-10. **Link gap (what links do rivals have that we don't).** link_intersect over the competitor set (or a single company) → link_prospects: domains linking to them but not you, followed-first and sorted by domain trust. DataForSEO domain rank surfaces spam directories at the top; MAJESTIC_API_KEY re-sorts by Trust Flow (a rank-227 domain is often TF 0) and Topical Trust Flow shows whether that authority is on-topic. data_storage flags when a property's prospect set is going stale (competitors keep earning links).
 
 ## Novel combinations (nothing else surfaces these)
 
 - **Crawl budget vs equity:** url_inspection.last_crawl_time × pages.ipr — your highest-iPR pages should be recrawled often; a high-iPR page Google rarely revisits is a freshness/priority problem (and vice versa: junk crawled daily = wasted budget).
-- **AIO sources vs your content:** recon_targets' per-page SERP read (which pages the AI Overview cites, and whether one is yours) × score_passages on your page — do you have one dense, extractable passage that answers the query the Overview is answering?
 - **Crawl-to-first-impression latency:** url_inspection.last_crawl_time vs the first date a page appears in search_analytics — how fast does Google turn a crawl into impressions, per template? Slow templates have an indexing-pipeline problem.
 - **Crawled-as vs response times:** url_inspection.crawled_as (mobile/desktop agent) × pages.response_time_ms — slow responses specifically on the agent Google uses against you.
 
 ## Agency engagement recipes (the deliverable arc)
 
 - **Week-one baseline:** refresh_property → run_audit → serve_dashboard. Share the dashboard URL; the ranked findings ARE the technical workstream.
-- **Market read:** serp_features (feature/AIO exposure, volume-weighted) + domain_visibility for the client and each named rival (one cached call each) → who is structurally winning, and how much of the market SERP features already absorb.
-- **Content plan:** suggest_pages (demand you already earn impressions for) + topic_gaps (demand rivals own that you don't) → draft_content for the winners. Every proposal traces to real impressions or a rival's real footprint - no invented "keyword ideas".
 - **Fix-and-prove cycle:** fix_finding on the top finding → ship → start_crawl → detect_changes shows the fix landed → re-run run_audit and watch the finding drop off. That screenshot is the client update.
-- **Content recon (why a page is losing):** recon_targets picks the worst declining/striking pages, fetches our live page + the Google SERP (organic rank + AI-Overview citations + video), and classifies WHY — the sharpest class is "we rank but the AI Overview won't quote us" = a data-accuracy/freshness/markup problem. Then research the competitor set it returns (scrapeCompetitors:true fetches the pages and Reddit threads free; ranking videos are listed for you to watch), write the gaps back with save_recon_todo, and track the fixes with recon_todos (which can re-measure whether you moved from uncited→cited). Pass location to match where your impressions come from — organic rank is location-sensitive.
-- **Cost rule of thumb:** an entire competitive read (visibility + footprint + gaps for 4 domains) is a handful of cached Labs calls - under a dollar. If a plan involves looping SERP calls over a keyword list, it is the wrong plan; a Labs endpoint already has that answer top-down.
 
-Plan the join first (url_key / query / domain), state the grain of each side, then run the fewest paid calls that answer it.`;
+Plan the join first (url_key / query / domain), state the grain of each side, then run the fewest paid calls that answer it.
+
+## Keyword Planner recipes
+- **Demand map for a client:** keyword_ideas {keywords: their services + city, url or site: their domain, siteUrl} → keyword_demand → gap rows are pages to create, striking rows are pages to push, each with the page Google shows or a suggested on-site page.
+- **Size a list:** keyword_volume {keywords:[...], siteUrl} (thousands per call) → keyword_demand status:["gap"] for the content plan.
+`;
 
 // The check catalogue rendered as markdown — single source of truth is listChecks();
 // shared by the seo-audit://checks-reference resource (and buildable for any category subset).
@@ -236,11 +205,11 @@ function buildChecksMarkdown(checks: ReturnType<typeof listChecks>): string {
 }
 
 const HELP_TEXT = `# SEO Audit Console — what it can do
-A technical-SEO audit that fuses **Search Console + a site crawl + DataForSEO**, joined on a normalised URL, with evidence on every finding. Typical flow: **refresh → audit → fix → report**.
+A technical-SEO audit that fuses **Search Console + a site crawl + Google Keyword Planner**, joined on a normalised URL, with evidence on every finding. Typical flow: **refresh → audit → fix → report**.
 
 ## 1. Sync the data
 - **refresh_property** — sync everything (GSC → crawl → URL inspection → rank history). _"Refresh sc-domain:example.com"_ · add \`segments:true\` for device/country, \`maxPages\`, \`startDate\`.
-- **sync_gsc / start_crawl / inspect_urls / track_ranks** — run just one part. _"Crawl example.com, 500 pages"_
+- **sync_gsc / start_crawl / inspect_urls** — run just one part. _"Crawl example.com, 500 pages"_
 - **sync_crux** — field Core Web Vitals (LCP / INP / CLS at p75) from the Chrome UX Report for the origin and your top pages, with ~25 weeks of history. Free; needs \`CRUX_API_KEY\`. _"Pull CrUX data for example.com"_
 - **check_sync_status / check_crawl_status** — poll a job. _"Check sync status"_
 - **list_properties** — _"List my Search Console properties"_
@@ -261,22 +230,11 @@ A technical-SEO audit that fuses **Search Console + a site crawl + DataForSEO**,
 - **detect_changes** — what changed since the last crawl (status, canonical, noindex, title, schema), severity-ranked — the regression monitor. _"Detect changes on example.com"_
 - **check_agent_readiness** — is your site ready for AI agents? Scores llms.txt / agents.md / AI-bot rules / Content Signals / MCP server card / Agent Skills / API Catalog / OAuth signals (0–100 + level) with copy-paste fixes. _"Check agent readiness for example.com"_
 
-## 4. Backlinks, keywords & competitive (DataForSEO, on-demand, cached 20 days)
-- **pull_backlinks** — backlink profile + per-page counts + live status → unlocks **backlinks-to-404** (recover lost equity), top-linked pages, true orphans. _"Pull backlinks for example.com"_
-- **link_intersect** — the links your competitors have that you don't - a prioritised outreach prospect list (followed-first, then domain trust, spam filtered). Also answers "what links does company X have that we don't?" for a single company. Set MAJESTIC_API_KEY to re-sort by Trust Flow + Topical Trust Flow (kills directory noise). _"Link intersect for example.com vs rival1.com, rival2.com"_
-- **keyword_volume / related_terms** — volume/CPC, and People-Also-Ask + related searches. _"Search volume for [\\"best widgets\\"]"_
-- **topic_trend / trend_categories** — Google Trends interest over time for keywords, a whole category (no keyword needed), or a keyword inside a category; \`related:true\` adds rising queries and topics. trend_categories (free) finds the category code. _"Is the Software category rising in the UK? What's breaking out in it?"_
-- **search_intent** — informational/navigational/commercial/transactional per keyword → spot intent mismatch behind low CTR. _"Classify intent for [\\"buy running shoes\\", \\"how to clean shoes\\"]"_
-- **page_lighthouse** — lab Core Web Vitals + opportunities for one URL (~20–120s). _"Run Lighthouse on https://example.com/slow-page"_
-- **competitors_domain** — domains competing for your organic keywords. _"Find competitors for example.com in the UK"_
-- **page_intersection** — keywords competitor pages rank for but yours doesn’t (content gap). _"Content gap: competitorUrls [\\"https://rival.com/guide\\"], excludePages [\\"https://example.com/guide\\"]"_
-- **domain_visibility** — monthly ranking-keyword distribution + ETV trend for ANY domain/subdomain (Semrush-style organic overview). _"Show visibility over time for competitor.com"_
-- **top_pages** — a domain's top organic pages by estimated traffic. _"Top pages on competitor.com"_
-- **ranked_keywords** — keywords a domain / subdomain / URL / subfolder ranks for (+ difficulty, intent, SERP features). _"What does competitor.com/blog/ rank for?"_ · \`scope:url|folder\` · \`aioOnly:true\` = keywords where the SERP shows an AI Overview (exposure; citation needs a SERP read, e.g. recon_targets)
-- **youtube_discovery / news_discovery** — the YouTube videos and recent news ranking for a keyword (live SERPs). _"What news is there on direct drive wheelbases this month?"_
-- **market_sizing** — total demand and share of voice for you plus up to four competitors, per topic cluster. _"Size the market: example.com vs rival1.com and rival2.com"_
-- **topic_gaps** — what related topics should this site cover to be expert in its space: competitor keyword footprints minus everything you already rank or have a page for, clustered into ranked topics with volumes, the owning competitor and your nearest existing page. _"What topics should example.com cover? Compare against rival.com"_
-
+## 4. Keywords (Google Ads Keyword Planner, free, cached 30 days)
+- **keyword_volume** — monthly volume, CPC, competition and trend for a list of keywords (pass siteUrl to save them to the client). _"Volumen de: gestoría Madrid, asesoría fiscal autónomos"_
+- **keyword_ideas** — keyword ideas from seed keywords, a URL or a whole domain, sorted by volume. _"Ideas de keywords para ardurilgestoria.com"_
+- **keyword_demand** — the saved keywords joined to Search Console: page, position, clicks, status (top3 / page1 / striking / weak / gap) and a suggested page for gaps. Also the dashboard Keywords tab and export_report.
+- **news_discovery** — recent Google News coverage for a topic (free RSS).
 ## 5. Templates & opportunities
 - **list_templates** — cluster pages into templates (one fix → N pages) with a representative exemplar. _"List page templates for example.com"_
 - **suggest_pages** — new-page ideas grounded in real GSC demand, minus what you already cover. _"Suggest new pages for example.com"_
@@ -309,25 +267,16 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   const inspector = gsc ? new UrlInspector(gsc, dataDir()) : null;
   const crawler = new Crawler(dataDir()); // no GSC credentials required
 
-  // Optional keys are read placeholder-safe (#58): blank, "${...}", "<...>" or template text = off.
-  const dfsCreds = dataForSeoCredentials();
-  const dfsCacheDays = dfsCacheDaysFromEnv();
-  const dfs = dfsCreds
-    ? new DataForSeoClient(dfsCreds.user, dfsCreds.pass, path.join(dataDir(), 'dataforseo-cache.db'), dfsCacheDays)
-    : null;
+  // SEOCoral fork: DataForSEO and Majestic are removed (paid tiers the agency doesn't use). The
+  // internal modules stay typed but are never constructed, so no code path can reach those APIs.
+  const dfs: DataForSeoClient | null = null;
+  const rankTracker: RankTracker | null = null;
+  const backlinks: Backlinks | null = null;
   // SEOCoral fork: Google Ads Keyword Planner (free with the agency's MCC) for search volume + ideas.
   const adsCreds = googleAdsCredentials();
   const ads = adsCreds
     ? new GoogleAdsClient(adsCreds, path.join(dataDir(), 'google-ads-cache.db'), Number(process.env.GOOGLE_ADS_CACHE_DAYS) || 30)
     : null;
-  const rankTracker = dfs ? new RankTracker(dfs, dataDir()) : null;
-  const linkIntersect = dfs ? new LinkIntersect(dfs, dataDir()) : null;
-  // Majestic (Trust Flow / Topical Trust Flow) — optional link_intersect + trapped-authority tier.
-  const majesticKey = optionalSecret('MAJESTIC_API_KEY');
-  const majesticCacheDays = Number(process.env.MAJESTIC_CACHE_DAYS) || 30;
-  const majestic = majesticKey ? new MajesticClient(majesticKey, path.join(dataDir(), 'majestic-cache.db'), majesticCacheDays) : null;
-  // Backlinks after Majestic, so pull_backlinks can enrich per-URL pages with Trust Flow.
-  const backlinks = dfs ? new Backlinks(dfs, dataDir(), majestic) : null;
   const entities = new Entities(new WikidataClient(path.join(dataDir(), 'wikidata-cache.db')), dataDir());
   // CrUX (#55): field Core Web Vitals. Free Google API key (CRUX_API_KEY), read placeholder-safe.
   const cruxKey = cruxApiKey();
@@ -347,15 +296,11 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     if (!v) throw new Error('GOOGLE_APPLICATION_CREDENTIALS is not set — required for Search Console access.');
     return v;
   };
-  const requireDfs = <T>(v: T | null): T => {
-    if (!v) throw new Error('DATAFORSEO_USERNAME / DATAFORSEO_PASSWORD not set (or still a placeholder such as "your-..." or "${...}") — required for DataForSEO.');
-    return v;
-  };
   // Which optional integrations have a key set — drives the dashboard's key-gated tabs
   // (Links, Content research) and their affiliate-linked upsell states. The data layer has
   // no env access, so it's injected here onto every dashboard payload surface.
   const apiKeysStatus = (): { dataforseo: boolean; majestic: boolean } =>
-    ({ dataforseo: !!dfs, majestic: !!majestic });
+    ({ dataforseo: false, majestic: false });
 
   // The dashboard webserver's options — one definition shared by serve_dashboard AND the
   // auto-start at the end of refresh_property / run_audit, so a populated property always has
@@ -1042,7 +987,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'refresh_property',
     {
       title: 'Refresh a property (sync + crawl + inspect)',
-      description: 'Full refresh for a property in one async job: GSC sync → site crawl → URL inspection → DataForSEO rank history → CrUX field data (when CRUX_API_KEY is set; each target at most once per 7 days). Opens a live progress widget (phases + counts). Set gsc/crawl/inspect/ranks/crux=false to run just part. GSC sync is "lite" (date×query×page) by default — set segments=true to also pull device/country breakdowns (much heavier on large sites). GSC sync is INCREMENTAL: the first sync pulls the window (default last 90 days; pass startDate to go deeper), later syncs only fetch new days — set full=true to force a full re-pull. Use this for "sync everything"; use the single-purpose tools to update just one thing.',
+      description: 'Full refresh for a property in one async job: GSC sync → site crawl → URL inspection → CrUX field data (when CRUX_API_KEY is set; each target at most once per 7 days). Opens a live progress widget (phases + counts). Set gsc/crawl/inspect/ranks/crux=false to run just part. GSC sync is "lite" (date×query×page) by default — set segments=true to also pull device/country breakdowns (much heavier on large sites). GSC sync is INCREMENTAL: the first sync pulls the window (default last 90 days; pass startDate to go deeper), later syncs only fetch new days — set full=true to force a full re-pull. Use this for "sync everything"; use the single-purpose tools to update just one thing.',
       inputSchema: {
         siteUrl: z.string(),
         gsc: z.boolean().optional(),
@@ -1270,23 +1215,28 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     jobStatus,
   );
 
-  // ── DataForSEO (cached 20 days, single-worker) ──────────────────────────
+  // ── Google Ads Keyword Planner (free, cached 30 days) ─────────────────────
   server.registerTool(
     'keyword_volume',
     {
-      title: 'Keyword search volume (Google Ads Keyword Planner or DataForSEO)',
-      description: '[FREE with Google Ads credentials (Keyword Planner, cached 30d), else Paid DataForSEO (cached 20d) | Use for: demand sizing] Monthly search volume + CPC + competition for keywords. With Google Ads it also returns the 12-month series, and a keyword Google groups under a close variant (plural, accent) carries groupedUnder. Location is a numeric geo id (2724 Spain, 2484 Mexico, 1005424 Madrid). Default location: ' + DEFAULT_MARKET_LABEL + '.',
+      title: 'Keyword search volume (Google Ads Keyword Planner)',
+      description: '[FREE, Google Ads Keyword Planner, cached 30d | Use for: demand sizing] Monthly search volume + CPC + competition for keywords. With Google Ads it also returns the 12-month series, and a keyword Google groups under a close variant (plural, accent) carries groupedUnder. Location is a numeric geo id (2724 Spain, 2484 Mexico, 1005424 Madrid). Default location: ' + DEFAULT_MARKET_LABEL + '.',
       inputSchema: {
         keywords: z.array(z.string()).min(1).max(5000),
         location: z.union([z.string(), z.number()]).optional(),
         languageCode: z.string().optional(),
         includeMonthly: z.boolean().optional().describe('Include the 12-month series per keyword (default false: it multiplies the reply size). A trend label is always included.'),
+        siteUrl: z.string().optional().describe('A GSC property: save these keywords to it, so keyword_demand, the dashboard and export_report show them joined to its rankings'),
       },
     },
-    async ({ keywords, location, languageCode, includeMonthly }) => {
+    async ({ keywords, location, languageCode, includeMonthly, siteUrl }) => {
       const r0 = await keywordVolumes(ads, dfs, keywords, location, languageCode);
-      const r = { ...r0, keywords: r0.keywords.map(k => compactMonthly(k, includeMonthly)) };
-      const src = r.provider === 'google-ads' ? 'Google Ads' : 'DataForSEO';
+      if (siteUrl && r0.provider === 'google-ads') {
+        const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
+        try { saveKeywords(db.db, r0.keywords.map(k => ({ ...k, competitionLevel: k.competitionLevel ?? null, lowTopOfPageBid: null, highTopOfPageBid: null, monthly: k.monthly ?? [] })), { source: 'volume', location, language: languageCode }); } finally { db.close(); }
+      }
+      const r = { ...r0, keywords: r0.keywords.map(k => compactMonthly(k, includeMonthly)), ...(siteUrl ? { savedTo: siteUrl } : {}) };
+      const src = 'Google Ads';
       return {
         content: [{ type: 'text', text: `${r.keywords.length} keywords via ${src}${r.cached ? ' (cached)' : r.cost ? ` (live, $${r.cost.toFixed(4)})` : ' (live)'}` }],
         structuredContent: r as unknown as Record<string, unknown>,
@@ -1307,11 +1257,17 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         languageCode: z.string().optional(),
         limit: z.number().int().min(1).max(1000).optional(),
         includeMonthly: z.boolean().optional().describe('Include the 12-month series per idea (default false: it multiplies the reply size). A trend label is always included.'),
+        siteUrl: z.string().optional().describe('A GSC property: save the ideas to it (see keyword_volume). Ideas with no volume are not saved.'),
       },
     },
-    async ({ keywords, url, site, location, languageCode, limit, includeMonthly }) => {
+    async ({ keywords, url, site, location, languageCode, limit, includeMonthly, siteUrl }) => {
       if (!ads) throw new Error('Google Ads not configured: set GOOGLE_ADS_CREDENTIALS (run scripts/google-ads-auth.mjs).');
       const r = await ads.keywordIdeas({ keywords, url, site, location, language: languageCode, limit });
+      if (siteUrl) {
+        const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
+        const seed = [...(keywords ?? []), url, site].filter(Boolean).join(' | ');
+        try { saveKeywords(db.db, r.items.filter(k => (k.searchVolume ?? 0) > 0), { source: 'ideas', seed, location, language: languageCode }); } finally { db.close(); }
+      }
       return {
         content: [{ type: 'text', text: `${r.items.length} keyword ideas via Google Ads${r.cached ? ' (cached)' : ' (live)'}` }],
         structuredContent: { ideas: r.items.map(k => compactMonthly(k, includeMonthly)), cached: r.cached } as unknown as Record<string, unknown>,
@@ -1320,61 +1276,50 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   );
 
   server.registerTool(
-    'related_terms',
+    'keyword_demand',
     {
-      title: 'Related terms (People Also Ask + related searches)',
-      description: '[Paid: SERP call PER KEYWORD - only for clicked/explicit keywords, never lists | Use for: the SERP context of a single keyword] People Also Ask questions and related searches for a keyword (DataForSEO SERP). Powers click-through "related terms" on the keyword charts. SERP call — cached 20 days.',
-      inputSchema: { keyword: z.string(), location: z.union([z.string(), z.number()]).optional(), languageCode: z.string().optional() },
-    },
-    async ({ keyword, location, languageCode }) => {
-      const client = requireDfs(dfs);
-      const r = await client.relatedTerms(keyword, location, languageCode);
-      return {
-        content: [{ type: 'text', text: `PAA: ${r.peopleAlsoAsk.length}, related: ${r.relatedSearches.length}${r.cached ? ' (cached)' : ` ($${r.cost.toFixed(4)})`}` }],
-        structuredContent: r as unknown as Record<string, unknown>,
-      };
-    },
-  );
-
-  server.registerTool(
-    'youtube_discovery',
-    {
-      title: 'YouTube video discovery (DataForSEO SERP)',
-      description: '[Paid: SERP call PER KEYWORD, cached 20d | Use for: finding the videos that rank for a topic — content research, competitor video scan, freshness] The ranking YouTube videos for a keyword (DataForSEO YouTube organic SERP). Returns title, URL, channel, view count, publish date, duration and shorts/live flags, in rank order. Watch the top few to see what the winning videos actually cover. SERP scope, 20-day cache. Default location: ' + DEFAULT_MARKET_LABEL + '.',
+      title: 'Keyword demand for a property (Keyword Planner × Search Console)',
+      description: '[FREE, stored data | Use for: which searched keywords a client wins, almost wins or misses] The Keyword Planner keywords saved to a property (keyword_volume / keyword_ideas with siteUrl), each joined to Search Console (last 90 days; plurals and accents matched) with the page Google shows, its position, impressions and clicks, or a suggested on-site page when it does not rank. Status: top3 / page1 / striking (11-20) / weak (>20) / gap (no impressions). Same data as the dashboard Keywords tab and export_report. remove deletes keywords from the property.',
       inputSchema: {
-        keyword: z.string(),
-        location: z.union([z.string(), z.number()]).optional(),
-        languageCode: z.string().optional(),
-        blockDepth: z.number().int().min(1).max(200).optional().describe('How many ranking videos to collect (default 20)'),
+        siteUrl: z.string(),
+        status: z.array(z.enum(['top3', 'page1', 'striking', 'weak', 'gap'])).optional(),
+        limit: z.number().int().min(1).max(500).optional().describe('Rows returned (default 50, by volume)'),
+        remove: z.array(z.string()).optional().describe('Keywords to delete from this property; ["*"] deletes all'),
       },
     },
-    async ({ keyword, location, languageCode, blockDepth }) => {
-      const client = requireDfs(dfs);
-      const r = await client.serpYoutube(keyword, location, languageCode, blockDepth ?? 20);
-      const top = r.videos.slice(0, 15).map(v =>
-        `• ${v.title ?? '(untitled)'}${v.channel ? ` — ${v.channel}` : ''}${v.views != null ? `, ${v.views.toLocaleString()} views` : ''}${v.published ? `, ${v.published}` : ''}\n  ${v.url ?? ''}`).join('\n');
-      return {
-        content: [{ type: 'text', text: `${r.videos.length} YouTube videos for "${keyword}"${r.cached ? ' (cached)' : ` (live, $${r.cost.toFixed(4)})`}${r.videos.length ? `:\n${top}` : ''}` }],
-        structuredContent: { keyword, videos: r.videos, cached: r.cached, cost: r.cost },
-      };
+    async ({ siteUrl, status, limit, remove }) => {
+      const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
+      try {
+        let removed = 0;
+        if (remove?.length) removed = deleteKeywords(db.db, remove.includes('*') ? undefined : remove);
+        const p = keywordDemandPayload(db.db);
+        if (!p) return { content: [{ type: 'text', text: (removed ? `Removed ${removed}. ` : '') + 'No keywords saved for this property yet: run keyword_volume or keyword_ideas with siteUrl.' }] };
+        const want = status?.length ? new Set(status) : null;
+        const rows = p.rows.filter(r => !want || want.has(r.status)).slice(0, limit ?? 50)
+          .map(r => ({ keyword: r.keyword, volume: r.searchVolume, cpc: r.cpc, competition: r.competitionLevel, trend: r.trend, status: r.status, page: r.page, position: r.position, clicks: r.clicks, impressions: r.impressions, suggestedPage: r.suggestedPage }));
+        const t = p.totals;
+        return {
+          content: [{ type: 'text', text: `${removed ? `Removed ${removed}. ` : ''}${t.keywords} keywords, ${t.volume.toLocaleString('es-ES')} searches/mo; page 1 captures ${t.capturedVolume.toLocaleString('es-ES')}. top3 ${t.byStatus.top3} · page1 ${t.byStatus.page1} · striking ${t.byStatus.striking} · weak ${t.byStatus.weak} · gap ${t.byStatus.gap}.` }],
+          structuredContent: { totals: t, updatedAt: p.updatedAt, rows } as unknown as Record<string, unknown>,
+        };
+      } finally { db.close(); }
     },
   );
 
   server.registerTool(
     'news_discovery',
     {
-      title: 'News discovery (Google News RSS + DataForSEO)',
-      description: '[Google News is FREE (no key); DataForSEO adds a paid, richer Google News SERP | Use for: what has been PUBLISHED on a topic — freshness, "what changed since {date}", competitor coverage] Recent news for a keyword from Google News (the free RSS search feed — Google\'s old News API is retired) and/or the DataForSEO Google News SERP. Returns title, source, publish time, URL. Default source "both" merges + dedupes; pass source:"google" for a free keyless lookup, "dataforseo" for the paid SERP only. Default location: ' + DEFAULT_MARKET_LABEL + '.',
+      title: 'News discovery (Google News RSS)',
+      description: '[FREE, no key | Use for: what has been PUBLISHED on a topic — freshness, "what changed since {date}", competitor coverage] Recent news for a keyword from the Google News RSS search feed (Spain / Spanish by default). Returns title, source, publish time, URL and the top publishers.',
       inputSchema: {
         keyword: z.string(),
         location: z.union([z.string(), z.number()]).optional(),
         languageCode: z.string().optional(),
         depth: z.number().int().min(1).max(200).optional().describe('How many news results (default 20)'),
-        source: z.enum(['google', 'dataforseo', 'both']).optional().describe('google = free Google News RSS; dataforseo = paid Google News SERP; both (default) merges + dedupes'),
       },
     },
-    async ({ keyword, location, languageCode, depth, source }) => {
-      const src = source ?? 'both';
+    async ({ keyword, depth }) => {
+      const src = 'google';
       const n = depth ?? 20;
       const seen = new Set<string>();
       const articles: any[] = [];
@@ -1388,12 +1333,6 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
           for (const a of g.articles) add({ title: a.title, source: a.source, timestamp: a.timestamp, url: a.url, via: 'google-news' });
         } catch (e) { googleError = e instanceof Error ? e.message : 'failed'; }
       }
-      // Paid DataForSEO Google News SERP (only when explicitly asked, or 'both' AND a key is set).
-      if (src === 'dataforseo' || (src === 'both' && !!dfs)) {
-        const r = await requireDfs(dfs).serpNews(keyword, location, languageCode, n);
-        cost += r.cost; cached = r.cached; dfsCount = r.articles.length;
-        for (const a of r.articles) add({ ...a, via: 'dataforseo' });
-      }
       // Top sources: which publishers are covering this topic, ranked by article count — the
       // "who is talking about X" read. Powers "trending news + sources for X" in one call.
       const sourceCount = new Map<string, number>();
@@ -1402,77 +1341,11 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
 
       const top = articles.slice(0, 15).map(a =>
         `• ${a.title ?? '(untitled)'}${a.source ? ` — ${a.source}` : ''}${a.timestamp ? `, ${a.timestamp}` : ''}\n  ${a.url ?? ''}`).join('\n');
-      const srcNote = [googleCount ? `${googleCount} Google News` : '', dfsCount ? `${dfsCount} DataForSEO` : ''].filter(Boolean).join(' + ') || 'no results';
+      const srcNote = [googleCount ? `${googleCount} Google News` : '', ].filter(Boolean).join(' + ') || 'no results';
       const sourcesLine = topSources.length ? `\n\nTop sources: ${topSources.map(s => `${s.source} (${s.count})`).join(', ')}` : '';
       return {
         content: [{ type: 'text', text: `${articles.length} news results for "${keyword}" (${srcNote}${cost ? `, $${cost.toFixed(4)}` : ', free'})${googleError ? ` [Google News error: ${googleError}]` : ''}${sourcesLine}${articles.length ? `\n\n${top}` : ''}\n\nCompose with topic_trend for direction (rising/falling); schedule this call daily/hourly for a topic radar.` }],
         structuredContent: { keyword, articles, topSources, cached, cost, sources: { googleNews: googleCount, dataforseo: dfsCount }, googleError },
-      };
-    },
-  );
-
-  server.registerTool(
-    'topic_trend',
-    {
-      title: 'Google Trends interest over time (DataForSEO)',
-      description: '[Paid: Keywords API, cheap, cached 20d | Use for: seasonality + "is this rising or fading" — should we update now, when to publish; category monitoring — is a whole market growing] Google Trends relative interest (0–100) over time (DataForSEO KEYWORDS_DATA / google_trends). Give up to 5 keywords, a categoryCode (find it with trend_categories), or both: keywords alone search all categories; keywords + categoryCode narrow a term to one industry (e.g. "jaguar" in Autos); categoryCode alone returns interest in the WHOLE category, no keyword needed. related:true adds the top + rising related topics and queries (at most 1 keyword) — the category-only form surfaces what is breaking out across a market. Returns the time series plus a rising/falling/flat read. timeRange: past_7_days | past_30_days | past_90_days | past_12_months (default) | past_5_years | 2004_present. type: web (default) | news | youtube | images | froogle. Default location: ' + DEFAULT_MARKET_LABEL + '.',
-      inputSchema: {
-        keywords: z.array(z.string()).max(5).optional(),
-        categoryCode: z.number().int().min(1).optional(),
-        related: z.boolean().optional(),
-        location: z.union([z.string(), z.number()]).optional(),
-        languageCode: z.string().optional(),
-        timeRange: z.enum(['past_7_days', 'past_30_days', 'past_90_days', 'past_12_months', 'past_5_years', '2004_present']).optional(),
-        type: z.enum(['web', 'news', 'youtube', 'images', 'froogle']).optional(),
-      },
-    },
-    async ({ keywords, categoryCode, related, location, languageCode, timeRange, type }) => {
-      const client = requireDfs(dfs);
-      const r = await client.googleTrends(keywords ?? [], location, languageCode, {
-        ...(timeRange ? { timeRange } : {}), ...(type ? { type } : {}),
-        ...(categoryCode ? { categoryCode } : {}), ...(related ? { related } : {}),
-      });
-      const summarise = (k: string) => {
-        const vals = r.series.map(s => s.values[k]).filter((v): v is number => typeof v === 'number');
-        if (!vals.length) return `${k}: no data`;
-        const win = Math.max(1, Math.floor(vals.length / 4));
-        const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
-        const first = avg(vals.slice(0, win)), last = avg(vals.slice(-win));
-        const dir = last > first * 1.1 ? 'rising' : last < first * 0.9 ? 'falling' : 'flat';
-        return `${k}: ${dir} (${Math.round(first)}→${Math.round(last)}, peak ${Math.max(...vals)})`;
-      };
-      const txt = r.keywords.map(summarise).join('\n');
-      const fmt = (xs: Array<{ value: number | null } & ({ title: string } | { query: string })>, rising: boolean) =>
-        xs.slice(0, 10).map(x => `  ${'title' in x ? x.title : x.query} (${x.value == null ? '?' : rising ? `+${x.value}%` : x.value})`).join('\n') || '  none';
-      const relatedTxt = r.queries && r.topics
-        ? `\n\nRising queries:\n${fmt(r.queries.rising, true)}\nTop queries:\n${fmt(r.queries.top, false)}\nRising topics:\n${fmt(r.topics.rising, true)}`
-        : '';
-      const scope = r.categoryCode ? ` in category ${r.categoryCode}` : '';
-      return {
-        content: [{ type: 'text', text: `Trend${scope}, ${r.series.length} points${r.cached ? ' (cached)' : ` (live, $${r.cost.toFixed(4)})`}:\n${txt}${relatedTxt}` }],
-        structuredContent: { keywords: r.keywords, categoryCode: r.categoryCode, series: r.series, topics: r.topics, queries: r.queries, cached: r.cached, cost: r.cost },
-      };
-    },
-  );
-
-  server.registerTool(
-    'trend_categories',
-    {
-      title: 'Google Trends category codes (DataForSEO)',
-      description: '[Free endpoint; needs DataForSEO credentials | Use before topic_trend with categoryCode] Search the Google Trends category tree (~1,400 categories) by name and get the codes topic_trend takes, with each match\'s parent so you can pick the right level. Omit query to list the top-level categories.',
-      inputSchema: { query: z.string().optional(), limit: z.number().int().min(1).max(100).optional() },
-    },
-    async ({ query, limit }) => {
-      const client = requireDfs(dfs);
-      const cats = await client.googleTrendsCategories();
-      const byCode = new Map(cats.map(c => [c.code, c]));
-      const q = query?.trim().toLowerCase();
-      const hits = (q ? cats.filter(c => c.name.toLowerCase().includes(q)) : cats.filter(c => c.parent === 0)).slice(0, limit ?? 25);
-      const withParent = hits.map(c => ({ ...c, parentName: c.parent ? byCode.get(c.parent)?.name ?? null : null }));
-      const lines = withParent.map(c => `${c.code}  ${c.parentName ? `${c.parentName} > ` : ''}${c.name}`).join('\n');
-      return {
-        content: [{ type: 'text', text: `${withParent.length} of ${cats.length} categories${q ? ` matching "${query}"` : ' (top level)'}:\n${lines || 'none'}\n\nPass a code to topic_trend as categoryCode.` }],
-        structuredContent: { categories: withParent, total: cats.length },
       };
     },
   );
@@ -1540,7 +1413,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         : '_No weak clusters - your rankings are polarised own/absent._'));
       const md = `# Content opportunity report - ${siteUrl}\n\nEverything below is from your own Search Console + crawl data (no paid calls, no invented keywords).\n\n` +
         sect.join('\n\n') +
-        `\n\nNext moves: draft_content for a brief on any row · keyword_volume to size a cluster against the market · topic_gaps to add what competitors own.` +
+        `\n\nNext moves: draft_content for a brief on any row · keyword_volume to size a cluster against the market · keyword_ideas (with siteUrl) to find the demand you don't cover yet.` +
         browserLink(siteUrl);
       return {
         content: [{ type: 'text', text: md }],
@@ -1550,140 +1423,6 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
           strengthen: weak.map(c => ({ head: c.head, bestPosition: c.bestPosition, impressions: c.impressions, url: c.url, keywords: c.keywords.length })),
         } as unknown as Record<string, unknown>,
       };
-    },
-  );
-
-  // ── Content recon (recon_targets) — the data-intensive "why are we losing, what to do" mission ──
-  server.registerTool(
-    'recon_targets',
-    {
-      title: 'Content recon: why a page is losing, and what to do about it',
-      description: '[Paid: DataForSEO SERP per page (~$0.004 each, plus a small refundable surcharge for loading async AI Overviews), bounded to the batch | Use for: the deep "why are we behind and what to add" recon] For each of your striking-distance pages (auto-selected: the page\'s top query at positions 3-15, highest impressions first; or pass explicit urls), this fetches OUR live page with the crawler, pulls the live Google SERP (DataForSEO SERP-advanced, depth 20 organic), and classifies WHY we are behind using the organic-rank x AI-Overview-citation matrix: defend-and-deepen (cited + strong), accuracy-or-freshness (rank but the AIO will not quote us - the sharpest, most actionable class), consolidate-weak-page, competitive-gap, or page-cannot-rank (the crawl says the URL is noindex/canonicalised away, so its GSC history is legacy and the SERP read belongs to another page). Honesty rules baked in: every GSC figure carries its 28-day window; organicRank:null means "absent from the top 20 ORGANIC results", never a position; and an AI Overview whose citations could not be resolved reports aioCitesUs:null (UNKNOWN) rather than "not cited". To-dos are prioritised by OPPORTUNITY (impressions x the CTR gap between where you rank and a realistic target, damped by the verdict), not by raw impressions, and cannibalisation is counted across the whole query cluster. Set scrapeCompetitors:true to also pull the top competitors as content, free and with no API key, routed by host: Reddit → its .json, other pages → a browser-profile HTTP fetch, and ranking videos are listed rather than fetched (a video page has no readable text over HTTP); competitorLimit (default 5) caps how many are fetched and everything above the cap is listed as skipped. Cloudflare-challenge sites (e.g. PCMag) still can\'t be fetched from a server and come back as a per-URL error — the SERP still tells you they rank; if one matters, ask the user to paste its copy or supply a text file and diff that in. Watch the ranking videos (usually what wins these SERPs) and use the fetched pages. Then write findings back with save_recon_todo; track with recon_todos. **Async job:** returns a jobId immediately - poll check_sync_status; the finished job carries the per-page verdicts, to-dos and a summary. (Each page is persisted to the ledger as it completes, so recon_todos shows results even mid-run.)',
-      inputSchema: {
-        siteUrl: z.string(),
-        limit: z.number().int().min(1).max(50).optional().describe('Pages per batch (default 5; async so large batches are fine)'),
-        minImpressions: z.number().int().min(1).optional(),
-        location: z.union([z.string(), z.number()]).optional(),
-        urls: z.array(z.string()).optional().describe('Analyse these exact pages instead of auto-selecting'),
-        scrapeCompetitors: z.boolean().optional().describe('Also fetch the top competitors (video→transcript, pages→markdown/HTML)'),
-        competitorLimit: z.number().int().min(1).max(12).optional().describe('How many competitors to fetch per page when scrapeCompetitors is on (default 5). Whatever is not fetched is listed as skipped, never dropped silently.'),
-        crawlAs: z.enum(['browser', 'googlebot']).optional().describe('UA for the free HTTP fetch: browser (default, mimics a visit from Google — gets Reddit + mid-tier) or googlebot'),
-      },
-    },
-    async ({ siteUrl, limit, minImpressions, location, urls, scrapeCompetitors, competitorLimit, crawlAs }) => {
-      requireDfs(dfs); // fail fast if no DataForSEO creds, before starting the job
-      const count = urls?.length || limit || 5;
-      // Async job: N live page-fetches + N serialised SERP calls exceed the ~60s MCP ceiling
-      // past a handful of pages, so return a jobId and poll (like refresh_property).
-      // The job body lives in src/core/reconJob.ts so a job runner can run it from these arguments (#56).
-      const jobId = startFor(siteUrl, 'recon', { siteUrl, limit, minImpressions, location, urls, scrapeCompetitors, competitorLimit, crawlAs });
-      return jobStarted({ jobId, status: 'running', siteUrl }, `Content recon started for ${count} page(s) — job ${jobId}. Each page is a live page-fetch + a serialised SERP call (a few seconds each), so poll check_sync_status with jobId "${jobId}"; the finished job's result carries the per-page verdicts, to-dos and a summary.`);
-    },
-  );
-
-  // save_recon_todo — the research session writes its content-gap / originality findings back
-  // into the ledger against a page (source: 'research').
-  server.registerTool(
-    'save_recon_todo',
-    {
-      title: 'Save content-recon to-dos (research writeback)',
-      description: 'Write content-recon findings back into the trackable ledger for a page — the gaps and originality the research session found by diffing the competitor pages and ranking videos against our content. Each to-do is an action with a type (content-gap / originality / schema / freshness / format), rationale and evidence. Snapshots the page baseline so the fix\'s effect on rank/AIO-citation is measurable later. Run recon_targets first (it classifies the page and seeds the deterministic to-dos); this adds the judgement ones. Track everything with recon_todos.',
-      inputSchema: {
-        siteUrl: z.string(),
-        urlKey: z.string().describe('The page (any URL form — normalised to its key)'),
-        todos: z.array(z.object({
-          action: z.string(),
-          type: z.string().optional(),
-          rationale: z.string().optional(),
-          evidence: z.record(z.any()).optional(),
-          priority: z.number().optional(),
-        })).min(1),
-      },
-    },
-    async ({ siteUrl, urlKey: rawUrl, todos }) => {
-      const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
-      try {
-        const key = urlKey(rawUrl, { hostForm: hostFormForProperty(siteUrl) ?? 'asis' });
-        const page = db.db.prepare(`SELECT query, organic_rank, aio_cites_us, gsc_position, gsc_impressions, verdict FROM recon_page WHERE url_key=?`).get(key) as
-          { query: string; organic_rank: number | null; aio_cites_us: number | null; gsc_position: number; gsc_impressions: number; verdict: string } | undefined;
-        // aio_cites_us is NULL when the AI Overview never resolved — keep that as unknown rather
-        // than coercing it to false, or the outcome diff reads "no → yes" off a missing fetch.
-        const baseline = page ? { organicRank: page.organic_rank, aioCitesUs: page.aio_cites_us == null ? null : !!page.aio_cites_us, gscPosition: page.gsc_position, at: new Date().toISOString().slice(0, 10) } : {};
-        // Default priority to the PAGE's opportunity so research to-dos sort on the same scale as
-        // the deterministic ones (a default of 0 buried every judgement finding at the bottom).
-        const basis = page ? opportunityBasis(page.gsc_impressions ?? 0, page.organic_rank, page.gsc_position ?? 20, page.verdict) : null;
-        const fallbackPriority = basis ? Math.max(1, Math.round(basis.opportunityClicks * basis.verdictFactor)) : 0;
-        const drafts = todos.map(t => ({ action: t.action, type: t.type ?? 'content-gap', rationale: t.rationale ?? '', evidence: t.evidence ?? {}, priority: t.priority ?? fallbackPriority }));
-        const n = insertTodos(db.db, key, page?.query ?? '', drafts, baseline, 'research');
-        return { content: [{ type: 'text', text: `Saved ${n} recon to-do(s) for ${key}${n < drafts.length ? ` (${drafts.length - n} already open)` : ''}. Track with recon_todos.` }], structuredContent: { urlKey: key, inserted: n } };
-      } finally { db.close(); }
-    },
-  );
-
-  // recon_todos — list, track and annotate the ledger. No id → list (optionally filtered);
-  // id → update status and/or append a dated annotation, and optionally re-measure the outcome.
-  server.registerTool(
-    'recon_todos',
-    {
-      title: 'List, track and annotate content-recon to-dos',
-      description: 'The content-recon to-do board. With no id: list to-dos (optionally filter by page or status), grouped by page with each page\'s verdict — the pick-a-page-to-work-on surface, and the hand-off to content-machine. With id: update one to-do — set status (open → researching → drafted → shipped → dismissed) and/or append a dated annotation note (your own observations, the history). On status:shipped with remeasure:true it re-fetches the SERP and records the outcome, so you can see whether the fix moved you from AIO-uncited to cited, or up the organic ranks.',
-      inputSchema: {
-        siteUrl: z.string(),
-        urlKey: z.string().optional().describe('Filter the list to one page'),
-        status: z.enum(['open', 'researching', 'drafted', 'shipped', 'dismissed']).optional().describe('Filter the list, or the new status when id is set'),
-        id: z.number().int().optional().describe('Update this to-do'),
-        note: z.string().optional().describe('Append a dated annotation to this to-do'),
-        remeasure: z.boolean().optional().describe('On status:shipped, re-fetch the SERP and record the outcome (paid)'),
-        location: z.union([z.string(), z.number()]).optional(),
-      },
-    },
-    async ({ siteUrl, urlKey: rawUrl, status, id, note, remeasure, location }) => {
-      const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
-      try {
-        if (id != null) {
-          const row = db.db.prepare(`SELECT * FROM recon_todo WHERE id=?`).get(id) as any;
-          if (!row) throw new Error(`No recon to-do #${id}.`);
-          let notes = row.notes ?? '';
-          if (note) notes = (notes ? notes + '\n' : '') + `[${new Date().toISOString().slice(0, 10)}] ${note}`;
-          let outcome = row.outcome;
-          let outcomeNote = '';
-          if (status === 'shipped' && remeasure) {
-            const client = requireDfs(dfs); // remeasure is paid: fail loudly rather than silently skip it
-            // Same depth + async-AIO handling as recon_targets, so before/after are comparable.
-            const serpResp = await client.serpOrganic(row.query, location, DEFAULT_LANGUAGE, 20, { loadAsyncAiOverview: true });
-            const serp = parseSerpForRecon(serpResp, dfsHost(siteUrl), 20);
-            const cited = (v: unknown) => (v == null ? 'unknown' : v ? 'yes' : 'no');
-            outcome = JSON.stringify({ organicRank: serp.ourOrganicRank, serpDepth: 20, aioCitesUs: serp.aioCitesUs, aioResolved: serp.aioResolved, at: new Date().toISOString().slice(0, 10) });
-            const base = row.baseline ? JSON.parse(row.baseline) : {};
-            const rankStr = (r: number | null | undefined) => (r == null ? 'not in top 20' : `#${r}`);
-            outcomeNote = ` Outcome: organic ${rankStr(base.organicRank)}→${rankStr(serp.ourOrganicRank)}, AIO cited ${cited(base.aioCitesUs)}→${cited(serp.aioCitesUs)}.`;
-          }
-          db.db.prepare(`UPDATE recon_todo SET status=COALESCE(?,status), notes=?, outcome=COALESCE(?,outcome), updated_at=datetime('now') WHERE id=?`)
-            .run(status ?? null, notes, outcome ?? null, id);
-          return { content: [{ type: 'text', text: `Updated to-do #${id}${status ? ` → ${status}` : ''}${note ? ' (note added)' : ''}.${outcomeNote}` }], structuredContent: { id, status: status ?? row.status, outcome: outcome ? JSON.parse(outcome) : null } };
-        }
-
-        const key = rawUrl ? urlKey(rawUrl, { hostForm: hostFormForProperty(siteUrl) ?? 'asis' }) : null;
-        const where: string[] = []; const args: unknown[] = [];
-        if (key) { where.push('url_key=?'); args.push(key); }
-        if (status) { where.push('status=?'); args.push(status); }
-        const rows = db.db.prepare(`SELECT id, url_key, query, action, type, rationale, priority, status, source, notes, baseline, outcome
-          FROM recon_todo ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY url_key, priority DESC`).all(...args) as any[];
-        if (!rows.length) return { content: [{ type: 'text', text: `No recon to-dos${key ? ` for ${key}` : ''}${status ? ` with status ${status}` : ''}. Run recon_targets to generate some.` }], structuredContent: { todos: [] } };
-
-        const byPage = new Map<string, any[]>();
-        for (const r of rows) (byPage.get(r.url_key) ?? byPage.set(r.url_key, []).get(r.url_key)!).push(r);
-        const verdictStmt = db.db.prepare(`SELECT verdict, verdict_note FROM recon_page WHERE url_key=?`);
-        const md = `# Content-recon to-dos — ${rows.length} item(s)${status ? `, status ${status}` : ''}\n\n` +
-          [...byPage.entries()].map(([url, items]) => {
-            const v = verdictStmt.get(url) as { verdict: string; verdict_note: string } | undefined;
-            return `## ${url}${v ? `\n_${v.verdict}_ — ${v.verdict_note}` : ''}\n\n| # | Status | Type | Action |\n|---|---|---|---|\n` +
-              items.map(i => `| ${i.id} | ${i.status} | ${i.type ?? ''} | ${String(i.action).replace(/\|/g, '\\|')} |`).join('\n') +
-              (items.some(i => i.notes) ? '\n\nNotes:\n' + items.filter(i => i.notes).map(i => `- #${i.id}: ${String(i.notes).replace(/\n/g, ' / ')}`).join('\n') : '');
-          }).join('\n\n') +
-          browserLink(siteUrl);
-        return { content: [{ type: 'text', text: md }], structuredContent: { todos: rows } };
-      } finally { db.close(); }
     },
   );
 
@@ -1722,637 +1461,10 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
   );
 
-  server.registerTool(
-    'search_intent',
-    {
-      title: 'Search intent classification (DataForSEO Labs)',
-      description: '[Paid: Labs, cheap, cached 20d, up to 1000 kw/call | Use for: intent mapping before content planning] Classify the search intent (informational / navigational / commercial / transactional) of keywords — primary label + probability + secondary intents. Use it to spot intent mismatch: e.g. a transactional product page ranking for an informational query (a common cause of high impressions / low CTR). Pass siteUrl to persist the intents so run_audit can surface intent-vs-pagetype-mismatch. Labs call, cached 20 days, up to 1000 keywords. Language-only (no location).',
-      inputSchema: { keywords: z.array(z.string()).min(1).max(1000), languageCode: z.string().optional(), siteUrl: z.string().optional() },
-    },
-    async ({ keywords, languageCode, siteUrl }) => {
-      const client = requireDfs(dfs);
-      const r = await client.searchIntent(keywords, languageCode);
-      const items = (r.tasks[0]?.result?.[0]?.items ?? []).map((it: any) => ({
-        keyword: it.keyword,
-        intent: it.keyword_intent?.label ?? null,
-        probability: it.keyword_intent?.probability ?? null,
-        secondary: (it.secondary_keyword_intents ?? []).map((s: any) => ({ intent: s.label, probability: s.probability })),
-      }));
-      let persisted = 0;
-      if (siteUrl) {
-        const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
-        try {
-          const up = db.db.prepare(`INSERT INTO keyword_intent (keyword,intent,probability,fetched_at) VALUES (?,?,?,datetime('now'))
-            ON CONFLICT(keyword) DO UPDATE SET intent=excluded.intent, probability=excluded.probability, fetched_at=datetime('now')`);
-          db.db.transaction(() => { for (const it of items) if (it.keyword && it.intent) { up.run(it.keyword.toLowerCase(), it.intent, it.probability); persisted++; } })();
-        } finally { db.close(); }
-      }
-      return {
-        content: [{ type: 'text', text: `${items.length} keywords classified${persisted ? `, ${persisted} saved for ${siteUrl}` : ''}${r.cached ? ' (cached)' : ` (live, $${r.cost.toFixed(4)})`}` }],
-        structuredContent: { intents: items, persisted, cached: r.cached, cost: r.cost },
-      };
-    },
-  );
-
-  server.registerTool(
-    'page_lighthouse',
-    {
-      title: 'Page Lighthouse — lab Core Web Vitals (DataForSEO On-Page)',
-      description: '[Paid: On-Page, ONE URL per call | Use for: CWV evidence on a page that earns clicks] Run a live Lighthouse audit for ONE url: lab Core Web Vitals (LCP, CLS, TBT, FCP, Speed Index), category scores (performance/SEO/best-practices/accessibility), and the top time-saving opportunities. Complements GSC/CrUX field data (aggregate + delayed) with on-demand lab data. Pass siteUrl to persist the CWV so run_audit can surface high-yield-cwv-fail. Paid On-Page call (~2000 credits), slow (~20–120s), cached 20 days.',
-      inputSchema: { url: z.string().url(), forMobile: z.boolean().optional(), siteUrl: z.string().optional() },
-    },
-    async ({ url, forMobile, siteUrl }) => {
-      const client = requireDfs(dfs);
-      const mobile = forMobile ?? true;
-      const r = await client.lighthouse(url, mobile);
-      const res = r.tasks[0]?.result?.[0] ?? {};
-      const audits: Record<string, any> = res.audits ?? {};
-      const cwv = (id: string) => ({ score: audits[id]?.score ?? null, value: audits[id]?.displayValue ?? null });
-      const numeric = (id: string): number | null => audits[id]?.numericValue ?? null;
-      const cats: Record<string, any> = res.categories ?? {};
-      const opportunities = Object.values(audits)
-        .filter((a: any) => a?.details?.type === 'opportunity' && (a.details.overallSavingsMs ?? 0) > 0)
-        .sort((a: any, b: any) => (b.details.overallSavingsMs ?? 0) - (a.details.overallSavingsMs ?? 0))
-        .slice(0, 8)
-        .map((a: any) => ({ id: a.id, title: a.title, savingsMs: Math.round(a.details.overallSavingsMs) }));
-      const out = {
-        url, forMobile: mobile,
-        scores: {
-          performance: cats.performance?.score ?? null,
-          seo: cats.seo?.score ?? null,
-          bestPractices: cats['best-practices']?.score ?? null,
-          accessibility: cats.accessibility?.score ?? null,
-        },
-        coreWebVitals: {
-          lcp: cwv('largest-contentful-paint'), cls: cwv('cumulative-layout-shift'),
-          tbt: cwv('total-blocking-time'), fcp: cwv('first-contentful-paint'), speedIndex: cwv('speed-index'),
-        },
-        opportunities,
-        cached: r.cached, cost: r.cost,
-      };
-      let persisted = false;
-      if (siteUrl && cats.performance) {
-        const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
-        try {
-          db.db.prepare(`INSERT INTO page_cwv (url_key,url,for_mobile,performance,lcp_ms,cls,tbt_ms,fetched_at)
-            VALUES (?,?,?,?,?,?,?,datetime('now'))
-            ON CONFLICT(url_key) DO UPDATE SET url=excluded.url, for_mobile=excluded.for_mobile, performance=excluded.performance,
-              lcp_ms=excluded.lcp_ms, cls=excluded.cls, tbt_ms=excluded.tbt_ms, fetched_at=datetime('now')`)
-            .run(urlKey(url, { hostForm: hostFormForProperty(siteUrl) }), url, mobile ? 1 : 0,
-              out.scores.performance, numeric('largest-contentful-paint'), numeric('cumulative-layout-shift'), numeric('total-blocking-time'));
-          persisted = true;
-        } finally { db.close(); }
-      }
-      const perf = out.scores.performance != null ? Math.round(out.scores.performance * 100) : '?';
-      return {
-        content: [{ type: 'text', text: `Lighthouse ${url}: perf ${perf}/100, LCP ${out.coreWebVitals.lcp.value ?? '?'}, CLS ${out.coreWebVitals.cls.value ?? '?'}${persisted ? ` (saved for ${siteUrl})` : ''}${r.cached ? ' (cached)' : ` (live, $${r.cost.toFixed(4)})`}` }],
-        structuredContent: { ...out, persisted },
-      };
-    },
-  );
-
-  server.registerTool(
-    'competitors_domain',
-    {
-      title: 'Competitor domains (DataForSEO Labs)',
-      description: '[Paid: Labs, cheap, cached 20d | Use for: naming the real competitor set - the opening move of competitive work] Discover the domains competing with a target for the same organic keywords (ranked by keyword overlap), with intersection counts and organic traffic estimates. The seed list for content-gap analysis (feed these into page_intersection). Labs call, cached 20 days. Pass location + language for the right market.',
-      inputSchema: { target: z.string(), location: z.union([z.string(), z.number()]).optional(), languageCode: z.string().optional(), limit: z.number().int().min(1).max(100).optional() },
-    },
-    async ({ target, location, languageCode, limit }) => {
-      const client = requireDfs(dfs);
-      const cleaned = dfsHost(target);
-      const r = await client.competitorsDomain(cleaned, location, languageCode, limit ?? 20);
-      const items = (r.tasks[0]?.result?.[0]?.items ?? [])
-        .filter((it: any) => it.domain && it.domain.replace(/^www\./, '') !== cleaned) // drop the target itself
-        .map((it: any) => ({
-        domain: it.domain,
-        intersections: it.intersections ?? null,
-        avgPosition: it.avg_position ?? null,
-        organicKeywords: it.full_domain_metrics?.organic?.count ?? null,
-        organicEtv: it.full_domain_metrics?.organic?.etv ?? null,
-      }));
-      return {
-        content: [{ type: 'text', text: `${items.length} competitor domains for ${cleaned}${r.cached ? ' (cached)' : ` (live, $${r.cost.toFixed(4)})`}` }],
-        structuredContent: { target: cleaned, competitors: items, cached: r.cached, cost: r.cost },
-      };
-    },
-  );
-
-  server.registerTool(
-    'page_intersection',
-    {
-      title: 'Content gap — page intersection (DataForSEO Labs)',
-      description: '[Paid: Labs, cheap, cached 20d | Use for: page-level content gap vs named rival URLs] Find keywords that competitor pages rank for but your page does NOT (the content gap). Pass competitor URLs as `competitorUrls` (max 20; wildcards like https://site.com/blog/* allowed) and your own URL(s) in `excludePages` (max 10) to subtract. Returns gap keywords sorted by search volume, with each competitor’s rank. Labs call, cached 20 days. Pass location + language.',
-      inputSchema: {
-        competitorUrls: z.array(z.string()).min(1).max(20),
-        excludePages: z.array(z.string()).max(10).optional(),
-        location: z.union([z.string(), z.number()]).optional(),
-        languageCode: z.string().optional(),
-        limit: z.number().int().min(1).max(1000).optional(),
-      },
-    },
-    async ({ competitorUrls, excludePages, location, languageCode, limit }) => {
-      const client = requireDfs(dfs);
-      const r = await client.pageIntersection(competitorUrls, excludePages ?? [], location, languageCode, limit ?? 100);
-      const items = (r.tasks[0]?.result?.[0]?.items ?? [])
-        .map((it: any) => {
-          const kd = it.keyword_data ?? {}; // actual shape: item.keyword_data.{keyword,keyword_info}
-          return {
-            keyword: kd.keyword ?? null,
-            searchVolume: kd.keyword_info?.search_volume ?? null,
-            cpc: kd.keyword_info?.cpc ?? null,
-            competition: kd.keyword_info?.competition ?? null,
-            ranks: Object.entries(it.intersection_result ?? {}).map(([idx, v]: [string, any]) => ({
-              page: Number(idx), rank: v?.rank_absolute ?? null, url: v?.url ?? null,
-            })),
-          };
-        })
-        .sort((a: any, b: any) => (b.searchVolume ?? 0) - (a.searchVolume ?? 0)); // order_by unsupported on this endpoint
-      return {
-        content: [{ type: 'text', text: `${items.length} gap keywords${r.cached ? ' (cached)' : ` (live, $${r.cost.toFixed(4)})`}` }],
-        structuredContent: { gaps: items, cached: r.cached, cost: r.cost },
-      };
-    },
-  );
-
-  // Strip any scheme/sc-domain:/path down to a bare host for Labs domain targets.
-  // Always strips leading www. — Labs treats www.example.com as a subdomain, not the domain.
-  const dfsHost = (t: string): string =>
-    t.trim().replace(/^sc-domain:/, '').replace(/^https?:\/\//, '').replace(/[/?#].*$/, '').replace(/^www\./, '').toLowerCase();
-  // Cap a markdown table well under the ~40k model-facing ceiling: keep whole rows, note the rest.
-  const capMdRows = (header: string, rows: string[], footer = '', maxChars = 30000): string => {
-    let out = header;
-    let used = 0;
-    for (; used < rows.length; used++) {
-      if (out.length + rows[used].length + 1 + footer.length > maxChars) break;
-      out += '\n' + rows[used];
-    }
-    if (used < rows.length) out += `\n\n_+${rows.length - used} more rows (truncated for length — lower the limit or use structuredContent)._`;
-    return out + footer;
-  };
   const fmtNum = (v: unknown): string => {
     const x = Number(v);
     return Number.isFinite(x) ? Math.round(x).toLocaleString('en-US') : '—';
   };
-
-  server.registerTool(
-    'domain_visibility',
-    {
-      title: 'Domain visibility over time (DataForSEO Labs)',
-      description: '[Paid: Labs, cheap, cached 20d | Use for: visibility-over-time trend, any domain, no GSC needed] Monthly organic visibility for ANY domain or subdomain — no Search Console access needed: ranking-keyword totals, position distribution (1–3 / 4–10 / 11–20 / 21–100) and estimated traffic value (ETV) per month, plus a trend verdict. The Semrush-style "organic overview / visibility over time" for you or a competitor. Labs call, cached 20 days. Pass location (name or code) for the right market. Grain: month × domain. Joins: domain → Labs/backlinks tools; period → rank_history.',
-      inputSchema: {
-        target: z.string().describe('Domain or subdomain, no scheme (e.g. example.com or blog.example.com)'),
-        location: z.union([z.string(), z.number()]).optional(),
-        languageName: z.string().optional(),
-        months: z.number().int().min(1).max(24).optional().describe('Months of history ending last month (default 12). Sent as date_from; longer windows cost more (billed per monthly item).'),
-      },
-    },
-    async ({ target, location, languageName, months }) => {
-      const client = requireDfs(dfs);
-      const cleaned = dfsHost(target);
-      // Request only the window asked for: with no date_from the endpoint returns 6 months
-      // (so months=24 silently gave 6), and the client default (2020-10-01) bills ~6 years of
-      // monthly items just to slice most of them away.
-      const windowMonths = months ?? 12;
-      const dateFrom = historicalDateFrom(windowMonths);
-      const r = await client.historicalRankOverview(cleaned, location, DEFAULT_LANGUAGE, languageName, dateFrom);
-      const items: any[] = r.tasks[0]?.result?.[0]?.items ?? [];
-      const n = (v: unknown): number => Number(v) || 0;
-      // Guard year/month — a malformed item would emit an "undefined-NaN" period row.
-      const series = items
-        .filter((it: any) => Number.isInteger(it?.year) && Number.isInteger(it?.month))
-        .map((it: any) => {
-          const o = it.metrics?.organic ?? {};
-          const pos_1_3 = n(o.pos_1) + n(o.pos_2_3);
-          const pos_4_10 = n(o.pos_4_10);
-          const pos_11_20 = n(o.pos_11_20);
-          const pos_21_100 =
-            n(o.pos_21_30) + n(o.pos_31_40) + n(o.pos_41_50) + n(o.pos_51_60) +
-            n(o.pos_61_70) + n(o.pos_71_80) + n(o.pos_81_90) + n(o.pos_91_100);
-          return {
-            period: `${it.year}-${String(it.month).padStart(2, '0')}`,
-            keywords: n(o.count) || (pos_1_3 + pos_4_10 + pos_11_20 + pos_21_100),
-            pos_1_3, pos_4_10, pos_11_20, pos_21_100,
-            etv: Math.round(n(o.etv) * 100) / 100,
-            isNew: n(o.is_new), isLost: n(o.is_lost), isUp: n(o.is_up), isDown: n(o.is_down),
-          };
-        })
-        .sort((a, b) => (a.period < b.period ? -1 : 1))
-        .slice(-windowMonths);
-      if (!series.length) {
-        return {
-          content: [{ type: 'text', text: `No historical rank data for ${cleaned} — check the target (bare domain/subdomain) and location.` }],
-          structuredContent: { target: cleaned, requestedMonths: windowMonths, dateFrom, series: [], cached: r.cached, cost: r.cost },
-        };
-      }
-      const first = series[0];
-      const last = series[series.length - 1];
-      const delta = first.etv > 0 ? ((last.etv - first.etv) / first.etv) * 100 : (last.etv > 0 ? 100 : 0);
-      const verdict =
-        Math.abs(delta) < 10
-          ? `flat (ETV ${fmtNum(first.etv)} → ${fmtNum(last.etv)}, ${delta >= 0 ? '+' : ''}${delta.toFixed(0)}% ${first.period} → ${last.period})`
-          : `${delta > 0 ? 'rising' : 'declining'} (ETV ${fmtNum(first.etv)} → ${fmtNum(last.etv)}, ${delta > 0 ? '+' : ''}${delta.toFixed(0)}% ${first.period} → ${last.period})`;
-      // Say so when fewer months came back than were asked for (young domain, or a window
-      // reaching back past DataForSEO's 2020-10 floor) - a short series never passes as the full ask.
-      const shortfall = series.length < windowMonths
-        ? ` (requested ${windowMonths}; DataForSEO returned ${series.length} from ${dateFrom})`
-        : '';
-      const header = `**${cleaned}** — organic visibility, last ${series.length} months${shortfall}. Trend: ${verdict}\n\n` +
-        `| Period | Keywords | Pos 1–3 | Pos 4–10 | Pos 11–20 | Pos 21–100 | New | Lost | ETV |\n|---|---|---|---|---|---|---|---|---|`;
-      const rows = series.map(s =>
-        `| ${s.period} | ${fmtNum(s.keywords)} | ${fmtNum(s.pos_1_3)} | ${fmtNum(s.pos_4_10)} | ${fmtNum(s.pos_11_20)} | ${fmtNum(s.pos_21_100)} | ${fmtNum(s.isNew)} | ${fmtNum(s.isLost)} | ${fmtNum(s.etv)} |`,
-      );
-      const md = capMdRows(header, rows, `\n\n${r.cached ? 'Cached.' : `Live ($${r.cost.toFixed(4)}; billed per monthly item, date_from ${dateFrom}).`}`);
-      return {
-        content: [{ type: 'text', text: md }],
-        structuredContent: { target: cleaned, months: series.length, requestedMonths: windowMonths, dateFrom, verdict, series, cached: r.cached, cost: r.cost },
-      };
-    },
-  );
-
-  server.registerTool(
-    'top_pages',
-    {
-      title: 'Top ranking pages on a domain (DataForSEO Labs)',
-      description: '[Paid: Labs, cheap, cached 20d | Use for: where rival traffic actually lands] The top organic pages of ANY domain or subdomain, ranked by estimated traffic value (ETV): page, ranking-keyword count, ETV and top-3 / top-10 keyword counts. The Semrush-style "top pages" view — works on competitors, no crawl or GSC needed. Labs call, cached 20 days. Pass location for the right market. Grain: page × domain. Joins: domain → Labs tools; URL → pages.url_key on your own property.',
-      inputSchema: {
-        target: z.string().describe('Domain or subdomain, no scheme'),
-        location: z.union([z.string(), z.number()]).optional(),
-        languageCode: z.string().optional(),
-        limit: z.number().int().min(1).max(100).optional(),
-      },
-    },
-    async ({ target, location, languageCode, limit }) => {
-      const client = requireDfs(dfs);
-      const cleaned = dfsHost(target);
-      const r = await client.relevantPages(cleaned, location, languageCode ?? DEFAULT_LANGUAGE, limit ?? 25);
-      const items: any[] = r.tasks[0]?.result?.[0]?.items ?? [];
-      const n = (v: unknown): number => Number(v) || 0;
-      const pages = items
-        .map((it: any) => {
-          const page = it.page_address ?? it.relative_url ?? null;
-          if (!page) return null; // skip malformed rows
-          const o = it.metrics?.organic ?? {};
-          const top3 = n(o.pos_1) + n(o.pos_2_3);
-          return {
-            page,
-            keywords: n(o.count),
-            etv: Math.round(n(o.etv) * 100) / 100,
-            top3,
-            top10: top3 + n(o.pos_4_10),
-          };
-        })
-        .filter((p): p is NonNullable<typeof p> => p != null)
-        .sort((a, b) => b.etv - a.etv);
-      if (!pages.length) {
-        return {
-          content: [{ type: 'text', text: `No ranking pages found for ${cleaned} — check the target and location.` }],
-          structuredContent: { target: cleaned, pages: [], cached: r.cached, cost: r.cost },
-        };
-      }
-      const header = `**${cleaned}** — top ${pages.length} pages by estimated organic traffic\n\n` +
-        `| # | Page | Keywords | ETV | Top 3 | Top 10 |\n|---|---|---|---|---|---|`;
-      const rows = pages.map((p, i) =>
-        `| ${i + 1} | ${String(p.page).replace(/\|/g, '\\|')} | ${fmtNum(p.keywords)} | ${fmtNum(p.etv)} | ${fmtNum(p.top3)} | ${fmtNum(p.top10)} |`,
-      );
-      const md = capMdRows(header, rows, `\n\n${r.cached ? 'Cached.' : `Live ($${r.cost.toFixed(4)}).`}`);
-      return {
-        content: [{ type: 'text', text: md }],
-        structuredContent: { target: cleaned, rowsTotal: pages.length, pages: pages.slice(0, 100), cached: r.cached, cost: r.cost },
-      };
-    },
-  );
-
-  server.registerTool(
-    'ranked_keywords',
-    {
-      title: 'Ranked keywords for a domain / URL / folder (DataForSEO Labs)',
-      description: '[Paid: Labs, cheap, cached 20d - ONE call replaces any keyword loop | Use for: full keyword footprint of a domain/page/folder] Every keyword a target ranks for in Google organic — scope it to a whole domain, a subdomain, ONE page (scope:url with the full URL), or a subfolder (scope:folder + folder:"/blog/"). Returns keyword, position, search volume, ETV, the ranking URL, plus keyword difficulty, search intent and SERP features where the response carries them. Set aioOnly:true to list only keywords whose SERP shows a Google AI Overview (your AIO exposure list; per-keyword CITATION checking uses the SERP tools — see the cookbook). The Semrush-style "keywords a page or site ranks for" view — works on any site. Labs call, cached 20 days. Pass location for the right market. Grain: keyword × target. Joins: keyword → GSC search_analytics.query; URL → pages.url_key.',
-      inputSchema: {
-        target: z.string().describe('Domain, subdomain, or full URL (full URL required for scope:url)'),
-        scope: z.enum(['domain', 'subdomain', 'url', 'folder']).optional(),
-        folder: z.string().optional().describe('Required when scope is folder, e.g. "/blog/"'),
-        location: z.union([z.string(), z.number()]).optional(),
-        languageCode: z.string().optional(),
-        limit: z.number().int().min(1).max(200).optional(),
-        orderBy: z.enum(['etv', 'volume', 'position']).optional(),
-        aioOnly: z.boolean().optional().describe('Only keywords whose SERP shows an AI Overview (exposure, not citation)'),
-      },
-    },
-    async ({ target, scope, folder, location, languageCode, limit, orderBy, aioOnly }) => {
-      const client = requireDfs(dfs);
-      const mode = scope ?? 'domain';
-      if (mode === 'folder' && !folder?.trim()) throw new Error('scope:"folder" requires the `folder` input (e.g. "/blog/").');
-      const dfsTarget = mode === 'url'
-        ? (/^https?:\/\//i.test(target) ? target : `https://${target}`)
-        : dfsHost(target);
-      const order = orderBy === 'volume'
-        ? 'keyword_data.keyword_info.search_volume,desc'
-        : orderBy === 'position'
-          ? 'ranked_serp_element.serp_item.rank_absolute,asc'
-          : 'ranked_serp_element.serp_item.etv,desc';
-      const folderPath = mode === 'folder'
-        ? (folder!.trim().startsWith('/') ? folder!.trim() : '/' + folder!.trim())
-        : null;
-      // aioOnly: only rows where the target's ranked element is an AI Overview citation —
-      // expressed as a serp_item.type filter (item_types is invalid on this Labs endpoint).
-      const clauses: unknown[] = [];
-      if (folderPath) clauses.push(['ranked_serp_element.serp_item.relative_url', 'like', `${folderPath}%`]);
-      // Exposure, not citation: Labs ranked_keywords carries no citation fields (verified via
-      // available_filters) — this filters to keywords whose SERP CONTAINS an AI Overview.
-      // Per-keyword citation checking (are WE a reference?) is the SERP-advanced recipe.
-      if (aioOnly) clauses.push(['keyword_data.serp_info.serp_item_types', 'has', 'ai_overview']);
-      const filters = clauses.length === 0 ? undefined : clauses.length === 1 ? clauses : [clauses[0], 'and', clauses[1]];
-      const r = await client.rankedKeywords(dfsTarget, location, languageCode ?? DEFAULT_LANGUAGE, limit ?? 50, order, filters as unknown[] | undefined);
-      const result = r.tasks[0]?.result?.[0] ?? {};
-      const items: any[] = result.items ?? [];
-      const kws = items
-        .map((it: any) => {
-          const kd = it.keyword_data ?? {};
-          const serp = it.ranked_serp_element?.serp_item ?? {};
-          if (!kd.keyword) return null; // skip malformed rows
-          const serpFeatures: string[] | null = Array.isArray(kd.serp_info?.serp_item_types) ? kd.serp_info.serp_item_types : null;
-          return {
-            keyword: kd.keyword as string,
-            position: Number(serp.rank_absolute) || null,
-            searchVolume: kd.keyword_info?.search_volume ?? null,
-            etv: serp.etv != null ? Math.round(Number(serp.etv) * 100) / 100 : null,
-            url: serp.relative_url ?? serp.url ?? null,
-            // Fields we already pay for but previously dropped (plan/data-utilisation.md Part 2 §4):
-            keywordDifficulty: kd.keyword_properties?.keyword_difficulty ?? null,
-            intent: kd.search_intent_info?.main_intent ?? null,
-            serpFeatures,
-            isFeaturedSnippet: serp.is_featured_snippet === true ? true : null,
-          };
-        })
-        .filter((k): k is NonNullable<typeof k> => k != null);
-      const scopeLabel = folderPath ? `${dfsTarget}${folderPath}*` : dfsTarget;
-      if (!kws.length) {
-        return {
-          content: [{ type: 'text', text: aioOnly
-            ? `No AI Overview exposure for ${scopeLabel} (scope: ${mode}) — none of the target's ranked keywords shows an AI Overview in this market.`
-            : `No ranked keywords found for ${scopeLabel} (scope: ${mode}) — check the target, scope and location.` }],
-          structuredContent: { target: dfsTarget, scope: mode, aioOnly: aioOnly ?? false, keywords: [], cached: r.cached, cost: r.cost },
-        };
-      }
-      const totalCount = Number(result.total_count) || kws.length;
-      const sumEtv = kws.reduce((s, k) => s + (k.etv ?? 0), 0);
-      // Optional columns — only where the response actually carries the field (older cache entries won't).
-      const hasKd = kws.some(k => k.keywordDifficulty != null);
-      const hasIntent = kws.some(k => k.intent != null);
-      const hasFeatures = kws.some(k => (k.serpFeatures && k.serpFeatures.length) || k.isFeaturedSnippet);
-      const optHead = `${hasKd ? ' KD |' : ''}${hasIntent ? ' Intent |' : ''}${hasFeatures ? ' SERP features |' : ''}`;
-      const optSep = `${hasKd ? '---|' : ''}${hasIntent ? '---|' : ''}${hasFeatures ? '---|' : ''}`;
-      const header = `**${scopeLabel}** (scope: ${mode})${aioOnly ? ' — AI Overview SERPs only' : ''} — ${kws.length} of ${fmtNum(totalCount)} ${aioOnly ? 'AIO-exposed keywords' : 'ranked keywords'}, ordered by ${orderBy ?? 'etv'}\n\n` +
-        `| Keyword | Pos | Volume | ETV |${optHead} URL |\n|---|---|---|---|${optSep}---|`;
-      const featCell = (k: typeof kws[number]): string => {
-        const f = (k.serpFeatures ?? []).map(t => (t === 'featured_snippet' && k.isFeaturedSnippet ? 'featured_snippet (owned)' : t));
-        if (k.isFeaturedSnippet && !f.some(t => t.startsWith('featured_snippet'))) f.unshift('featured_snippet (owned)');
-        return f.length ? f.join(', ') : '—';
-      };
-      const rows = kws.map(k =>
-        `| ${k.keyword.replace(/\|/g, '\\|')} | ${k.position ?? '—'} | ${fmtNum(k.searchVolume)} | ${fmtNum(k.etv)} |` +
-        `${hasKd ? ` ${k.keywordDifficulty ?? '—'} |` : ''}${hasIntent ? ` ${k.intent ?? '—'} |` : ''}${hasFeatures ? ` ${featCell(k).replace(/\|/g, '\\|')} |` : ''}` +
-        ` ${k.url ? String(k.url).replace(/\|/g, '\\|') : '—'} |`,
-      );
-      const md = capMdRows(header, rows,
-        `\n\nTotals: ${fmtNum(totalCount)} keywords ${aioOnly ? 'whose SERP shows an AI Overview (exposure, not citation)' : 'ranked'}, listed rows sum ${fmtNum(sumEtv)} ETV. ${r.cached ? 'Cached.' : `Live ($${r.cost.toFixed(4)}).`}`);
-      return {
-        content: [{ type: 'text', text: md }],
-        structuredContent: { target: dfsTarget, scope: mode, aioOnly: aioOnly ?? false, totalCount, rowsTotal: kws.length, keywords: kws.slice(0, 100), cached: r.cached, cost: r.cost },
-      };
-    },
-  );
-
-  // serp_features — the SERP-feature footprint: "how much of my market do AI Overviews,
-  // snippets and other features sit on, and do I already rank page 1 there?" One cached
-  // Labs pull, volume-weighted; persisted so the dashboard can chart it.
-  server.registerTool(
-    'serp_features',
-    {
-      title: 'SERP-feature footprint (AI Overviews, snippets, PAA)',
-      description: '[Paid: Labs, ONE cached call | Use for: AI-Overview / zero-click exposure with real numbers] How much of your keyword universe carries each SERP feature - AI Overviews, featured snippets, People Also Ask, shopping, video - weighted by search volume, and how much of that volume you already rank page 1 for. ONE DataForSEO Labs ranked_keywords pull (top-volume sample, cached 20 days, never per-keyword SERP loops). Answers "how exposed are we to AI Overviews / zero-click?" with real numbers. Deterministic: feature PRESENCE (from the Labs index). Judgement proxy: page-1 rank stands in for feature ownership - true ownership needs per-keyword SERP calls (see ranked_keywords aioOnly + the cookbook). Persists to the property DB so the dashboard charts it.',
-      inputSchema: {
-        siteUrl: z.string().describe('The GSC property - results persist to its database'),
-        target: z.string().optional().describe('Override the analysed domain (defaults to the property host)'),
-        location: z.union([z.string(), z.number()]).optional(),
-        languageCode: z.string().optional(),
-        limit: z.number().int().min(100).max(1000).optional().describe('Keyword sample size (default 1000, ordered by volume)'),
-      },
-    },
-    async ({ siteUrl, target, location, languageCode, limit }) => {
-      const client = requireDfs(dfs);
-      const domain = dfsHost(target ?? siteUrl);
-      const r = await client.rankedKeywords(domain, location, languageCode ?? DEFAULT_LANGUAGE, limit ?? 1000, 'keyword_data.keyword_info.search_volume,desc');
-      const items: any[] = r.tasks[0]?.result?.[0]?.items ?? [];
-      const sample = items.map((it: any) => {
-        const kd = it.keyword_data ?? {};
-        const serp = it.ranked_serp_element?.serp_item ?? {};
-        return {
-          keyword: kd.keyword as string,
-          position: Number(serp.rank_absolute) || null,
-          searchVolume: kd.keyword_info?.search_volume ?? null,
-          serpFeatures: Array.isArray(kd.serp_info?.serp_item_types) ? kd.serp_info.serp_item_types as string[] : null,
-        };
-      }).filter(s => s.keyword);
-      const fp = computeSerpFootprint(domain, typeof location === 'string' ? location : location != null ? String(location) : null, sample);
-      const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
-      try { persistSerpFootprint(db.db, fp); } finally { db.close(); }
-      const lines = fp.features.map(f =>
-        `| ${f.label} | ${f.volumeSharePct}% | ${fmtNum(f.volume)} | ${f.keywords} | ${f.page1SharePct}% |`);
-      const md = `**SERP-feature footprint for ${domain}** - sample: top ${fp.sampleKeywords} keywords by volume (${fmtNum(fp.sampleVolume)} searches/mo)\n\n` +
-        `| Feature | % of sample volume | Volume on feature SERPs | Keywords | You rank page 1 (share of that volume) |\n|---|---|---|---|---|\n` +
-        lines.join('\n') +
-        `\n\nPresence is deterministic (Labs index); "page 1" is an ownership PROXY - per-keyword citation/ownership checks are the SERP tools. ${r.cached ? 'Cached.' : `Live ($${r.cost.toFixed(4)}).`} Persisted for the dashboard.` +
-        browserLink(siteUrl);
-      return {
-        content: [{ type: 'text', text: md }],
-        // cost/cached belong in JSON too, not only the prose - same facts in both surfaces.
-        structuredContent: { ...(fp as unknown as Record<string, unknown>), cost: r.cost, cached: r.cached },
-      };
-    },
-  );
-
-  // market_sizing — Market Sizing and Prioritisation: the organic market read that opens
-  // an engagement. Top-down Labs pulls only (client + <=4 rivals), cached, ~$0.65 worst case.
-  server.registerTool(
-    'market_sizing',
-    {
-      title: 'Market Sizing and Prioritisation (share of voice vs competitors)',
-      description: '[Paid: Labs, one cached call per domain (<=5) | Use for: sizing the organic market and who owns it] Build the organic market map: your domain plus up to 4 named competitors, ONE cached Labs ranked_keywords pull each, unioned into a keyword universe. Returns total monthly demand (deduplicated search volume), each domain\'s share of voice (ETV share) overall and per topic cluster, and the leader per cluster - the "here is the market, here is who owns it, here is where to attack" table that opens an engagement. Deterministic: the competitor set and ranked keywords (Labs index). Judgement: ETV is DataForSEO\'s CTR-curve traffic estimate - the SoV percentages inherit that. Persists to the property DB for the dashboard chart. Get the competitor set from competitors_domain first if unsure.',
-      inputSchema: {
-        siteUrl: z.string(),
-        competitors: z.array(z.string()).min(1).max(4).describe('Competitor domains, e.g. ["rival.com", "other.co.uk"]'),
-        location: z.union([z.string(), z.number()]).optional(),
-        languageCode: z.string().optional(),
-        limitPerDomain: z.number().int().min(100).max(1000).optional().describe('Keywords sampled per domain (default 1000, by volume)'),
-      },
-    },
-    async ({ siteUrl, competitors, location, languageCode, limitPerDomain }) => {
-      const client = requireDfs(dfs);
-      const own = dfsHost(siteUrl);
-      const domains = [own, ...competitors.map(c => dfsHost(c)).filter(c => c && c !== own)];
-      const inputs = [];
-      let cost = 0; let cachedAll = true;
-      for (const domain of domains) { // sequential - the client serialises anyway
-        const r = await client.rankedKeywords(domain, location, languageCode ?? DEFAULT_LANGUAGE, limitPerDomain ?? 1000, 'keyword_data.keyword_info.search_volume,desc');
-        cost += r.cost; cachedAll = cachedAll && r.cached;
-        const items: any[] = r.tasks[0]?.result?.[0]?.items ?? [];
-        inputs.push({
-          domain,
-          keywords: items.map((it: any) => ({
-            keyword: it.keyword_data?.keyword as string,
-            volume: it.keyword_data?.keyword_info?.search_volume ?? null,
-            position: Number(it.ranked_serp_element?.serp_item?.rank_absolute) || null,
-            etv: it.ranked_serp_element?.serp_item?.etv != null ? Number(it.ranked_serp_element.serp_item.etv) : null,
-          })).filter((k: any) => k.keyword),
-        });
-      }
-      const m = computeMarketSizing(inputs, typeof location === 'string' ? location : location != null ? String(location) : null);
-      const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
-      try { persistMarketSizing(db.db, m); } finally { db.close(); }
-      const sovLine = m.domains.map(d => `${d === own ? '**' + d + '**' : d} ${m.sovByDomain[d]}%`).join(' · ');
-      const clusterRows = m.clusters.map(c =>
-        `| ${c.head.replace(/\|/g, '\\|')} | ${fmtNum(c.volume)} | ${c.keywords} | ${c.leader === own ? '**you**' : (c.leader ?? '-')} | ${m.domains.map(d => `${c.sov[d]}%`).join(' / ')} |`);
-      const md = `**Market Sizing and Prioritisation** - ${m.domains.join(' vs ')}\n\n` +
-        `Universe: ${fmtNum(m.universeKeywords)} unique keywords, **${fmtNum(m.universeVolume)} searches/mo** total demand.\n` +
-        `Share of voice (ETV share): ${sovLine}\n\n` +
-        `| Topic cluster | Volume/mo | Keywords | Leader | SoV (${m.domains.join(' / ')}) |\n|---|---|---|---|---|\n` +
-        clusterRows.join('\n') +
-        `\n\nD: competitor set + ranked keywords (Labs index). N: ETV is a CTR-curve estimate - SoV inherits it. ${cachedAll ? 'All cached.' : `Live cost $${cost.toFixed(4)}.`} Persisted for the dashboard.` +
-        browserLink(siteUrl);
-      return {
-        content: [{ type: 'text', text: md }],
-        // cost/cached belong in JSON too, not only the prose - same facts in both surfaces.
-        structuredContent: { ...(m as unknown as Record<string, unknown>), cost, cached: cachedAll },
-      };
-    },
-  );
-
-  server.registerTool(
-    'topic_gaps',
-    {
-      title: 'Topic gaps — what to cover to be expert in your space (Labs + GSC)',
-      description: '[Paid: Labs, <=4 cached calls | Use for: topic-level gap plan vs competitors] What related topics should this site cover to be seen as expert in its space? Pulls competitor keyword footprints (DataForSEO Labs ranked_keywords, ≤4 bounded + 20-day-cached calls), subtracts everything YOU already surface for (every GSC query with impressions) or already have a page about (title/H1/slug near-match), clusters the surviving gap keywords lexically, and scores each topic by summed search volume × how many competitors rank there. Each topic names the owning competitor with an example URL, your nearest existing page to build from, and (when resolve_entities has run) whether it sits beside entities you already cover. Pass competitors explicitly (max 3) or let it derive the top 2 from ranking overlap. Needs synced GSC data + DataForSEO credentials.',
-      inputSchema: {
-        siteUrl: z.string(),
-        competitors: z.array(z.string()).max(3).optional().describe('Competitor domains (max 3, e.g. ["rival.com"]). Omitted → derived via competitors_domain'),
-        location: z.union([z.string(), z.number()]).optional(),
-        limit: z.number().int().min(1).max(50).optional().describe('Topics to return (default 15)'),
-      },
-    },
-    async ({ siteUrl, competitors, location, limit }) => {
-      if (!dfs) {
-        return {
-          content: [{ type: 'text', text: 'topic_gaps needs DataForSEO credentials (set DATAFORSEO_USERNAME / DATAFORSEO_PASSWORD in your MCP config). The rest of the audit works without them — this tool compares competitor keyword footprints, which requires DataForSEO Labs.' }],
-          structuredContent: { error: 'no_dataforseo_credentials' },
-        };
-      }
-      const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
-      try {
-        const gscRows = (db.db.prepare('SELECT COUNT(*) n FROM search_analytics').get() as { n: number }).n;
-        if (!gscRows) {
-          return {
-            content: [{ type: 'text', text: `No synced Search Console data for ${siteUrl} — run refresh_property (or sync_gsc) first. topic_gaps subtracts your real GSC footprint; without it every competitor keyword would look like a gap.` }],
-            structuredContent: { error: 'no_gsc_data', siteUrl },
-          };
-        }
-        const loc = location ?? db.getDfsLocation(siteUrl) ?? undefined;
-        const ourHost = dfsHost(siteUrl);
-        let totalCost = 0, liveCalls = 0, cachedCalls = 0;
-        const tally = (r: { cached: boolean; cost: number }): void => { totalCost += r.cost; r.cached ? cachedCalls++ : liveCalls++; };
-
-        // Competitors: explicit (≤3) or derived top-2 by keyword overlap. Total Labs
-        // budget stays ≤4 calls: at most 1 discovery + at most 3 footprint pulls.
-        let comps = [...new Set((competitors ?? []).map(dfsHost).filter(c => c && c !== ourHost))].slice(0, 3);
-        let derived = false;
-        if (!comps.length) {
-          const r = await dfs.competitorsDomain(ourHost, loc, DEFAULT_LANGUAGE, 10);
-          tally(r);
-          const items: any[] = r.tasks[0]?.result?.[0]?.items ?? [];
-          comps = items
-            .map((it: any) => String(it.domain ?? '').replace(/^www\./, ''))
-            .filter(d => d && d !== ourHost)
-            .slice(0, 2);
-          derived = true;
-          if (!comps.length) {
-            return {
-              content: [{ type: 'text', text: `No competitor domains derivable for ${ourHost} in this market — pass competitors explicitly (e.g. competitors:["rival.com"]).` }],
-              structuredContent: { error: 'no_competitors', target: ourHost, cost: totalCost },
-            };
-          }
-        }
-
-        // One ranked_keywords pull per competitor (top 1000 rows by ETV — their money keywords).
-        const rows: GapKeywordRow[] = [];
-        const perCompetitor: Record<string, number> = {};
-        for (const c of comps) {
-          const r = await dfs.rankedKeywords(c, loc, DEFAULT_LANGUAGE, 1000, 'ranked_serp_element.serp_item.etv,desc');
-          tally(r);
-          const items: any[] = r.tasks[0]?.result?.[0]?.items ?? [];
-          for (const it of items) {
-            const kd = it.keyword_data ?? {};
-            const serp = it.ranked_serp_element?.serp_item ?? {};
-            if (!kd.keyword) continue;
-            rows.push({
-              keyword: String(kd.keyword),
-              searchVolume: kd.keyword_info?.search_volume ?? null,
-              etv: serp.etv != null ? Number(serp.etv) : null,
-              position: Number(serp.rank_absolute) || null,
-              url: serp.url ?? (serp.relative_url ? `https://${c}${serp.relative_url}` : null),
-              competitor: c,
-            });
-          }
-          perCompetitor[c] = items.length;
-        }
-
-        const res = computeTopicGaps(db.db, rows, { limit: limit ?? 15 });
-        const costLine = `Labs calls: ${liveCalls} live ($${totalCost.toFixed(4)}) + ${cachedCalls} cached${derived ? ' (competitors derived via competitors_domain)' : ''}.`;
-        if (!res.clusters.length) {
-          return {
-            content: [{ type: 'text', text: `No topic gaps found: ${res.competitorKeywords} competitor keywords (${comps.join(', ')}) all fell inside your existing footprint (${res.ourQueryCount} GSC queries + page titles/H1s). Either you genuinely cover the space, or try different competitors. ${costLine}` }],
-            structuredContent: { target: ourHost, competitors: comps, clustersTotal: 0, clusters: [], competitorKeywords: res.competitorKeywords, ourQueryCount: res.ourQueryCount, afterSubtraction: res.afterSubtraction, cost: totalCost, liveCalls, cachedCalls },
-          };
-        }
-
-        const fmtVol = (v: number): string => v.toLocaleString('en-US');
-        const sections = res.clusters.map((c, i) => {
-          const shown = c.keywords.slice(0, 6);
-          const more = c.keywords.length - shown.length;
-          const kwLine = shown.map(k => `\`${k.keyword}\`${k.searchVolume ? ` (${fmtVol(k.searchVolume)})` : ''}`).join(', ') + (more > 0 ? ` — +${more} more keywords in this cluster` : '');
-          return [
-            `### ${i + 1}. ${c.headTerm} — ~${fmtVol(c.totalVolume)}/mo · ${c.competitorCoverage} competitor${c.competitorCoverage === 1 ? '' : 's'} · owned by ${c.ownedBy}`,
-            `- Why: ${c.why}`,
-            `- Keywords: ${kwLine}`,
-            c.exampleUrl ? `- Competitor example: ${c.exampleUrl}` : null,
-            c.nearestExistingPage ? `- Your nearest page: ${c.nearestExistingPage.title ?? '(untitled)'} — ${c.nearestExistingPage.url}` : `- Your nearest page: none found — this is greenfield for you`,
-            c.entityNote ? `- Entity graph: ${c.entityNote}` : null,
-          ].filter(Boolean).join('\n');
-        });
-        const md = `## Topic gaps for ${ourHost} vs ${comps.join(' + ')}\n\n` +
-          `${res.competitorKeywords} distinct competitor keywords → ${res.afterSubtraction} survive subtraction of your footprint (${fmtVol(res.ourQueryCount)} GSC queries + page titles/H1s) → top ${res.clusters.length} topic clusters by volume × competitor coverage.\n\n` +
-          sections.join('\n\n') +
-          `\n\n_${costLine} Competitor rows: ${comps.map(c => `${c} ${perCompetitor[c] ?? 0}`).join(', ')}._`;
-
-        // structuredContent: keyword lists capped at 10 per cluster with explicit totals
-        // (host ~60k model-facing ceiling) — the counts always state the true size.
-        const scClusters = res.clusters.map(c => ({
-          ...c,
-          keywords: c.keywords.slice(0, 10),
-          keywordsTotal: c.keywords.length,
-        }));
-        return {
-          content: [{ type: 'text', text: md }],
-          structuredContent: {
-            target: ourHost, competitors: comps, derivedCompetitors: derived,
-            clustersTotal: res.clusters.length, clusters: scClusters,
-            competitorKeywords: res.competitorKeywords, ourQueryCount: res.ourQueryCount, afterSubtraction: res.afterSubtraction,
-            cost: totalCost, liveCalls, cachedCalls,
-          },
-        };
-      } finally { db.close(); }
-    },
-  );
 
   // ── Dashboard (MCP App UI — houtini design + ECharts) ───────────────────
   registerAppTool(
@@ -2487,127 +1599,6 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     },
   );
 
-  // pull_backlinks — on-demand backlink profile (DataForSEO, paid + 20-day cached). Powers
-  // backlinks-to-404 (the big quick win), top-linked pages, and true-orphan detection.
-  server.registerTool(
-    'pull_backlinks',
-    {
-      title: 'Pull backlink profile (DataForSEO)',
-      description: '[Paid: Backlinks subscription (separate - 40204 = not activated), cached 20d | Use for: authority + dead-backlink recovery] Fetch the property’s backlink profile (overall summary — total backlinks, referring domains, Domain Rank, broken backlinks/pages, nofollow share — plus per-page backlink/referring-domain counts) into page_backlinks, and resolve each backlinked page’s live HTTP status so run_audit can flag external backlinks pointing to dead (4xx/5xx) pages. Also collects the profile behind the dashboard\'s Links tab (#47): referring domains (live and lost, with rank, spam score, first seen) into referring_domains, anchor texts classified branded / keyword / url / generic / empty into backlink_anchors, and 12 months of daily new/lost history into backlink_history — three more cheap Backlinks calls, each reported separately if it fails (profile:false skips them). Paid DataForSEO calls, 20-day cached, on-demand only. Async job — poll check_sync_status. Grain: one row per backlinked URL (page_backlinks), per domain / anchor per pull (snapshot_at), per day (history). Joins: url_key → pages/GSC; domain → Labs tools.',
-      inputSchema: {
-        siteUrl: z.string(),
-        limit: z.number().int().min(1).max(1000).optional().describe('Backlinked pages to store (default 1000)'),
-        statusLimit: z.number().int().min(0).max(1000).optional().describe('Backlinked pages to live-check when the crawl has no status for them (default 150)'),
-        profile: z.boolean().optional().describe('Also collect referring domains, anchors and history (default true)'),
-        domainLimit: z.number().int().min(10).max(1000).optional().describe('Referring domains to store per pull (default 1000, best rank first)'),
-        anchorLimit: z.number().int().min(10).max(1000).optional().describe('Anchors to store per pull (default 500, most backlinks first)'),
-        historyMonths: z.number().int().min(1).max(36).optional().describe('Months of daily history to pull (default 12)'),
-      },
-    },
-    async ({ siteUrl, limit, statusLimit, profile, domainLimit, anchorLimit, historyMonths }) => {
-      requireDfs(backlinks); // fail fast, before queueing
-      const jobId = startFor(siteUrl, 'backlinks', { siteUrl, limit, statusLimit, profile, domainLimit, anchorLimit, historyMonths });
-      return jobStarted({ jobId, status: 'running', siteUrl }, `Backlink pull started for ${siteUrl} (job ${jobId}). Poll check_sync_status, then run_audit for backlinks-to-404.`);
-    },
-  );
-
-  // link_intersect — "what links do our competitors have that we don't?". One DataForSEO
-  // backlinks/domain_intersection call (paid, ~$0.024, 20-day cached), aggregated + prioritised
-  // client-side. Default sort = the link-builder's: followed links first, then domain trust.
-  server.registerTool(
-    'link_intersect',
-    {
-      title: 'Link intersect — links your competitors have that you don’t (DataForSEO + Majestic)',
-      description: '[Paid: Backlinks subscription (separate - 40204 = not activated), one cached call ~$0.024 | Use for: prospect list for link outreach] Answers "what links do our competitors have that we don’t?" - and for a SINGLE company, "what links does company X have that we don’t?" (pass competitors:["companyx.com"]). One DataForSEO domain_intersection call over the target set (excluding your domain), aggregated per prospect domain: how many of the targets it links to, its DataForSEO domain trust (rank 0-1000), worst spam score, whether the link is followed, the anchor/link-type mix. Default sort is the link-builder’s view - FOLLOWED links first, then domain trust - with spam filtered out. When MAJESTIC_API_KEY is set, prospects are enriched with Majestic Trust Flow + Topical Trust Flow and RE-SORTED by Trust Flow (the directory-killer: a DataForSEO rank-227 domain is often Trust Flow 0). Results persist to link_prospects. Pass targets explicitly (max 20) or let it derive the top few via competitors_domain. Grain: one row per prospect domain. Join: domain.',
-      inputSchema: {
-        siteUrl: z.string(),
-        competitors: z.array(z.string()).max(20).optional().describe('Target domains - your competitors, or a single company (max 20, e.g. ["rival.com"]). Omitted → top few derived via competitors_domain'),
-        location: z.union([z.string(), z.number()]).optional().describe('For competitor derivation only (e.g. "United Kingdom")'),
-        poolLimit: z.number().int().min(10).max(1000).optional().describe('Prospect rows to pull from DataForSEO (default 300)'),
-        minIntersections: z.number().int().min(1).max(20).optional().describe('Keep domains linking to >= this many targets (default 1)'),
-        maxSpamScore: z.number().int().min(0).max(100).optional().describe('Drop domains whose worst spam score exceeds this (default 30)'),
-        dofollowOnly: z.boolean().optional().describe('Keep only domains with a followed link (default false)'),
-        topN: z.number().int().min(1).max(1000).optional().describe('Prospects to return + persist (default 100)'),
-        sort: z.enum(['trust', 'intersections']).optional().describe('trust (default: followed-first, then domain/Trust Flow) | intersections (broadest overlap first)'),
-        enrichLimit: z.number().int().min(1).max(500).optional().describe('Max prospects sent to Majestic for Trust Flow (default 100; batched by 100, ~1 unit each)'),
-      },
-    },
-    async ({ siteUrl, competitors, location, poolLimit, minIntersections, maxSpamScore, dofollowOnly, topN, sort, enrichLimit }) => {
-      const li = requireDfs(linkIntersect);
-      const ownHost = dfsHost(siteUrl);
-
-      // Prior-run awareness: if this property already has link_prospects, frame the run as an
-      // update (the previous set ages as competitors keep earning links). Read-only, cheap.
-      let priorNote = '';
-      {
-        const d = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
-        try {
-          const prior = d.db.prepare('SELECT COUNT(*) n, MAX(fetched_at) t FROM link_prospects').get() as { n: number; t: string | null };
-          if (prior?.n > 0 && prior.t) {
-            const ageDays = Math.floor((Date.now() - Date.parse(prior.t)) / 86400000);
-            priorNote = ` _(updating a prior intersect of ${prior.n} prospects from ${prior.t.slice(0, 10)}, ${ageDays}d ago)_`;
-          }
-        } catch { /* pre-link_intersect DB */ } finally { d.close(); }
-      }
-
-      // Competitors: explicit (deduped, minus self) or derived top few by keyword overlap.
-      let comps = [...new Set((competitors ?? []).map(dfsHost).filter(c => c && c !== ownHost))];
-      let derived = false;
-      let deriveCost = 0;
-      if (!comps.length) {
-        const client = requireDfs(dfs);
-        const loc = location ?? (() => { const d = new AuditDatabase(dbPathFor(dataDir(), siteUrl)); try { return d.getDfsLocation(siteUrl) ?? undefined; } finally { d.close(); } })();
-        const r = await client.competitorsDomain(ownHost, loc, DEFAULT_LANGUAGE, 10);
-        deriveCost = r.cost;
-        comps = ((r.tasks[0]?.result?.[0]?.items ?? []) as any[])
-          .map(it => dfsHost(String(it.domain ?? '')))
-          .filter(d => d && d !== ownHost)
-          .slice(0, 5);
-        derived = true;
-        if (!comps.length) {
-          return {
-            content: [{ type: 'text', text: `No competitor domains derivable for ${ownHost} - pass competitors explicitly (e.g. competitors:["rival.com"]).` }],
-            structuredContent: { error: 'no_competitors', target: ownHost },
-          };
-        }
-      }
-
-      const result = await li.run(siteUrl, {
-        competitors: comps,
-        ...(poolLimit != null ? { poolLimit } : {}),
-        ...(minIntersections != null ? { minIntersections } : {}),
-        ...(maxSpamScore != null ? { maxSpamScore } : {}),
-        ...(dofollowOnly != null ? { dofollowOnly } : {}),
-        ...(topN != null ? { topN } : {}),
-        ...(sort ? { sort } : {}),
-        ...(enrichLimit != null ? { enrichLimit } : {}),
-      }, majestic);
-
-      const enriched = result.majesticEnriched > 0;
-      // With Majestic: show Trust Flow (0-100) + the domain's top topic. Without: DataForSEO domain rank.
-      const trustHead = enriched ? 'Trust Flow' : 'Domain trust';
-      const rows = result.prospects.map(p => {
-        const trust = enriched ? (p.trustFlow ?? '–') : (p.domainTrust ?? '–');
-        const topic = enriched ? ` | ${p.topicalTrustFlow?.[0]?.topic ?? '–'}` : '';
-        return `| ${p.domain} | ${p.intersections}/${result.competitors.length} | ${trust} | ${p.dofollow ? 'follow' : 'nofollow'} | ${p.spamScore ?? '–'} | ${fmtNum(p.backlinks)}${topic} |`;
-      });
-      const totalCost = result.cost + deriveCost;
-      const topicCol = enriched ? ' | Top topic (Topical Trust Flow)' : '';
-      const topicSep = enriched ? '|---' : '';
-      const header = `**Link intersect for ${result.ownDomain}** vs ${result.competitors.join(', ')}${derived ? ' _(competitors derived)_' : ''}${priorNote}\n\n` +
-        `${fmtNum(result.totalCount)} domains link to the target set; pulled ${result.poolFetched}, ${result.kept} passed filters, showing top ${result.prospects.length}. Sorted by ${result.sortedBy} (followed-first).` +
-        `${enriched ? ` Majestic-enriched ${result.majesticEnriched}${result.enrichCapped ? ` (top by domain rank; ${result.kept - result.majesticEnriched} more qualified but weren’t enriched — raise enrichLimit or topN)` : ''}.` : ''}\n\n` +
-        `| Prospect domain | Links to | ${trustHead} | Link | Spam | Backlinks${topicCol} |\n|---|---|---|---|---|---${topicSep} |`;
-      const footer = `\n\n${enriched ? 'Trust Flow = Majestic (0-100); Topical Trust Flow shows whether that authority is on-topic.' : `Domain trust = DataForSEO domain rank (0-1000). Set MAJESTIC_API_KEY to re-sort by Trust Flow + Topical Trust Flow (the directory-killer signal).`} ` +
-        `${result.cached ? 'DataForSEO cached.' : `Live cost $${totalCost.toFixed(4)}.`} Persisted to link_prospects.` + browserLink(siteUrl);
-      return {
-        content: [{ type: 'text', text: capMdRows(header, rows, footer) }],
-        // Headline cost in JSON = the text's totalCost (intersect + any derive call); keep the breakdown.
-        structuredContent: { ...(result as unknown as Record<string, unknown>), cost: totalCost, intersectCost: result.cost, deriveCost },
-      };
-    },
-  );
-
   server.registerTool(
     'resolve_entities',
     {
@@ -2666,20 +1657,6 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     async () => ({
       contents: [{ uri: SYNC_PROGRESS_URI, mimeType: RESOURCE_MIME_TYPE, text: await readFile(path.join(__dirname, 'src', 'ui', 'sync-progress.html'), 'utf-8') }],
     }),
-  );
-
-  server.registerTool(
-    'track_ranks',
-    {
-      title: 'Track ranks over time (DataForSEO)',
-      description: 'Ingest the DataForSEO over-time sequence (monthly rank distribution + ETV) into rank_history, so rank charts have a real time axis reconciled with GSC. DataForSEO Labs call — cached 20 days. Pass location once (e.g. "Australia", "United Kingdom") — it is saved per property. Async job.',
-      inputSchema: { siteUrl: z.string(), location: z.union([z.string(), z.number()]).optional() },
-    },
-    async ({ siteUrl, location }) => {
-      requireDfs(rankTracker); // fail fast, before queueing
-      const jobId = startFor(siteUrl, 'rank_history', { siteUrl, location });
-      return jobStarted({ jobId, status: 'running', siteUrl }, `Rank-history ingest started for ${siteUrl} (job ${jobId}). Poll check_sync_status.`);
-    },
   );
 
   // sync_crux — field Core Web Vitals from the Chrome UX Report API (#55 item 4). Free (Google API

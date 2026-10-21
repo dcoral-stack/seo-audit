@@ -1,8 +1,8 @@
 {
   "name": "seocoral-audit",
-  "version": "0.16.2-es.1",
+  "version": "0.16.2-es.2",
   "mcpName": "io.github.houtini-ai/seo-audit-console",
-  "description": "Fork en español de SEO Audit Console (houtini-ai/seo-audit): auditoría SEO técnica con Search Console + crawl + DataForSEO dentro de Claude, adaptada a webs en español (acentos, stopwords, plurales, modelos multilingües, mercado España por defecto).",
+  "description": "Fork en español de SEO Audit Console (houtini-ai/seo-audit): auditoría SEO técnica con Search Console + crawl + Google Keyword Planner dentro de Claude, adaptada a webs en español. Sin servicios de pago.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -51,7 +51,7 @@
     "build:mcpb": "npm run build && node scripts/build-mcpb.mjs",
     "dev": "tsc -p tsconfig.server.json --watch",
     "start": "node dist/index.js",
-    "test": "npm run build:server && npm run smoke && npm run probe:jobs && npm run probe:runner && npm run probe:fts && npm run probe:review-0-15 && npm run probe:summary && npm run probe:gsc-rows && npm run probe:brand && npm run probe:ratelimit && npm run probe:signals && npm run probe:redirects && npm run probe:ecommerce && npm run probe:gsc-storage && npm run probe:hreflang && npm run probe:assets && npm run probe:soft404 && npm run probe:render-divergence && npm run probe:dashboard-rules && npm run probe:dashboard-container && npm run probe:audit-size && npm run probe:priority-calibration && npm run probe:a11y-rollup && npm run probe:data-storage && npm run probe:runner-stopped && npm run probe:reply-latency && npm run probe:regrouped-deltas && npm run probe:spanish && npm run probe:google-ads",
+    "test": "npm run build:server && npm run smoke && npm run probe:jobs && npm run probe:runner && npm run probe:fts && npm run probe:review-0-15 && npm run probe:summary && npm run probe:gsc-rows && npm run probe:brand && npm run probe:ratelimit && npm run probe:signals && npm run probe:redirects && npm run probe:ecommerce && npm run probe:gsc-storage && npm run probe:hreflang && npm run probe:assets && npm run probe:soft404 && npm run probe:render-divergence && npm run probe:dashboard-rules && npm run probe:dashboard-container && npm run probe:audit-size && npm run probe:priority-calibration && npm run probe:a11y-rollup && npm run probe:data-storage && npm run probe:runner-stopped && npm run probe:reply-latency && npm run probe:regrouped-deltas && npm run probe:spanish && npm run probe:google-ads && npm run probe:keyword-demand",
     "smoke": "node scripts/smoke.mjs",
     "probe:dashboard-rules": "node scripts/probe-dashboard-rules.mjs",
     "probe:runner-stopped": "node scripts/probe-runner-stopped.mjs",
@@ -116,7 +116,8 @@
     "probe:spanish": "node scripts/probe-spanish.mjs",
     "probe:google-ads": "node scripts/probe-google-ads.mjs",
     "google-ads:auth": "node scripts/google-ads-auth.mjs",
-    "google-ads:check": "node scripts/google-ads-check.mjs"
+    "google-ads:check": "node scripts/google-ads-check.mjs",
+    "probe:keyword-demand": "node scripts/probe-keyword-demand.mjs"
   },
   "engines": {
     "node": ">=20.0.0"
