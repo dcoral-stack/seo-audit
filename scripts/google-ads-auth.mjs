@@ -21,7 +21,7 @@ import readline from 'node:readline';
 const args = process.argv.slice(2);
 const outIdx = args.indexOf('--out');
 const out = outIdx >= 0 ? args[outIdx + 1] : path.join(homedir(), 'Documents/SEOCoral/credenciales/google-ads.json');
-const secretPath = args.find((a, i) => !a.startsWith('--') && i !== outIdx + 1);
+const secretPath = args.find((a, i) => !a.startsWith("--") && (outIdx < 0 || i !== outIdx + 1));
 if (!secretPath || !existsSync(secretPath)) {
   console.error('Uso: node scripts/google-ads-auth.mjs <client_secret.json> [--out <ruta>]');
   console.error('El client_secret.json se descarga en Google Cloud > APIs y servicios > Credenciales (cliente OAuth tipo "App de escritorio").');
