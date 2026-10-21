@@ -167,13 +167,22 @@ export function keywordDemandPayload(db: Database.Database): DemandPayload | nul
     const kt = [...new Set(tokens(kw))];
     if (!kt.length || !pages.length) return null;
     const distinctive = kt.filter(t => !siteWide(t));
-    let best: string | null = null, bestScore = 0;
+    const pool = distinctive.length ? distinctive : kt;
+    // Short keywords need every distinctive word ("asesoría empresas" is not served by a page that only
+    // says "empresas"); longer ones two thirds. Ties go to the most SPECIFIC page: the one whose own
+    // words are mostly the keyword's (Jaccard), so a service page beats a home page that mentions it.
+    const need = distinctive.length ? (pool.length <= 2 ? 1 : 2 / 3) : 1;
+    let best: string | null = null, bestCov = 0, bestJac = -1;
     for (const p of pages) {
-      const pool = distinctive.length ? distinctive : kt;
-      const score = pool.filter(t => p.toks.has(t)).length / pool.length;
-      if (score > bestScore || (score === bestScore && score > 0 && best && p.url.length < best.length)) { bestScore = score; best = p.url; }
+      const cov = pool.filter(t => p.toks.has(t)).length / pool.length;
+      if (cov < need) continue;
+      const inter = kt.filter(t => p.toks.has(t)).length;
+      const jac = inter / (kt.length + p.toks.size - inter);
+      if (cov > bestCov || (cov === bestCov && (jac > bestJac || (jac === bestJac && best && p.url.length < best.length)))) {
+        best = p.url; bestCov = cov; bestJac = jac;
+      }
     }
-    return (distinctive.length ? bestScore >= 0.5 : bestScore === 1) ? best : null;
+    return best;
   };
 
   const out: DemandRow[] = kws.map(k => {
