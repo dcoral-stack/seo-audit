@@ -39,6 +39,20 @@ inglés. Con el modelo multilingüe hay que revisarlo con páginas reales y ajus
   `Accept-Language`, igual que Googlebot.
 - User agent propio: `seocoral-audit/0.1 (+https://seocoral.com; based on houtini-ai/seo-audit)`.
 
+### 4. Volúmenes de búsqueda gratis con Google Ads (Keyword Planner)
+`keyword_volume` usa la API de Google Ads con el MCC de la agencia cuando está configurada; DataForSEO
+queda como alternativa. Nueva herramienta `keyword_ideas`: ideas de keywords desde palabras semilla,
+una URL o un dominio entero, con volumen, competencia y CPC.
+
+- Es la misma fuente que revende DataForSEO. Con una cuenta cliente con gasto, los volúmenes son exactos; si no, Google da rangos redondeados.
+- Google agrupa variantes cercanas (plurales, tildes): una keyword agrupada sale con `groupedUnder`.
+- Caché de 30 días: repetir una consulta no gasta operaciones de la API.
+- Requisitos: developer token con acceso **Basic** (Explorer no permite Keyword Planner), cliente OAuth de escritorio y la API de Google Ads habilitada en Google Cloud.
+
+Configuración: `node scripts/google-ads-auth.mjs <client_secret.json>`. Pide el developer token y el
+ID del MCC, abre el navegador para autorizar, guarda `credenciales/google-ads.json`, hace una
+consulta real de prueba y lo añade a la configuración de Claude Desktop.
+
 ## Variables de entorno nuevas
 
 | Variable | Por defecto | Para qué |
@@ -50,6 +64,11 @@ inglés. Con el modelo multilingüe hay que revisarlo con páginas reales y ajus
 | `SAC_EMBED_MODEL` | modelo multilingüe | Volver al inglés para webs solo en inglés |
 | `SAC_RERANK_MODEL` | modelo multilingüe | Ídem |
 | `SAC_WEAK_PASSAGE_THRESHOLD` | `3` | Umbral del check `weak-passage-answer` |
+| `GOOGLE_ADS_CREDENTIALS` | — | JSON de Google Ads (lo escribe `scripts/google-ads-auth.mjs`) |
+| `GOOGLE_ADS_CUSTOMER_ID` | el MCC | Cuenta con la que se consulta el planificador |
+| `GOOGLE_ADS_API_VERSION` | `v26` | Versión de la API de Google Ads |
+| `GOOGLE_ADS_CACHE_DAYS` | `30` | Días de caché |
+| `SAC_VOLUME_PROVIDER` | automático | `google-ads` o `dataforseo` |
 
 Cualquier herramienta sigue aceptando `location` y `languageCode` por llamada.
 
@@ -57,6 +76,9 @@ Cualquier herramienta sigue aceptando `location` y `languageCode` por llamada.
 `npm test` ejecuta toda la batería original más `scripts/probe-spanish.mjs` (33 comprobaciones con
 casos en español: acentos, stopwords, plurales, marca con tilde, canibalización con y sin acento,
 valores por defecto).
+
+`scripts/probe-google-ads.mjs`: 31 comprobaciones contra una API simulada (forma de las peticiones,
+parseo, variantes, lotes, caché, errores y elección de proveedor).
 
 ## Próximas fases
 1. Informe y textos de los fixes en español, con marca SEOCoral.

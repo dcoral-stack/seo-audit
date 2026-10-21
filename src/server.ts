@@ -63,6 +63,8 @@ import { UrlInspector } from './core/UrlInspector.js';
 import { Crawler } from './core/Crawler.js';
 import { Refresh } from './core/Refresh.js';
 import { DataForSeoClient, historicalDateFrom, dfsCacheDaysFromEnv } from './core/DataForSeoClient.js';
+import { GoogleAdsClient, googleAdsCredentials } from './core/GoogleAdsClient.js';
+import { keywordVolumes } from './core/volume.js';
 import { RankTracker } from './core/RankTracker.js';
 import { Backlinks } from './core/Backlinks.js';
 import { LinkIntersect } from './core/LinkIntersect.js';
@@ -313,6 +315,11 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   const dfs = dfsCreds
     ? new DataForSeoClient(dfsCreds.user, dfsCreds.pass, path.join(dataDir(), 'dataforseo-cache.db'), dfsCacheDays)
     : null;
+  // SEOCoral fork: Google Ads Keyword Planner (free with the agency's MCC) for search volume + ideas.
+  const adsCreds = googleAdsCredentials();
+  const ads = adsCreds
+    ? new GoogleAdsClient(adsCreds, path.join(dataDir(), 'google-ads-cache.db'), Number(process.env.GOOGLE_ADS_CACHE_DAYS) || 30)
+    : null;
   const rankTracker = dfs ? new RankTracker(dfs, dataDir()) : null;
   const linkIntersect = dfs ? new LinkIntersect(dfs, dataDir()) : null;
   // Majestic (Trust Flow / Topical Trust Flow) — optional link_intersect + trapped-authority tier.
@@ -356,7 +363,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   const buildWebOpts = (port?: number): WebServerOptions => ({
     dataDir,
     uiHtml: () => readFileSync(path.join(__dirname, 'src', 'ui', 'dashboard.html'), 'utf8'),
-    call: buildWebCallHandlers({ dataDir, dfs, apiKeys: apiKeysStatus }),
+    call: buildWebCallHandlers({ dataDir, dfs, ads, apiKeys: apiKeysStatus }),
     ...(port != null ? { port } : {}),
   });
   // Idempotent auto-start used by refresh_property / run_audit. Best-effort: a served port that
@@ -1267,23 +1274,44 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   server.registerTool(
     'keyword_volume',
     {
-      title: 'Keyword search volume (DataForSEO)',
-      description: '[Paid: Keywords API, cheap, cached 20d | Use for: demand sizing] True monthly search volume + CPC + competition for keywords (DataForSEO KEYWORDS_DATA). Served from a 20-day cache; live calls are serialised. Default location: ' + DEFAULT_MARKET_LABEL + '.',
+      title: 'Keyword search volume (Google Ads Keyword Planner or DataForSEO)',
+      description: '[FREE with Google Ads credentials (Keyword Planner, cached 30d), else Paid DataForSEO (cached 20d) | Use for: demand sizing] Monthly search volume + CPC + competition for keywords. With Google Ads it also returns the 12-month series, and a keyword Google groups under a close variant (plural, accent) carries groupedUnder. Location is a numeric geo id (2724 Spain, 2484 Mexico, 1005424 Madrid). Default location: ' + DEFAULT_MARKET_LABEL + '.',
       inputSchema: {
-        keywords: z.array(z.string()).min(1).max(700),
+        keywords: z.array(z.string()).min(1).max(5000),
         location: z.union([z.string(), z.number()]).optional(),
         languageCode: z.string().optional(),
       },
     },
     async ({ keywords, location, languageCode }) => {
-      const client = requireDfs(dfs);
-      const r = await client.searchVolume(keywords, location, languageCode);
-      const items = (r.tasks[0]?.result ?? []).map((k: any) => ({
-        keyword: k.keyword, searchVolume: k.search_volume, cpc: k.cpc, competition: k.competition,
-      }));
+      const r = await keywordVolumes(ads, dfs, keywords, location, languageCode);
+      const src = r.provider === 'google-ads' ? 'Google Ads' : 'DataForSEO';
       return {
-        content: [{ type: 'text', text: `${items.length} keywords${r.cached ? ' (cached)' : ` (live, $${r.cost.toFixed(4)})`}` }],
-        structuredContent: { keywords: items, cached: r.cached, cost: r.cost },
+        content: [{ type: 'text', text: `${r.keywords.length} keywords via ${src}${r.cached ? ' (cached)' : r.cost ? ` (live, $${r.cost.toFixed(4)})` : ' (live)'}` }],
+        structuredContent: r as unknown as Record<string, unknown>,
+      };
+    },
+  );
+
+  server.registerTool(
+    'keyword_ideas',
+    {
+      title: 'Keyword ideas (Google Ads Keyword Planner)',
+      description: '[FREE with Google Ads credentials, cached 30d | Use for: keyword research, new content ideas, sizing a topic] Keyword ideas with search volume, competition and CPC from Google Ads Keyword Planner, seeded by up to 20 keywords and/or a URL, or a whole site (site = domain, ideas from all its pages). Sorted by volume. Location is a numeric geo id (2724 Spain). Default location: ' + DEFAULT_MARKET_LABEL + '.',
+      inputSchema: {
+        keywords: z.array(z.string()).max(20).optional(),
+        url: z.string().optional(),
+        site: z.string().optional().describe('A domain (e.g. example.com): ideas drawn from the whole site'),
+        location: z.union([z.string(), z.number()]).optional(),
+        languageCode: z.string().optional(),
+        limit: z.number().int().min(1).max(1000).optional(),
+      },
+    },
+    async ({ keywords, url, site, location, languageCode, limit }) => {
+      if (!ads) throw new Error('Google Ads not configured: set GOOGLE_ADS_CREDENTIALS (run scripts/google-ads-auth.mjs).');
+      const r = await ads.keywordIdeas({ keywords, url, site, location, language: languageCode, limit });
+      return {
+        content: [{ type: 'text', text: `${r.items.length} keyword ideas via Google Ads${r.cached ? ' (cached)' : ' (live)'}` }],
+        structuredContent: { ideas: r.items, cached: r.cached } as unknown as Record<string, unknown>,
       };
     },
   );

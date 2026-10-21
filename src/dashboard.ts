@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { startDashboardServer } from './core/webServer.js';
 import { buildWebCallHandlers } from './core/webHandlers.js';
 import { DataForSeoClient, dfsCacheDaysFromEnv } from './core/DataForSeoClient.js';
+import { GoogleAdsClient, googleAdsCredentials } from './core/GoogleAdsClient.js';
 import { resolveDataDir } from './core/paths.js';
 import { dataForSeoCredentials, optionalSecret } from './core/secrets.js';
 
@@ -38,6 +39,9 @@ const dfsCreds = dataForSeoCredentials();
 const dfs = dfsCreds
   ? new DataForSeoClient(dfsCreds.user, dfsCreds.pass, path.join(DATA_DIR, 'dataforseo-cache.db'), dfsCacheDaysFromEnv())
   : null;
+// SEOCoral fork: Google Ads Keyword Planner for search volume (shared cache with the MCP server).
+const adsCreds = googleAdsCredentials();
+const ads = adsCreds ? new GoogleAdsClient(adsCreds, path.join(DATA_DIR, 'google-ads-cache.db'), Number(process.env.GOOGLE_ADS_CACHE_DAYS) || 30) : null;
 const majesticOn = !!optionalSecret('MAJESTIC_API_KEY');
 const apiKeys = (): { dataforseo: boolean; majestic: boolean } => ({
   dataforseo: !!dfs,
@@ -51,7 +55,7 @@ async function main(): Promise<void> {
   const { url } = await startDashboardServer({
     dataDir,
     uiHtml,
-    call: buildWebCallHandlers({ dataDir, dfs, apiKeys }),
+    call: buildWebCallHandlers({ dataDir, dfs, ads, apiKeys }),
     ...(process.env.SAC_DASHBOARD_PORT ? { port: Number(process.env.SAC_DASHBOARD_PORT) } : {}),
   });
   // Never stdout — parity with the MCP's stdio rule (and harmless here). Log the reachable URL.
