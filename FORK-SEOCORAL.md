@@ -68,8 +68,14 @@ nunca se instancian, así que ninguna ruta puede llamar a esas APIs.
 y en `export_report`: cada keyword con volumen, competencia, CPC y tendencia, cruzada con Search
 Console (últimos 90 días, tildes y plurales agrupados): página que muestra Google, posición, clics y
 estado (top 3, página 1, 11-20, >20, hueco). Para los huecos sugiere la página de la web que mejor
-encaja, usando solo las palabras que distinguen una página de otra; si ninguna encaja: "Crear
-contenido". Exportable a CSV.
+encaja: las palabras presentes en toda la web llevan a la home, las palabras específicas deciden la
+página de servicio, y un pequeño diccionario de sinónimos del sector (empresas = pymes = sociedades,
+gestor = gestoría…) ayuda solo a sugerir. Si ninguna encaja: "Crear contenido". Exportable a CSV.
+
+### 7. H1 y encabezados con espacios correctos
+Los constructores (Elementor, etc.) parten encabezados con `<br>` o `<span>`; el original los leía
+pegados ("VERIFACTUEN MADRID"). Ahora se respetan esos cortes en H1 y en los encabezados de los
+pasajes.
 
 ## Variables de entorno nuevas
 
@@ -94,7 +100,7 @@ Cualquier herramienta sigue aceptando `location` y `languageCode` por llamada.
 casos en español: acentos, stopwords, plurales, marca con tilde, canibalización con y sin acento,
 valores por defecto).
 
-`scripts/probe-keyword-demand.mjs`: 14 comprobaciones del cruce keywords × Search Console × crawl.
+`scripts/probe-keyword-demand.mjs`: 17 comprobaciones del cruce keywords × Search Console × crawl.
 
 `scripts/probe-google-ads.mjs`: 34 comprobaciones contra una API simulada (forma de las peticiones,
 parseo, variantes, lotes, caché, errores y elección de proveedor).

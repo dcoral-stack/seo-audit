@@ -14,6 +14,20 @@
  */
 import type Database from 'better-sqlite3';
 import { tokens } from './text.js';
+
+/**
+ * Sector synonyms for page SUGGESTIONS only (stems from core/text.ts): a Spanish gestoría writes
+ * "pymes y sociedades" where people search "empresas". GSC matching never uses these.
+ */
+const SUGGEST_SYNONYMS: Record<string, string> = {
+  pym: 'empresa', sociedad: 'empresa', negocio: 'empresa',
+  gestor: 'gestoria', asesor: 'asesoria', asesoramiento: 'asesoria',
+  freelance: 'autonomo', emprendedor: 'autonomo',
+  contabilidad: 'contable', impuesto: 'fiscal', tributario: 'fiscal',
+  nomina: 'laboral',
+};
+const canon = (t: string): string => SUGGEST_SYNONYMS[t] ?? t;
+const suggestTokens = (s: string): string[] => [...new Set(tokens(s).map(canon))];
 import { gscTotalsSource } from './gscRows.js';
 import type { KeywordMetrics } from './GoogleAdsClient.js';
 
@@ -154,7 +168,7 @@ export function keywordDemandPayload(db: Database.Database): DemandPayload | nul
         .map(p => {
           let slug = '';
           try { slug = decodeURIComponent(new URL(p.url_key).pathname).replace(/[/_-]+/g, ' '); } catch { /* not a URL */ }
-          return { url: p.url_key, toks: new Set(tokens(`${p.title ?? ''} ${p.h1 ?? ''} ${slug}`)) };
+          return { url: p.url_key, toks: new Set(suggestTokens(`${p.title ?? ''} ${p.h1 ?? ''} ${slug}`)) };
         })
     : [];
   // Words on more than half the pages ("gestoría", "madrid" on a Madrid gestoría) say nothing about
@@ -162,19 +176,38 @@ export function keywordDemandPayload(db: Database.Database): DemandPayload | nul
   // words goes to the shortest URL that has them all (usually the home page).
   const df = new Map<string, number>();
   for (const p of pages) for (const t of p.toks) df.set(t, (df.get(t) ?? 0) + 1);
-  const siteWide = (t: string): boolean => pages.length > 0 && (df.get(t) ?? 0) / pages.length > 0.5;
+  // On very small sites (under 5 pages) "more than half" is meaningless; only words on every page count.
+  const siteWide = (t: string): boolean => {
+    const n = df.get(t) ?? 0;
+    return pages.length >= 5 ? n / pages.length > 0.5 : pages.length > 0 && n === pages.length;
+  };
   const suggest = (kw: string): string | null => {
-    const kt = [...new Set(tokens(kw))];
+    const kt = suggestTokens(kw);
     if (!kt.length || !pages.length) return null;
     const distinctive = kt.filter(t => !siteWide(t));
-    const pool = distinctive.length ? distinctive : kt;
-    // Short keywords need every distinctive word ("asesoría empresas" is not served by a page that only
-    // says "empresas"); longer ones two thirds. Ties go to the most SPECIFIC page: the one whose own
-    // words are mostly the keyword's (Jaccard), so a service page beats a home page that mentions it.
-    const need = distinctive.length ? (pool.length <= 2 ? 1 : 2 / 3) : 1;
+    // A head term made only of site-wide words ("gestoría madrid" on a Madrid gestoría) belongs on
+    // the home page: the shortest URL that carries all of them.
+    if (!distinctive.length) {
+      let home: string | null = null;
+      for (const p of pages) if (kt.every(t => p.toks.has(t)) && (!home || p.url.length < home.length)) home = p.url;
+      return home;
+    }
+    // Distinctive words no page uses at all ("sistema" in "sistema verifactu") are modifiers the site
+    // has no page for; judge on the ones it does use. If none are used ("carabanchel"), it's new content.
+    const pool = distinctive.filter(t => df.has(t));
+    if (!pool.length) return null;
+    // ...but only when what is left is specific: an unknown word next to common ones only
+    // ("laboral" in "gestoría laboral madrid") is the actual topic, and the site has no page for it.
+    const rare = (t: string): boolean => (df.get(t) ?? 0) / pages.length <= 1 / 3;
+    if (pool.length < distinctive.length && !pool.some(rare)) return null;
+    // Coverage is judged on the specific (rare) words when there are any, else on the whole pool:
+    // two words or fewer need all of them, longer sets two thirds. Ties go to the most SPECIFIC page
+    // (highest Jaccard with the keyword), so a service page beats a home page that mentions it.
+    const core = pool.some(rare) ? pool.filter(rare) : pool;
+    const need = core.length <= 2 ? 1 : 2 / 3;
     let best: string | null = null, bestCov = 0, bestJac = -1;
     for (const p of pages) {
-      const cov = pool.filter(t => p.toks.has(t)).length / pool.length;
+      const cov = core.filter(t => p.toks.has(t)).length / core.length;
       if (cov < need) continue;
       const inter = kt.filter(t => p.toks.has(t)).length;
       const jac = inter / (kt.length + p.toks.size - inter);

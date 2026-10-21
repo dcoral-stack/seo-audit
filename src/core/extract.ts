@@ -7,6 +7,19 @@ import { urlKey, type UrlKeyOptions } from './url-key.js';
 export const collapseWs = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
 /**
+ * SEOCoral fork: visible text of a heading-like element with word boundaries kept. cheerio's
+ * .text() glues text across <br> and element boundaries, so a builder heading such as
+ * "ADAPTACIÓN A VERIFACTU<br>EN MADRID" or two stacked <span>s read "VERIFACTUEN MADRID". A <br>
+ * becomes a space and every child element is padded; collapseWs then removes the extra spaces.
+ */
+export const headingText = ($: any, el: any): string => {
+  const c = $(el).clone();
+  c.find('br').replaceWith(' ');
+  c.find('*').each((_: number, e: any) => { $(e).prepend(' ').append(' '); });
+  return collapseWs(c.text());
+};
+
+/**
  * Decode an HTML response body to a string ONCE, honouring the charset in this order:
  *   1. the Content-Type response header (`charset=…`),
  *   2. a `<meta charset>` / `<meta http-equiv="Content-Type">` declaration in the first bytes,
@@ -181,7 +194,7 @@ export function extractPage(
   const title = collapseWs($('head > title').first().text()) || null;
   const metaDescription = (() => { const c = $('meta[name="description"]').attr('content'); return c != null ? collapseWs(c) || null : null; })();
   const h1Els = $('h1');
-  const h1 = collapseWs(h1Els.first().text()) || null;
+  const h1 = (h1Els.length ? headingText($, h1Els.first()) : '') || null; // SEOCoral fork: keeps <br>/span word breaks
   const lang = $('html').attr('lang')?.trim() ?? null;
   const charset = $('meta[charset]').attr('charset')?.trim()
     ?? ($('meta[http-equiv="Content-Type"]').attr('content')?.match(/charset=([\w-]+)/i)?.[1] ?? null);
@@ -220,7 +233,7 @@ export function extractPage(
         if (child.type === 'tag') {
           if (/^h[1-6]$/.test(child.name)) {
             flush();
-            cur = { heading: ws($c(child).text()), level: Number(child.name[1]), parts: [] };
+            cur = { heading: ws(headingText($c, child)), level: Number(child.name[1]), parts: [] };
           } else {
             walk(child);
           }
