@@ -9,6 +9,7 @@ import { parseSerpForRecon, reconVerdict } from './serpRecon.js';
 import type { DataForSeoClient } from './DataForSeoClient.js';
 import { dashboardServerUrl } from './webServer.js';
 import { selectReconTargets, deterministicTodos, persistReconPage, insertTodos, pageState, crawlRealityOverride, clusterCannibalisation, opportunityBasis } from '../audit/recon.js';
+import { DEFAULT_LANGUAGE } from './locale.js';
 
 /** recon_targets' arguments, as stored on a queued job (#56). */
 export interface ReconJobArgs {
@@ -83,7 +84,7 @@ export async function runReconJob(
       update({ phase: 'recon', done: i, total: targets.length, current: t.urlKey });
       let own = null;
       try { own = await fetchOwnPage(t.urlKey, hostForm === 'asis' ? 'asis' : hostForm); } catch { /* page unreachable — classify on SERP alone */ }
-      const serpResp = await client.serpOrganic(t.query, location, 'en', SERP_DEPTH, { loadAsyncAiOverview: true });
+      const serpResp = await client.serpOrganic(t.query, location, DEFAULT_LANGUAGE, SERP_DEPTH, { loadAsyncAiOverview: true });
       cost += serpResp.cost;
       const serp = parseSerpForRecon(serpResp, ownDomain, SERP_DEPTH);
       // The crawl row overrides the SERP/GSC read: GSC keeps reporting impressions for URLs

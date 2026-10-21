@@ -1,4 +1,6 @@
 import * as cheerio from 'cheerio';
+import { DEFAULT_COUNTRY, DEFAULT_LANGUAGE } from './locale.js';
+import { BOT_UA } from './userAgents.js';
 
 /**
  * Google News — the free, keyless source for news_discovery. Google's old News API was
@@ -22,13 +24,13 @@ export async function fetchGoogleNews(
   keyword: string,
   opts: { hl?: string; gl?: string; limit?: number } = {},
 ): Promise<{ articles: GoogleNewsArticle[]; source: 'google-news-rss' }> {
-  const hl = opts.hl ?? 'en-US';
-  const gl = opts.gl ?? 'US';
+  const gl = opts.gl ?? DEFAULT_COUNTRY; // SEOCoral fork: Spain by default
+  const hl = opts.hl ?? `${DEFAULT_LANGUAGE}-${gl}`;
   const ceid = `${gl}:${hl.split('-')[0]}`;
   const url = `https://news.google.com/rss/search?q=${encodeURIComponent(keyword)}&hl=${encodeURIComponent(hl)}&gl=${encodeURIComponent(gl)}&ceid=${encodeURIComponent(ceid)}`;
 
   const res = await fetch(url, {
-    headers: { 'user-agent': 'Mozilla/5.0 (compatible; seo-audit-console/1.0; +https://github.com/houtini-ai/seo-audit)' },
+    headers: { 'user-agent': BOT_UA },
     signal: AbortSignal.timeout(15000),
   });
   if (!res.ok) throw new Error(`Google News RSS ${res.status}`);

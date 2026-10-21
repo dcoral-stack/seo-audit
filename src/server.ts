@@ -78,6 +78,7 @@ import { triage404s, verifyLive } from './core/triage404.js';
 import { gscFreshness } from './core/gscFreshness.js';
 import { clusterKeywordList } from './audit/keywordList.js';
 import type { FetchOptions } from './core/types.js';
+import { DEFAULT_LANGUAGE, DEFAULT_MARKET_LABEL } from './core/locale.js';
 import { dataForSeoCredentials, optionalSecret, cruxApiKey } from './core/secrets.js';
 import { CruxSync, CRUX_DEFAULT_URL_LIMIT } from './core/CruxSync.js';
 
@@ -1267,7 +1268,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'keyword_volume',
     {
       title: 'Keyword search volume (DataForSEO)',
-      description: '[Paid: Keywords API, cheap, cached 20d | Use for: demand sizing] True monthly search volume + CPC + competition for keywords (DataForSEO KEYWORDS_DATA). Served from a 20-day cache; live calls are serialised. Default location: United States (2840).',
+      description: '[Paid: Keywords API, cheap, cached 20d | Use for: demand sizing] True monthly search volume + CPC + competition for keywords (DataForSEO KEYWORDS_DATA). Served from a 20-day cache; live calls are serialised. Default location: ' + DEFAULT_MARKET_LABEL + '.',
       inputSchema: {
         keywords: z.array(z.string()).min(1).max(700),
         location: z.union([z.string(), z.number()]).optional(),
@@ -1308,7 +1309,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'youtube_discovery',
     {
       title: 'YouTube video discovery (DataForSEO SERP)',
-      description: '[Paid: SERP call PER KEYWORD, cached 20d | Use for: finding the videos that rank for a topic — content research, competitor video scan, freshness] The ranking YouTube videos for a keyword (DataForSEO YouTube organic SERP). Returns title, URL, channel, view count, publish date, duration and shorts/live flags, in rank order. Watch the top few to see what the winning videos actually cover. SERP scope, 20-day cache. Default location: United States (2840).',
+      description: '[Paid: SERP call PER KEYWORD, cached 20d | Use for: finding the videos that rank for a topic — content research, competitor video scan, freshness] The ranking YouTube videos for a keyword (DataForSEO YouTube organic SERP). Returns title, URL, channel, view count, publish date, duration and shorts/live flags, in rank order. Watch the top few to see what the winning videos actually cover. SERP scope, 20-day cache. Default location: ' + DEFAULT_MARKET_LABEL + '.',
       inputSchema: {
         keyword: z.string(),
         location: z.union([z.string(), z.number()]).optional(),
@@ -1332,7 +1333,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'news_discovery',
     {
       title: 'News discovery (Google News RSS + DataForSEO)',
-      description: '[Google News is FREE (no key); DataForSEO adds a paid, richer Google News SERP | Use for: what has been PUBLISHED on a topic — freshness, "what changed since {date}", competitor coverage] Recent news for a keyword from Google News (the free RSS search feed — Google\'s old News API is retired) and/or the DataForSEO Google News SERP. Returns title, source, publish time, URL. Default source "both" merges + dedupes; pass source:"google" for a free keyless lookup, "dataforseo" for the paid SERP only. Default location: United States.',
+      description: '[Google News is FREE (no key); DataForSEO adds a paid, richer Google News SERP | Use for: what has been PUBLISHED on a topic — freshness, "what changed since {date}", competitor coverage] Recent news for a keyword from Google News (the free RSS search feed — Google\'s old News API is retired) and/or the DataForSEO Google News SERP. Returns title, source, publish time, URL. Default source "both" merges + dedupes; pass source:"google" for a free keyless lookup, "dataforseo" for the paid SERP only. Default location: ' + DEFAULT_MARKET_LABEL + '.',
       inputSchema: {
         keyword: z.string(),
         location: z.union([z.string(), z.number()]).optional(),
@@ -1383,7 +1384,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     'topic_trend',
     {
       title: 'Google Trends interest over time (DataForSEO)',
-      description: '[Paid: Keywords API, cheap, cached 20d | Use for: seasonality + "is this rising or fading" — should we update now, when to publish; category monitoring — is a whole market growing] Google Trends relative interest (0–100) over time (DataForSEO KEYWORDS_DATA / google_trends). Give up to 5 keywords, a categoryCode (find it with trend_categories), or both: keywords alone search all categories; keywords + categoryCode narrow a term to one industry (e.g. "jaguar" in Autos); categoryCode alone returns interest in the WHOLE category, no keyword needed. related:true adds the top + rising related topics and queries (at most 1 keyword) — the category-only form surfaces what is breaking out across a market. Returns the time series plus a rising/falling/flat read. timeRange: past_7_days | past_30_days | past_90_days | past_12_months (default) | past_5_years | 2004_present. type: web (default) | news | youtube | images | froogle. Default location: United States.',
+      description: '[Paid: Keywords API, cheap, cached 20d | Use for: seasonality + "is this rising or fading" — should we update now, when to publish; category monitoring — is a whole market growing] Google Trends relative interest (0–100) over time (DataForSEO KEYWORDS_DATA / google_trends). Give up to 5 keywords, a categoryCode (find it with trend_categories), or both: keywords alone search all categories; keywords + categoryCode narrow a term to one industry (e.g. "jaguar" in Autos); categoryCode alone returns interest in the WHOLE category, no keyword needed. related:true adds the top + rising related topics and queries (at most 1 keyword) — the category-only form surfaces what is breaking out across a market. Returns the time series plus a rising/falling/flat read. timeRange: past_7_days | past_30_days | past_90_days | past_12_months (default) | past_5_years | 2004_present. type: web (default) | news | youtube | images | froogle. Default location: ' + DEFAULT_MARKET_LABEL + '.',
       inputSchema: {
         keywords: z.array(z.string()).max(5).optional(),
         categoryCode: z.number().int().min(1).optional(),
@@ -1618,7 +1619,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
           if (status === 'shipped' && remeasure) {
             const client = requireDfs(dfs); // remeasure is paid: fail loudly rather than silently skip it
             // Same depth + async-AIO handling as recon_targets, so before/after are comparable.
-            const serpResp = await client.serpOrganic(row.query, location, 'en', 20, { loadAsyncAiOverview: true });
+            const serpResp = await client.serpOrganic(row.query, location, DEFAULT_LANGUAGE, 20, { loadAsyncAiOverview: true });
             const serp = parseSerpForRecon(serpResp, dfsHost(siteUrl), 20);
             const cited = (v: unknown) => (v == null ? 'unknown' : v ? 'yes' : 'no');
             outcome = JSON.stringify({ organicRank: serp.ourOrganicRank, serpDepth: 20, aioCitesUs: serp.aioCitesUs, aioResolved: serp.aioResolved, at: new Date().toISOString().slice(0, 10) });
@@ -1883,7 +1884,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       // monthly items just to slice most of them away.
       const windowMonths = months ?? 12;
       const dateFrom = historicalDateFrom(windowMonths);
-      const r = await client.historicalRankOverview(cleaned, location, 'en', languageName, dateFrom);
+      const r = await client.historicalRankOverview(cleaned, location, DEFAULT_LANGUAGE, languageName, dateFrom);
       const items: any[] = r.tasks[0]?.result?.[0]?.items ?? [];
       const n = (v: unknown): number => Number(v) || 0;
       // Guard year/month — a malformed item would emit an "undefined-NaN" period row.
@@ -1953,7 +1954,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     async ({ target, location, languageCode, limit }) => {
       const client = requireDfs(dfs);
       const cleaned = dfsHost(target);
-      const r = await client.relevantPages(cleaned, location, languageCode ?? 'en', limit ?? 25);
+      const r = await client.relevantPages(cleaned, location, languageCode ?? DEFAULT_LANGUAGE, limit ?? 25);
       const items: any[] = r.tasks[0]?.result?.[0]?.items ?? [];
       const n = (v: unknown): number => Number(v) || 0;
       const pages = items
@@ -2031,7 +2032,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       // Per-keyword citation checking (are WE a reference?) is the SERP-advanced recipe.
       if (aioOnly) clauses.push(['keyword_data.serp_info.serp_item_types', 'has', 'ai_overview']);
       const filters = clauses.length === 0 ? undefined : clauses.length === 1 ? clauses : [clauses[0], 'and', clauses[1]];
-      const r = await client.rankedKeywords(dfsTarget, location, languageCode ?? 'en', limit ?? 50, order, filters as unknown[] | undefined);
+      const r = await client.rankedKeywords(dfsTarget, location, languageCode ?? DEFAULT_LANGUAGE, limit ?? 50, order, filters as unknown[] | undefined);
       const result = r.tasks[0]?.result?.[0] ?? {};
       const items: any[] = result.items ?? [];
       const kws = items
@@ -2111,7 +2112,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
     async ({ siteUrl, target, location, languageCode, limit }) => {
       const client = requireDfs(dfs);
       const domain = dfsHost(target ?? siteUrl);
-      const r = await client.rankedKeywords(domain, location, languageCode ?? 'en', limit ?? 1000, 'keyword_data.keyword_info.search_volume,desc');
+      const r = await client.rankedKeywords(domain, location, languageCode ?? DEFAULT_LANGUAGE, limit ?? 1000, 'keyword_data.keyword_info.search_volume,desc');
       const items: any[] = r.tasks[0]?.result?.[0]?.items ?? [];
       const sample = items.map((it: any) => {
         const kd = it.keyword_data ?? {};
@@ -2163,7 +2164,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       const inputs = [];
       let cost = 0; let cachedAll = true;
       for (const domain of domains) { // sequential - the client serialises anyway
-        const r = await client.rankedKeywords(domain, location, languageCode ?? 'en', limitPerDomain ?? 1000, 'keyword_data.keyword_info.search_volume,desc');
+        const r = await client.rankedKeywords(domain, location, languageCode ?? DEFAULT_LANGUAGE, limitPerDomain ?? 1000, 'keyword_data.keyword_info.search_volume,desc');
         cost += r.cost; cachedAll = cachedAll && r.cached;
         const items: any[] = r.tasks[0]?.result?.[0]?.items ?? [];
         inputs.push({
@@ -2235,7 +2236,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         let comps = [...new Set((competitors ?? []).map(dfsHost).filter(c => c && c !== ourHost))].slice(0, 3);
         let derived = false;
         if (!comps.length) {
-          const r = await dfs.competitorsDomain(ourHost, loc, 'en', 10);
+          const r = await dfs.competitorsDomain(ourHost, loc, DEFAULT_LANGUAGE, 10);
           tally(r);
           const items: any[] = r.tasks[0]?.result?.[0]?.items ?? [];
           comps = items
@@ -2255,7 +2256,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         const rows: GapKeywordRow[] = [];
         const perCompetitor: Record<string, number> = {};
         for (const c of comps) {
-          const r = await dfs.rankedKeywords(c, loc, 'en', 1000, 'ranked_serp_element.serp_item.etv,desc');
+          const r = await dfs.rankedKeywords(c, loc, DEFAULT_LANGUAGE, 1000, 'ranked_serp_element.serp_item.etv,desc');
           tally(r);
           const items: any[] = r.tasks[0]?.result?.[0]?.items ?? [];
           for (const it of items) {
@@ -2525,7 +2526,7 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       if (!comps.length) {
         const client = requireDfs(dfs);
         const loc = location ?? (() => { const d = new AuditDatabase(dbPathFor(dataDir(), siteUrl)); try { return d.getDfsLocation(siteUrl) ?? undefined; } finally { d.close(); } })();
-        const r = await client.competitorsDomain(ownHost, loc, 'en', 10);
+        const r = await client.competitorsDomain(ownHost, loc, DEFAULT_LANGUAGE, 10);
         deriveCost = r.cost;
         comps = ((r.tasks[0]?.result?.[0]?.items ?? []) as any[])
           .map(it => dfsHost(String(it.domain ?? '')))

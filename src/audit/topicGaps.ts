@@ -13,15 +13,8 @@ import type Database from 'better-sqlite3';
  * Wikidata calls.
  */
 
-const STOP = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'for', 'to', 'in', 'on', 'with', 'your', 'you', 'is', 'are', 'best', 'how', 'what', 'vs', 'why', 'can', 'my', 'i', 'it']);
-const tokenize = (s: string): string[] =>
-  (s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(t => t.length >= 2 && !STOP.has(t));
-const jaccard = (a: Set<string>, b: Set<string>): number => {
-  if (!a.size || !b.size) return 0;
-  let inter = 0;
-  for (const x of a) if (b.has(x)) inter++;
-  return inter / (a.size + b.size - inter);
-};
+// SEOCoral fork: the shared language-aware tokenizer (was a private English-only copy).
+import { tokenize, jaccard } from './lexical.js';
 
 /** One competitor keyword row (normalised from a Labs ranked_keywords item by the caller). */
 export interface GapKeywordRow {

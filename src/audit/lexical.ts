@@ -3,10 +3,12 @@
  * contentArchitecture.ts). One copy so the stop-word list, tokenizer and the
  * Jaccard similarity used for greedy clustering can't drift between them.
  */
-export const STOP = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'for', 'to', 'in', 'on', 'with', 'your', 'you', 'is', 'are', 'best', 'how', 'what', 'vs', 'why', 'can', 'my', 'i', 'it']);
+import { STOP as TEXT_STOP, tokens } from '../core/text.js';
 
-export const tokenize = (s: string): string[] =>
-  (s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(t => t.length >= 2 && !STOP.has(t));
+// SEOCoral fork: English + Spanish stop words, accent folding and plural stemming (core/text.ts).
+export const STOP = TEXT_STOP;
+
+export const tokenize = (s: string): string[] => tokens(s);
 
 export const jaccard = (a: Set<string>, b: Set<string>): number => {
   if (!a.size || !b.size) return 0;

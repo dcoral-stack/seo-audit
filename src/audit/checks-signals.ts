@@ -16,6 +16,7 @@ import { AI_BOTS } from '../core/aiBots.js';
 import { BAND_RANK, CWV_THRESHOLDS, cwvBand, type CwvBand, type CwvMetric } from '../core/CruxSync.js';
 import { loadBrandQueries, brandPredicate } from '../core/brand.js';
 import { GSC_ROWS, gscStorageState, gscTotalsSource, hasGscRows } from '../core/gscRows.js';
+import { compact } from '../core/text.js';
 
 const rows = (c: CheckContext, sql: string, ...args: unknown[]): any[] => c.db.prepare(sql).all(...args);
 const one = (c: CheckContext, sql: string, ...args: unknown[]): any => c.db.prepare(sql).get(...args);
@@ -231,7 +232,7 @@ export function brandedClicks(c: CheckContext, brand: string, fromExcl: string, 
 
 function nonbrandDeclineMasked(c: CheckContext): RawFinding[] {
   const d = c.gscMaxDate;
-  const brand = (c.brand ?? '').replace(/[^a-z0-9]/g, '');
+  const brand = compact(c.brand);
   if (!d || !brand) return [];
   const span = one(c, `SELECT julianday(?) - julianday(MIN(date)) s FROM search_analytics`, d)?.s ?? 0;
   if (span < 55) return []; // need both full 28-day windows

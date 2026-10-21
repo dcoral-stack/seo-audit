@@ -15,6 +15,8 @@ import { HREFLANG_CHECKS, HREFLANG_EXISTING_CHECKS } from './checks-hreflang.js'
 import { ASSET_CHECKS } from './checks-assets.js';
 import { PROBE_CHECKS } from './checks-probes.js';
 import { RENDER_CHECKS } from './checks-render.js';
+import { WEAK_PASSAGE_THRESHOLD } from '../core/passageThreshold.js';
+import { terms as textTerms, words as textWords, compact, stem } from '../core/text.js';
 
 /**
  * Check registry. Each check is a pure read over the AuditDatabase (crawl + GSC +
@@ -77,7 +79,7 @@ const winPrev = (d: string): string => `date <= date('${d}', '-28 days') AND dat
 // alnum HERE (not trusting the caller) so inlining it into SQL is unconditionally injection-safe.
 const brandExcl = (c: CheckContext): string => {
   if (c.siteUrl) return loadBrandQueries(c.db, c.siteUrl) ? `AND NOT (${brandPredicate()})` : '';
-  const b = (c.brand ?? '').replace(/[^a-z0-9]/g, '');
+  const b = compact(c.brand);
   return b ? `AND (' ' || LOWER(query) || ' ') NOT LIKE '% ${b} %'` : '';
 };
 // Days of GSC history actually held — period-over-period checks need enough span to be meaningful.
@@ -115,18 +117,16 @@ const notPagination = (col = 'url_key'): string =>
   `${col} NOT GLOB '*/page/[0-9]*' AND ${col} NOT GLOB '*[?&]page=[0-9]*' AND ${col} NOT GLOB '*[?&]paged=[0-9]*'`;
 
 // Significant query terms (drop stopwords; keep ≥2 chars so "vr"/"pc"/"ai" count).
-const STOP = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'for', 'to', 'in', 'on', 'with', 'your', 'you', 'is', 'are', 'best', 'how', 'what', 'vs', 'why', 'can']);
-const terms = (s: string): string[] =>
-  (s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(t => t.length >= 2 && !STOP.has(t));
+// SEOCoral fork: accents folded ("diseño" = "diseno") and Spanish stop words dropped (core/text.ts).
+const terms = (s: string): string[] => textTerms(s);
 // A query term is "present" in the title if a TITLE WORD matches it (exact, or a
 // plural/stem prefix either way for ≥4-char tokens), or the space-collapsed title
 // contains it (for multi-word brands like "sync mesh" ≈ "syncmesh", ≥5 chars).
 // Word-level avoids substring false-matches (e.g. "art" inside "smart").
 const titleHasTerm = (title: string, term: string): boolean => {
-  const t = title.toLowerCase();
-  const words = t.split(/[^a-z0-9]+/).filter(Boolean);
-  if (words.some(w => w === term || (term.length >= 4 && w.startsWith(term)) || (w.length >= 4 && term.startsWith(w)))) return true;
-  return term.length >= 5 && t.replace(/[^a-z0-9]+/g, '').includes(term);
+  const words = textWords(title);
+  if (words.some(w => w === term || (term.length >= 4 && w.startsWith(term)) || (w.length >= 4 && term.startsWith(w)) || (term.length >= 4 && stem(w) === stem(term)))) return true;
+  return term.length >= 5 && compact(title).includes(term);
 };
 
 // Validate captured JSON-LD per page, keeping findings whose issue-kinds match `kinds`.
@@ -738,7 +738,7 @@ export const CHECKS: CheckDef[] = [
     id: 'weak-passage-answer', category: 'merged', severity: 'high', labels: ['G', 'N'], certainty: 0.8, effortBase: 5, fixType: 'per-page',
     title: 'No passage strongly answers the ranking query (AI-search risk)', fix: 'A local neural reranker found no single passage on this page that confidently answers its top query — the page covers the topic loosely but offers no dense, extractable answer, so AI/passage search will prefer a clearer source. Add a focused, self-contained passage: a heading that states the question + a direct ~50-word answer up top. Run `score_passages` to (re)populate.',
     run: (c) => rows(c, `SELECT url_key urlKey, max_passage_score mps, max_passage_query q, max_passage_impr impr FROM pages
-      WHERE indexable=1 AND max_passage_score IS NOT NULL AND max_passage_score < 3`)
+      WHERE indexable=1 AND max_passage_score IS NOT NULL AND max_passage_score < ${WEAK_PASSAGE_THRESHOLD}`)
       .map(x => ({ urlKey: x.urlKey, evidence: { topQuery: x.q, maxPassageScore: x.mps, impressions: x.impr ?? 0, note: 'best passage scores below the reranker confidence threshold' } })),
   },
   {

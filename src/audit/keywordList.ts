@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { words as textWords } from '../core/text.js';
 
 /**
  * Demand-first keyword clustering ("list mode") - group a keyword list into topics and
@@ -32,8 +33,9 @@ export interface KeywordListResult {
   derived: boolean;             // true when the list came from GSC top queries, not the user
 }
 
+// SEOCoral fork: accent-folded words (core/text.ts) so "diseño" and "diseno" are one token.
 const tokens = (s: string): Set<string> =>
-  new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 1));
+  new Set(textWords(s).filter(t => t.length > 1));
 
 const jaccard = (a: Set<string>, b: Set<string>): number => {
   if (!a.size || !b.size) return 0;
