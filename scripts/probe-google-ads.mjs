@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { GoogleAdsClient, googleAdsCredentials, geoTarget, languageConstant, parseMetrics, explainAdsError } from '../dist/core/GoogleAdsClient.js';
-import { pickVolumeProvider, keywordVolumes } from '../dist/core/volume.js';
+import { pickVolumeProvider, keywordVolumes, compactMonthly } from '../dist/core/volume.js';
 
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; console.log(`  ok  ${msg}`); } else { fail++; console.log(`  FAIL ${msg}`); } };
@@ -120,6 +120,11 @@ const v = await keywordVolumes(null, fakeDfs, ['a']);
 ok(v.provider === 'dataforseo' && v.keywords[0].searchVolume === 5 && v.cost === 0.05, 'DataForSEO path keeps the old shape');
 let none = ''; try { await keywordVolumes(null, null, ['a']); } catch (e) { none = e.message; }
 ok(/GOOGLE_ADS_CREDENTIALS/.test(none), 'no provider: the error names the free option');
+
+const series = [8,9,10,11,12,1,2,3,4,5,6,7].map((mo, i) => ({ year: mo >= 8 ? 2025 : 2026, month: mo, searches: i < 9 ? 100 : 300 }));
+const lean = compactMonthly({ keyword: 'x', monthly: series });
+ok(!('monthly' in lean) && lean.trend === 'rising' && lean.peakMonth === '2026-05', `compact row: no series, trend ${lean.trend}, peak ${lean.peakMonth}`);
+ok(Array.isArray(compactMonthly({ keyword: 'x', monthly: series }, true).monthly), 'includeMonthly keeps the series');
 
 ads.close();
 rmSync(dir, { recursive: true, force: true });

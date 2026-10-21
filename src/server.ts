@@ -64,7 +64,7 @@ import { Crawler } from './core/Crawler.js';
 import { Refresh } from './core/Refresh.js';
 import { DataForSeoClient, historicalDateFrom, dfsCacheDaysFromEnv } from './core/DataForSeoClient.js';
 import { GoogleAdsClient, googleAdsCredentials } from './core/GoogleAdsClient.js';
-import { keywordVolumes } from './core/volume.js';
+import { keywordVolumes, compactMonthly } from './core/volume.js';
 import { RankTracker } from './core/RankTracker.js';
 import { Backlinks } from './core/Backlinks.js';
 import { LinkIntersect } from './core/LinkIntersect.js';
@@ -1280,10 +1280,12 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         keywords: z.array(z.string()).min(1).max(5000),
         location: z.union([z.string(), z.number()]).optional(),
         languageCode: z.string().optional(),
+        includeMonthly: z.boolean().optional().describe('Include the 12-month series per keyword (default false: it multiplies the reply size). A trend label is always included.'),
       },
     },
-    async ({ keywords, location, languageCode }) => {
-      const r = await keywordVolumes(ads, dfs, keywords, location, languageCode);
+    async ({ keywords, location, languageCode, includeMonthly }) => {
+      const r0 = await keywordVolumes(ads, dfs, keywords, location, languageCode);
+      const r = { ...r0, keywords: r0.keywords.map(k => compactMonthly(k, includeMonthly)) };
       const src = r.provider === 'google-ads' ? 'Google Ads' : 'DataForSEO';
       return {
         content: [{ type: 'text', text: `${r.keywords.length} keywords via ${src}${r.cached ? ' (cached)' : r.cost ? ` (live, $${r.cost.toFixed(4)})` : ' (live)'}` }],
@@ -1304,14 +1306,15 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         location: z.union([z.string(), z.number()]).optional(),
         languageCode: z.string().optional(),
         limit: z.number().int().min(1).max(1000).optional(),
+        includeMonthly: z.boolean().optional().describe('Include the 12-month series per idea (default false: it multiplies the reply size). A trend label is always included.'),
       },
     },
-    async ({ keywords, url, site, location, languageCode, limit }) => {
+    async ({ keywords, url, site, location, languageCode, limit, includeMonthly }) => {
       if (!ads) throw new Error('Google Ads not configured: set GOOGLE_ADS_CREDENTIALS (run scripts/google-ads-auth.mjs).');
       const r = await ads.keywordIdeas({ keywords, url, site, location, language: languageCode, limit });
       return {
         content: [{ type: 'text', text: `${r.items.length} keyword ideas via Google Ads${r.cached ? ' (cached)' : ' (live)'}` }],
-        structuredContent: { ideas: r.items, cached: r.cached } as unknown as Record<string, unknown>,
+        structuredContent: { ideas: r.items.map(k => compactMonthly(k, includeMonthly)), cached: r.cached } as unknown as Record<string, unknown>,
       };
     },
   );

@@ -51,3 +51,21 @@ export async function keywordVolumes(
     keywords: (r.tasks[0]?.result ?? []).map((k: any) => ({ keyword: k.keyword, searchVolume: k.search_volume, cpc: k.cpc, competition: k.competition })),
   };
 }
+
+/**
+ * Token-lean row for tool replies: drop the 12-month series unless asked, keep a one-word trend
+ * (last 3 months vs the 3 before) and the peak month, which carry most of what the series says.
+ */
+export function compactMonthly<T extends { monthly?: Array<{ year: number; month: number; searches: number | null }> }>(row: T, keep = false): T & { trend?: string; peakMonth?: string } {
+  const m = (row.monthly ?? []).filter(x => x.searches != null);
+  const { monthly, ...rest } = row;
+  const out: any = keep ? { ...row } : { ...rest };
+  if (m.length >= 6) {
+    const avg = (xs: typeof m): number => xs.reduce((s, x) => s + (x.searches ?? 0), 0) / xs.length;
+    const last = avg(m.slice(-3)), prev = avg(m.slice(-6, -3));
+    out.trend = prev === 0 ? (last > 0 ? 'rising' : 'flat') : last / prev > 1.25 ? 'rising' : last / prev < 0.8 ? 'falling' : 'flat';
+    const peak = m.reduce((a, b) => ((b.searches ?? 0) > (a.searches ?? 0) ? b : a));
+    out.peakMonth = `${peak.year}-${String(peak.month).padStart(2, '0')}`;
+  }
+  return out;
+}
