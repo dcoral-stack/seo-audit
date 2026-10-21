@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { words as textWords } from './text.js';
 
 /**
  * Market Sizing and Prioritisation - the organic market read that opens an engagement.
@@ -38,8 +39,9 @@ export interface MarketSizing {
   fetchedAt?: string;
 }
 
+// SEOCoral fork: accent-folded words (core/text.ts) so "diseño" and "diseno" are one token.
 const tokens = (s: string): Set<string> =>
-  new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 1));
+  new Set(textWords(s).filter(t => t.length > 1));
 
 const jaccard = (a: Set<string>, b: Set<string>): number => {
   if (!a.size || !b.size) return 0;

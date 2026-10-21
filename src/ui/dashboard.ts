@@ -12,8 +12,16 @@ import { renderFieldCwv } from './cwv.js';
 
 // Local view types (avoid importing core, which pulls node-only deps into the bundle).
 interface Totals { clicks: number; impressions: number; ctr: number; position: number }
+type KwStatus = 'top3' | 'page1' | 'striking' | 'weak' | 'gap';
+
 export interface DashboardData {
   siteUrl: string;
+  /** SEOCoral fork: Keyword Planner demand joined to GSC + crawl (src/core/keywordDemand.ts). */
+  keywordDemand?: {
+    updatedAt: string | null;
+    totals: { keywords: number; volume: number; capturedVolume: number; byStatus: Record<KwStatus, number> };
+    rows: { keyword: string; searchVolume: number | null; competition: number | null; competitionLevel: string | null; cpc: number | null; trend: string | null; peakMonth: string | null; groupedUnder: string | null; page: string | null; position: number | null; impressions: number; clicks: number; suggestedPage: string | null; status: KwStatus }[];
+  } | null;
   freshness?: { sources: { kind: string; state: string; at: string | null; detail: string; error?: string | null }[]; crawlRuns: unknown[]; shownCrawl?: { crawlId: string; status: string; at: string | null; partial: boolean } };
   empty?: boolean;
   linkProspects?: { domain: string; intersections: number; linkedTargets: string[]; domainTrust: number | null; spamScore: number | null; dofollow: boolean; trustFlow: number | null; citationFlow: number | null; topTopic: string | null; competitors: string[]; fetchedAt: string | null }[];
@@ -1135,7 +1143,7 @@ function render(data: DashboardData): void {
   const ms = data.marketSizing;
   const msCard = document.getElementById('marketSizingCard');
   if (msCard) msCard.style.display = ms?.clusters?.length ? '' : 'none';
-  if (ms?.clusters?.length) {
+  if (msCard && ms?.clusters?.length) {
     const own = ms.domains[0];
     const clusters = [...ms.clusters].reverse(); // biggest topic at the top of the y axis
     const palette = [col.green, col.blue, col.amber, col.red, col.muted];
@@ -1165,7 +1173,7 @@ function render(data: DashboardData): void {
   const fp = data.serpFootprint;
   const fpCard = document.getElementById('serpFeaturesCard');
   if (fpCard) fpCard.style.display = fp?.features?.length ? '' : 'none';
-  if (fp?.features?.length) {
+  if (fpCard && fp?.features?.length) {
     const feats = [...fp.features].slice(0, 10).reverse(); // reverse: biggest ends up top of the y axis
     const r1 = (n: number): number => Math.round(n * 10) / 10;
     const owned = feats.map(f => r1(f.volumeSharePct * f.page1SharePct / 100));
@@ -1263,8 +1271,7 @@ function render(data: DashboardData): void {
   // in expand/detail pairs that re-ordering would break).
   ['quickWinsTable', 'contentDecayTable', 'pagePerfTable', 'movementTable', 'deviceTable', 'countryTable'].forEach(id => attachSort($(id)));
 
-  renderLinks(data);
-  renderResearch(data);
+  renderKeywordDemand(data);
   renderTrapped(data);
   setupTabs();
   alignTableHeads();
@@ -1400,6 +1407,12 @@ function buildExportBar(data: DashboardData): void {
       ...data.pagePerformance!.map(p => [p.category, p.urlKey, p.clicks, p.prevClicks, p.clicksChangePct, p.impressions, p.position]),
     ]));
   }
+  if (data.keywordDemand?.rows.length) {
+    mk('Keywords (Planner) CSV', () => downloadCsv('keywords-planner.csv', [
+      ['keyword', 'busquedas_mes', 'competencia', 'cpc_eur', 'tendencia', 'estado', 'posicion', 'clics_90d', 'impresiones_90d', 'pagina', 'pagina_sugerida'],
+      ...data.keywordDemand!.rows.map(r => [r.keyword, r.searchVolume ?? '', r.competitionLevel ?? '', r.cpc ?? '', r.trend ?? '', r.status, r.position ?? '', r.clicks, r.impressions, r.page ?? '', r.suggestedPage ?? '']),
+    ]));
+  }
   if (data.keywordMovement?.length) {
     mk('Movement CSV', () => downloadCsv('keyword-movement.csv', [
       ['category', 'query', 'firstPos', 'lastPos', 'delta', 'firstDate', 'lastDate'],
@@ -1408,175 +1421,6 @@ function buildExportBar(data: DashboardData): void {
   }
 }
 
-// ── Phase 2: the Overview report hub + the two key-gated tabs (Links, Content research) ──
-// Affiliate links for the upsell states (Richard's).
-const AFFILIATE: Record<string, string> = {
-  dataforseo: 'https://dataforseo.com/?aff=213701',
-  majestic: 'https://majestic.com/plans-pricing',
-};
-function upsellCard(o: { title: string; lead: string; provider: keyof typeof AFFILIATE; cta: string }): string {
-  return `<div class="chart-card upsell">
-    <div class="upsell-badge">API key needed</div>
-    <h3>${esc(o.title)}</h3>
-    <div class="hint">${esc(o.lead)}</div>
-    <a class="btn btn-primary" href="${AFFILIATE[o.provider]}" target="_blank" rel="noopener noreferrer">${esc(o.cta)} →</a>
-  </div>`;
-}
-
-// Links tab, top half (#47): OUR backlink profile from pull_backlinks. Every number is a stored
-// row; a section whose table was never filled says "not collected" rather than showing zero.
-function renderBacklinkProfile(data: DashboardData): void {
-  const top = document.getElementById('backlinkProfilePanel');
-  const trendCard = document.getElementById('backlinkTrendCard');
-  const detail = document.getElementById('backlinkDetailPanel');
-  if (!top || !trendCard || !detail) return;
-  const bp = data.backlinkProfile;
-  const noKey = data.apiKeys && !data.apiKeys.dataforseo;
-  const runHint = `Ask Claude to run <code>pull_backlinks for ${esc(data.siteUrl)}</code> (DataForSEO Backlinks subscription; cached 20 days).`;
-  if (!bp) {
-    top.innerHTML = `<div class="chart-card"><h3>Backlink profile</h3><div class="hint">${noKey ? 'Not collected — DataForSEO isn’t connected, so your own backlink profile hasn’t been pulled.' : `Not collected yet. ${runHint} It stores the summary, the backlinked pages with their live status, the referring domains, the anchor mix and twelve months of new/lost history.`}</div></div>`;
-    trendCard.hidden = true; detail.innerHTML = '';
-    return;
-  }
-  const s = bp.summary;
-  const when = (iso: string | null | undefined): string => iso ? esc(String(iso).slice(0, 10)) : 'unknown date';
-  const nc = (what: string): string => `<div class="empty-state">${what} not collected: this profile was pulled before the dashboard stored it. Re-run <code>pull_backlinks</code> to add it.</div>`;
-  const kpis = s ? kpiGrid([
-    { label: 'Backlinks', value: fmtNum(s.backlinks) },
-    { label: 'Referring domains', value: fmtNum(s.referringDomains) },
-    { label: 'Domain Rank', value: s.domainRank == null ? '–' : String(s.domainRank) },
-    { label: 'Broken backlinks', value: fmtNum(s.brokenBacklinks) },
-    { label: 'Nofollow share', value: s.nofollowPct == null ? '–' : `${Math.round(s.nofollowPct * 100)}%` },
-  ]).replace('<div class="metrics">', '<div class="metrics metrics-5">') : nc('Summary');
-  top.innerHTML = `<div class="chart-card"><h3>Backlink profile — your own links</h3>
-    <div class="hint">From <code>pull_backlinks</code>${s ? `, summary pulled ${when(s.fetchedAt)}` : ''}: ${fmtNum(bp.pagesTotal)} backlinked pages stored${bp.pagesUnchecked ? `, ${fmtNum(bp.pagesUnchecked)} without a live status check` : ''}. Domain Rank is DataForSEO’s 0–1000 authority score.</div>
-    ${kpis}</div>`;
-
-  // Trend: new vs lost referring domains per month (DataForSEO daily history, summed per month).
-  const months = bp.history?.months ?? [];
-  if (months.length) {
-    trendCard.hidden = false;
-    const col = palette(), axis = axisDefaults(col);
-    (document.getElementById('backlinkTrendHint') as HTMLElement).textContent = `${months.length} months of daily history (pulled ${bp.history?.fetchedAt ? String(bp.history.fetchedAt).slice(0, 10) : 'unknown date'}); a partial first or last month covers only the days DataForSEO reported.`;
-    wrap('backlinkTrendChart').setOption({
-      ...ARIA,
-      grid: { left: 48, right: 16, top: 28, bottom: 28 },
-      legend: { top: 0, textStyle: { color: col.text, fontSize: 12 } },
-      tooltip: { ...tooltipDefaults(col), axisPointer: { type: 'shadow' } },
-      xAxis: { type: 'category', data: months.map(m => m.month), ...axis },
-      yAxis: { type: 'value', ...axis },
-      series: [
-        { name: 'New referring domains', type: 'bar', data: months.map(m => m.newDomains), itemStyle: { color: col.green } },
-        { name: 'Lost referring domains', type: 'bar', data: months.map(m => -m.lostDomains), itemStyle: { color: col.red } },
-      ],
-    });
-  } else {
-    trendCard.hidden = true;
-  }
-
-  const tbl = (head: string, body: string): string => `<div class="findings-table"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
-  const rd = bp.referringDomains;
-  const rdHtml = rd
-    ? `<div class="hint">${fmtNum(rd.live)} live referring domains in the latest pull (${when(rd.snapshotAt)}), ${fmtNum(rd.lost)} lost. Top by DataForSEO domain rank.</div>` +
-      tbl('<tr><th>Domain</th><th class="num">Rank</th><th class="num">Backlinks</th><th class="num">Pages</th><th>Link</th><th class="num">Spam</th><th>First seen</th></tr>',
-        rd.top.map(d => `<tr><td>${esc(d.domain)}</td><td class="num">${d.rank ?? '–'}</td><td class="num">${fmtNum(d.backlinks)}</td><td class="num">${fmtNum(d.referringPages)}</td><td>${d.referringPages > 0 && d.nofollowPages >= d.referringPages ? 'nofollow' : 'follow'}</td><td class="num">${d.spamScore ?? '–'}</td><td>${d.firstSeen ? esc(d.firstSeen) : '–'}</td></tr>`).join(''))
-    : nc('Referring domains');
-  const an = bp.anchors;
-  const anTotal = an ? an.mix.reduce((a, m) => a + m.backlinks, 0) : 0;
-  const KIND_LABEL: Record<string, string> = { branded: 'Branded', keyword: 'Keyword / exact', url: 'URL', generic: 'Generic', empty: 'Empty / image' };
-  const anHtml = an
-    ? `<div class="hint">Live anchors in the latest pull (${when(an.snapshotAt)}), classified by text: branded (contains your name), URL, generic (“click here”), empty (image or no text), everything else keyword. Share is by backlinks.</div>` +
-      tbl('<tr><th>Anchor type</th><th class="num">Anchors</th><th class="num">Backlinks</th><th class="num">Share</th><th class="num">Ref. domains</th></tr>',
-        an.mix.map(m => `<tr><td>${esc(KIND_LABEL[m.kind] ?? m.kind)}</td><td class="num">${fmtNum(m.anchors)}</td><td class="num">${fmtNum(m.backlinks)}</td><td class="num">${sharePct(m.backlinks, anTotal)}</td><td class="num">${fmtNum(m.referringDomains)}</td></tr>`).join('')) +
-      `<details><summary class="hint">Top ${an.top.length} anchors</summary>` +
-      tbl('<tr><th>Anchor</th><th>Type</th><th class="num">Backlinks</th><th class="num">Ref. domains</th></tr>',
-        an.top.map(t => `<tr><td>${t.anchor ? esc(t.anchor) : '<i>(empty)</i>'}</td><td>${esc(KIND_LABEL[t.kind] ?? t.kind)}</td><td class="num">${fmtNum(t.backlinks)}</td><td class="num">${fmtNum(t.referringDomains)}</td></tr>`).join('')) + '</details>'
-    : nc('Anchor mix');
-  const pagesHtml = bp.topPages.length
-    ? tbl('<tr><th>Page</th><th class="num">Ref. domains</th><th class="num">Backlinks</th><th class="num">Follow</th><th class="num">Live status</th>' + (bp.topPages.some(p => p.trustFlow != null) ? '<th class="num">Trust Flow</th>' : '') + '</tr>',
-        bp.topPages.map(p => `<tr><td class="url">${esc(p.url)}</td><td class="num">${fmtNum(p.referringDomains)}</td><td class="num">${fmtNum(p.backlinks)}</td><td class="num">${fmtNum(p.dofollow)}</td><td class="num">${p.status == null ? 'unchecked' : statusBadge(p.status)}</td>${bp.topPages.some(q => q.trustFlow != null) ? `<td class="num">${p.trustFlow ?? '–'}</td>` : ''}</tr>`).join(''))
-    : nc('Backlinked pages');
-  const brokenHtml = bp.brokenPages.length
-    ? `<div class="hint">${bp.brokenPages.length} backlinked page${bp.brokenPages.length === 1 ? '' : 's'} answer${bp.brokenPages.length === 1 ? 's' : ''} 4xx/5xx — equity arriving at a dead end. <code>triage_404s</code> proposes the 301 map; the audit reports <code>backlinks-to-404</code>.</div>` +
-      tbl('<tr><th>Page</th><th class="num">Status</th><th class="num">Ref. domains</th><th class="num">Backlinks</th></tr>',
-        bp.brokenPages.map(p => `<tr><td class="url">${esc(p.url)}</td><td class="num">${statusBadge(p.status)}</td><td class="num">${fmtNum(p.referringDomains)}</td><td class="num">${fmtNum(p.backlinks)}</td></tr>`).join(''))
-    : `<div class="hint">${bp.pagesTotal ? `No backlinked page answers 4xx/5xx${bp.pagesUnchecked ? ` (${fmtNum(bp.pagesUnchecked)} unchecked)` : ''}.` : 'Not collected.'}</div>`;
-  detail.innerHTML = `<div class="chart-card"><h3>Top referring domains</h3>${rdHtml}</div>
-    <div class="chart-card"><h3>Anchor mix</h3>${anHtml}</div>
-    <div class="chart-card"><h3>Most-linked pages</h3><div class="hint">Your pages by referring domains, with the live HTTP status pull_backlinks resolved.</div>${pagesHtml}</div>
-    <div class="chart-card"><h3>Broken backlinked pages</h3>${brokenHtml}</div>`;
-}
-
-// Links tab: render the stored link_prospects, or the DataForSEO upsell / a run-it prompt.
-function renderLinks(data: DashboardData): void {
-  renderBacklinkProfile(data);
-  const el = document.getElementById('linksPanel');
-  if (!el) return;
-  // Stored prospects show whatever the key state: the key gates new pulls, not data already held.
-  if (data.apiKeys && !data.apiKeys.dataforseo && !(data.linkProspects ?? []).length) {
-    el.innerHTML = upsellCard({ title: 'Link intersect — the links your competitors have that you don’t', lead: 'Find the domains linking to your competitors but not to you, ranked by authority — a ready-made outreach list. Needs a DataForSEO account (with the Backlinks subscription). An optional Majestic key re-sorts by Trust Flow.', provider: 'dataforseo', cta: 'Get DataForSEO' });
-    return;
-  }
-  const rows = data.linkProspects ?? [];
-  if (!rows.length) {
-    el.innerHTML = `<div class="chart-card"><h3>Link intersect</h3><div class="hint">No prospects captured yet. Ask Claude to run <code>link_intersect for ${esc(data.siteUrl)} vs your competitors</code> — it finds domains linking to your rivals but not you, sorted followed-first then by domain trust (or Majestic Trust Flow when a key is set).</div></div>`;
-    return;
-  }
-  const enriched = rows.some(r => r.trustFlow != null);
-  const trustHead = enriched ? 'Trust Flow' : 'Domain trust';
-  const trs = rows.map(r => `<tr><td>${esc(r.domain)}</td><td class="num">${r.intersections}</td><td class="num">${enriched ? (r.trustFlow ?? '–') : (r.domainTrust ?? '–')}</td><td>${r.dofollow ? 'follow' : 'nofollow'}</td><td class="num">${r.spamScore ?? '–'}</td>${enriched ? `<td>${esc(r.topTopic ?? '–')}</td>` : ''}</tr>`).join('');
-  const comps = rows[0]?.competitors ?? [];
-  el.innerHTML = `<div class="chart-card"><h3>Link intersect — competitors’ links you don’t have</h3>
-    <div class="hint">Domains linking to ${comps.length ? esc(comps.join(', ')) : 'your competitor set'} but not to you. ${enriched ? 'Sorted by Majestic Trust Flow (kills directory noise).' : 'Sorted by DataForSEO domain trust — set a Majestic key to re-sort by Trust Flow.'} ${rows.length} prospects${rows[0]?.fetchedAt ? `, captured ${esc(fmtDate(String(rows[0].fetchedAt)))}` : ''}.</div>
-    <div class="findings-table"><table><thead><tr><th>Prospect domain</th><th class="num">Links to</th><th class="num">${trustHead}</th><th>Link</th><th class="num">Spam</th>${enriched ? '<th>Top topic</th>' : ''}</tr></thead><tbody>${trs}</tbody></table></div></div>`;
-}
-
-// Content research tab: interactive News / Videos / Trends (on-demand), or the DataForSEO upsell.
-function renderResearch(data: DashboardData): void {
-  const el = document.getElementById('researchPanel');
-  if (!el) return;
-  if (data.apiKeys && !data.apiKeys.dataforseo) {
-    el.innerHTML = upsellCard({ title: 'Content research — News, Videos & Trends', lead: 'The news articles, YouTube videos and Google-Trends interest behind any topic — the freshness and query-fan-out signals that feed AI answers. Needs a DataForSEO account.', provider: 'dataforseo', cta: 'Get DataForSEO' });
-    return;
-  }
-  el.innerHTML = `<div class="chart-card"><h3>Content research</h3>
-    <div class="hint">On-demand DataForSEO — the news, videos and trend interest for a topic. Each is a live, 20-day-cached SERP call.</div>
-    <div class="research-bar"><input id="researchKw" type="text" placeholder="Enter a topic or keyword…" aria-label="Research keyword" /><button class="btn" data-research="news">News</button><button class="btn" data-research="youtube">Videos</button><button class="btn" data-research="topic_trend">Trend</button></div>
-    <div id="researchOut" class="research-out"></div></div>`;
-  const out = document.getElementById('researchOut') as HTMLElement;
-  const kw = document.getElementById('researchKw') as HTMLInputElement;
-  if ((window as any).__DASH_FIXTURE__ && !__sacWeb) out.innerHTML = `<div class="empty-state">This is a static export — open the live dashboard (<code>get_dashboard</code> or <code>serve_dashboard</code>) to run research.</div>`;
-  el.querySelectorAll<HTMLButtonElement>('[data-research]').forEach(b => { b.onclick = (): void => { void runResearch(b.dataset.research!, kw.value.trim(), out); }; });
-  kw.addEventListener('keydown', e => { if (e.key === 'Enter') void runResearch('news', kw.value.trim(), out); });
-}
-
-async function runResearch(kind: string, keyword: string, out: HTMLElement): Promise<void> {
-  if (!keyword) { out.innerHTML = `<div class="empty-state">Enter a topic first.</div>`; return; }
-  out.innerHTML = `<div class="empty-state">Looking up “${esc(keyword)}”…</div>`;
-  const tbl = (head: string, body: string): string => `<div class="findings-table"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
-  try {
-    if (kind === 'youtube') {
-      const vids: any[] = ((await callServer('youtube_discovery', { keyword })) as any)?.structuredContent?.videos ?? [];
-      out.innerHTML = vids.length ? tbl('<tr><th>Video</th><th>Channel</th><th class="num">Views</th><th>Published</th></tr>', vids.slice(0, 20).map(v => `<tr><td><a class="rec-url" href="${esc(v.url ?? '#')}" target="_blank" rel="noopener">${esc(v.title ?? '(untitled)')}</a></td><td>${esc(v.channel ?? '–')}</td><td class="num">${v.views != null ? Number(v.views).toLocaleString() : '–'}</td><td>${esc(v.published ?? '–')}</td></tr>`).join('')) : `<div class="empty-state">No videos for “${esc(keyword)}”.</div>`;
-    } else if (kind === 'topic_trend') {
-      const series: any[] = ((await callServer('topic_trend', { keywords: [keyword] })) as any)?.structuredContent?.series ?? [];
-      const vals = series.map(s => s.values?.[keyword]).filter((v: any): v is number => typeof v === 'number');
-      if (!vals.length) { out.innerHTML = `<div class="empty-state">No trend data for “${esc(keyword)}”.</div>`; return; }
-      const w = Math.max(1, Math.floor(vals.length / 4)), avg = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / xs.length;
-      const first = avg(vals.slice(0, w)), last = avg(vals.slice(-w));
-      const dir = last > first * 1.1 ? 'rising' : last < first * 0.9 ? 'falling' : 'flat';
-      out.innerHTML = `<div class="metric-card" style="max-width:340px"><div class="label">Google Trends — “${esc(keyword)}”</div><div class="value">${dir}</div><div class="hint">${series.length} points · ${Math.round(first)}→${Math.round(last)}, peak ${Math.max(...vals)}</div></div>`;
-    } else {
-      const arts: any[] = ((await callServer('news_discovery', { keyword })) as any)?.structuredContent?.articles ?? [];
-      out.innerHTML = arts.length ? tbl('<tr><th>Article</th><th>Source</th><th>When</th></tr>', arts.slice(0, 20).map(a => `<tr><td><a class="rec-url" href="${esc(a.url ?? '#')}" target="_blank" rel="noopener">${esc(a.title ?? '(untitled)')}</a></td><td>${esc(a.source ?? '–')}</td><td>${esc(a.timestamp ?? '–')}</td></tr>`).join('')) : `<div class="empty-state">No news for “${esc(keyword)}”.</div>`;
-    }
-  } catch (e) {
-    out.innerHTML = `<div class="empty-state">Lookup failed: ${esc(e instanceof Error ? e.message : String(e))}</div>`;
-  }
-}
-
-// Trapped authority (Architecture tab): external authority (referring domains) buried deep
-// internally — the fix is to link to these pages from higher up. Needs pull_backlinks.
 function renderTrapped(data: DashboardData): void {
   const el = document.getElementById('trappedTable');
   if (!el) return;
@@ -1598,25 +1442,70 @@ function renderTrapped(data: DashboardData): void {
 // a site can have a million keywords; we enrich what's on screen / clicked).
 async function loadRelated(keyword: string): Promise<void> {
   const el = $('related');
-  el.innerHTML = `<div class="group-label">Looking up “${esc(keyword)}”…</div>`;
+  el.innerHTML = `<div class="group-label">Consultando “${esc(keyword)}”…</div>`;
   try {
-    const [relRes, volRes] = await Promise.all([
-      callServer('related_terms', { keyword }),
-      callServer('keyword_volume', { keywords: [keyword] }).catch(() => null),
-    ]);
-    const sc = relRes?.structuredContent ?? {};
-    const paa: string[] = sc.peopleAlsoAsk ?? [];
-    const rel: string[] = sc.relatedSearches ?? [];
+    const volRes = await callServer('keyword_volume', { keywords: [keyword] });
     const vol = volRes?.structuredContent?.keywords?.[0];
-    const tags = (xs: string[]): string => xs.map(x => `<span class="tag">${esc(String(x))}</span>`).join('');
-    el.innerHTML =
-      (vol ? `<div class="group-label">“${esc(keyword)}” - search volume</div><span class="tag">${esc(String(vol.searchVolume ?? 'n/a'))}/mo</span><span class="tag">CPC ${esc(String(vol.cpc ?? 'n/a'))}</span>` : '') +
-      (paa.length ? `<div class="group-label">People also ask</div>${tags(paa)}` : '') +
-      (rel.length ? `<div class="group-label">Related searches</div>${tags(rel)}` : '') +
-      (!paa.length && !rel.length && !vol ? `<div class="group-label">No DataForSEO data for “${esc(keyword)}”.</div>` : '');
+    el.innerHTML = vol
+      ? `<div class="group-label">“${esc(keyword)}” - Google Keyword Planner</div><span class="tag">${esc(es(vol.searchVolume))} búsq./mes</span><span class="tag">CPC ${esc(eur(vol.cpc ?? null))}</span>${vol.trend ? `<span class="tag">${esc(KW_TREND[vol.trend] ?? vol.trend)}</span>` : ''}`
+      : `<div class="group-label">Sin datos de Keyword Planner para “${esc(keyword)}”.</div>`;
   } catch (e) {
-    el.innerHTML = `<div class="group-label">Lookup failed: ${esc(e instanceof Error ? e.message : String(e))}</div>`;
+    el.innerHTML = `<div class="group-label">No se pudo consultar: ${esc(e instanceof Error ? e.message : String(e))}</div>`;
   }
+}
+
+// ── SEOCoral fork: Keywords tab (Google Keyword Planner × Search Console) ──
+const KW_STATUS: Record<KwStatus, { label: string; color: string }> = {
+  top3: { label: 'Top 3', color: 'var(--intent-success)' },
+  page1: { label: 'Página 1', color: 'var(--intent-success)' },
+  striking: { label: 'Pos. 11-20', color: 'var(--intent-warning)' },
+  weak: { label: 'Pos. >20', color: 'var(--text-muted)' },
+  gap: { label: 'Hueco', color: 'var(--intent-danger)' },
+};
+const KW_TREND: Record<string, string> = { rising: '↗ subiendo', falling: '↘ bajando', flat: '→ estable' };
+const eur = (v: number | null): string => (v == null ? '–' : `${v.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`);
+const es = (v: number | null | undefined): string => (v == null ? '–' : Number(v).toLocaleString('es-ES'));
+let kwFilter: KwStatus | 'all' = 'all';
+
+function renderKeywordDemand(data: DashboardData): void {
+  const kpis = document.getElementById('kwDemandKpis');
+  const table = document.getElementById('kwDemandTable');
+  const filter = document.getElementById('kwDemandFilter');
+  if (!kpis || !table || !filter) return;
+  const kd = data.keywordDemand;
+  if (!kd || !kd.rows.length) {
+    kpis.innerHTML = ''; filter.innerHTML = '';
+    table.innerHTML = `<div class="empty-state">Aún no hay keywords guardadas para esta web. Pide en el chat, por ejemplo: <em>“ideas de keywords para ${esc(data.siteUrl)}”</em> o <em>“volumen de estas keywords para ${esc(data.siteUrl)}”</em>, y vuelve a abrir el panel.</div>`;
+    return;
+  }
+  const t = kd.totals;
+  const share = t.volume ? Math.round((t.capturedVolume / t.volume) * 100) : 0;
+  const card = (label: string, value: string, sub: string): string => `<div class="metric-card"><div class="label">${label}</div><div class="value">${value}</div><div class="metric-sub">${sub}</div></div>`;
+  kpis.innerHTML =
+    card('Keywords', es(t.keywords), kd.updatedAt ? `actualizado ${esc(kd.updatedAt.slice(0, 10))}` : '') +
+    card('Demanda total', es(t.volume), 'búsquedas / mes') +
+    card('Captada en página 1', `${share}%`, `${es(t.capturedVolume)} búsq./mes`) +
+    card('Huecos', es(t.byStatus.gap), 'sin impresiones en GSC');
+  const opts: Array<KwStatus | 'all'> = ['all', 'top3', 'page1', 'striking', 'weak', 'gap'];
+  filter.innerHTML = opts.map(o => {
+    const n = o === 'all' ? t.keywords : t.byStatus[o];
+    return `<button class="seg-btn${kwFilter === o ? ' active' : ''}" data-kw="${o}" role="tab">${o === 'all' ? 'Todas' : KW_STATUS[o].label} (${n})</button>`;
+  }).join('');
+  filter.querySelectorAll<HTMLButtonElement>('[data-kw]').forEach(b => { b.onclick = () => { kwFilter = b.dataset.kw as KwStatus | 'all'; renderKeywordDemand(data); }; });
+  const rows = kd.rows.filter(r => kwFilter === 'all' || r.status === kwFilter).map(r => {
+    const st = KW_STATUS[r.status];
+    const pageCell = r.page
+      ? `<td class="url" title="${esc(r.page)}">${esc(shortPath(r.page, 46))}</td>`
+      : r.suggestedPage
+        ? `<td class="url" title="Sugerida: ${esc(r.suggestedPage)}" style="color:var(--text-muted)">→ ${esc(shortPath(r.suggestedPage, 44))}</td>`
+        : `<td style="color:var(--intent-danger)">Crear contenido</td>`;
+    const kwCell = esc(r.keyword) + (r.groupedUnder ? ` <span class="metric-sub" title="Google agrupa esta variante con «${esc(r.groupedUnder)}»">≈ ${esc(r.groupedUnder)}</span>` : '');
+    return `<tr><td>${kwCell}</td><td class="num">${es(r.searchVolume)}</td><td>${esc(r.competitionLevel === 'HIGH' ? 'Alta' : r.competitionLevel === 'MEDIUM' ? 'Media' : r.competitionLevel === 'LOW' ? 'Baja' : '–')}</td><td class="num">${eur(r.cpc)}</td><td>${esc(r.trend ? KW_TREND[r.trend] ?? r.trend : '–')}</td><td><span style="color:${st.color};font-weight:600">${st.label}</span></td><td class="num">${r.position == null ? '–' : r.position.toLocaleString('es-ES')}</td><td class="num">${es(r.clicks)}</td>${pageCell}</tr>`;
+  });
+  table.innerHTML = rows.length
+    ? tableHtml(['Keyword', 'Búsq./mes', 'Competencia', 'CPC', 'Tendencia', 'Estado', 'Posición', 'Clics 90d', 'Página'], rows)
+    : `<div class="empty-state">Ninguna keyword en este estado.</div>`;
+  attachSort(table);
 }
 
 // Light/dark toggle (pricemonitor ◐). Reuses the existing theme path: applyHostContext

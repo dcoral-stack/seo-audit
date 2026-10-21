@@ -7,6 +7,7 @@
  */
 import type Database from 'better-sqlite3';
 import { probeUrls, type ProbeResult } from './probeUrls.js';
+import { words as textWords } from './text.js';
 
 export interface Triage404Row {
   urlKey: string;
@@ -33,7 +34,8 @@ export interface TriageOptions { minImpressions?: number; minScore?: number; lim
 
 const WEAK_TARGET = /\/(tag|tags|category|categories|author|page)\/|\/page\/\d+\/?$/i;
 
-const tokens = (path: string): string[] => path.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 0);
+// SEOCoral fork: accent-folded so /diseño-cocinas and /diseno-cocinas compare as the same words.
+const tokens = (path: string): string[] => textWords(path);
 const pathOf = (u: string): string => { try { return decodeURIComponent(new URL(u).pathname).toLowerCase(); } catch { return u.toLowerCase(); } };
 
 function levenshtein(a: string, b: string): number {

@@ -47,11 +47,12 @@
 import type Database from 'better-sqlite3';
 import { gscTotalsSource } from './gscRows.js';
 import { brandToken } from './url-key.js';
+import { words as textWords, registerTextFunctions } from './text.js';
 
 /** The run of consecutive whole words in `query` that, joined, spells `token` (lower-cased, single-spaced), or null. */
 export function brandRun(query: string, token: string): string | null {
   if (!token) return null;
-  const words = query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const words = textWords(query); // SEOCoral fork: accent-folded ("peluquería lópez" spells "peluquerialopez")
   for (let i = 0; i < words.length; i++) {
     let joined = '';
     for (let j = i; j < words.length; j++) {
@@ -109,7 +110,8 @@ export function loadBrandQueries(db: Database.Database, siteUrl: string): BrandM
   if (!token) { loaded.set(db, { token, match: null }); return null; }
   // Candidates: distinct queries that contain the token once separators are stripped (cheap
   // prefilter over the distinct values), then the exact whole-word-run rule in JS.
-  const strip = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(q),' ',''),'-',''),'.',''),'_',''),'''','')`;
+  registerTextFunctions(db);
+  const strip = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(sac_fold(q),' ',''),'-',''),'.',''),'_',''),'''','')`;
   const cands = db.prepare(`SELECT q FROM (SELECT DISTINCT query q FROM search_analytics WHERE query IS NOT NULL) WHERE INSTR(${strip}, ?) > 0`)
     .all(token) as { q: string }[];
   // Totals per matched query over the held history (an index lookup per query on query).

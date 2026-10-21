@@ -3,6 +3,8 @@ import { listLocalProperties } from './webServer.js';
 import { getDashboardData } from './dashboardData.js';
 import { fetchGoogleNews } from './googleNews.js';
 import type { DataForSeoClient } from './DataForSeoClient.js';
+import type { GoogleAdsClient } from './GoogleAdsClient.js';
+import { keywordVolumes } from './volume.js';
 
 /**
  * The web UI's server-side call handlers (POST /api/call allowlist), factored out so BOTH
@@ -13,6 +15,8 @@ import type { DataForSeoClient } from './DataForSeoClient.js';
 export interface WebHandlerDeps {
   dataDir: () => string;
   dfs: DataForSeoClient | null;
+  /** SEOCoral fork: Google Ads Keyword Planner, preferred for search volume when set. */
+  ads?: GoogleAdsClient | null;
   apiKeys: () => { dataforseo: boolean; majestic: boolean };
 }
 
@@ -53,11 +57,8 @@ export function buildWebCallHandlers(deps: WebHandlerDeps): WebCallHandlers {
       return r as unknown as Record<string, unknown>;
     },
     keyword_volume: async (a) => {
-      const r = await requireDfs().searchVolume((a.keywords as string[]) ?? [], a.location as string | number | undefined, a.languageCode as string | undefined);
-      const items = (r.tasks[0]?.result ?? []).map((k: any) => ({
-        keyword: k.keyword, searchVolume: k.search_volume, cpc: k.cpc, competition: k.competition,
-      }));
-      return { keywords: items, cached: r.cached, cost: r.cost };
+      const r = await keywordVolumes(deps.ads ?? null, deps.dfs, (a.keywords as string[]) ?? [], a.location as string | number | undefined, a.languageCode as string | undefined);
+      return r as unknown as Record<string, unknown>;
     },
   };
 }

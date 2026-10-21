@@ -6,7 +6,8 @@ import { maxPassageScore } from './reranker.js';
 /** The flag threshold, and the only band boundaries we assert. Raw cross-encoder logits have no
  * intrinsic scale, so a bare "8.18" is unreadable — every consumer gets the threshold, the band
  * convention and the run's own distribution alongside the number. */
-export const WEAK_PASSAGE_THRESHOLD = 3;
+export { WEAK_PASSAGE_THRESHOLD } from './passageThreshold.js';
+import { WEAK_PASSAGE_THRESHOLD } from './passageThreshold.js';
 export const PASSAGE_SCALE_NOTE =
   'Raw ms-marco-MiniLM cross-encoder logit for the single best passage vs the page\'s top query. Unbounded (roughly -11..+11), higher = more relevant; it is a relative measure, not a percentage. Our bands: <0 no relevant passage, 0-3 weak (flagged as weak-passage-answer), 3-6 adequate, 6+ a dense, directly-extractable answer. The bands are this tool\'s convention, not the model\'s — compare a score against the run distribution as well.';
 

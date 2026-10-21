@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { DEFAULT_LANGUAGE, DEFAULT_LOCATION } from './locale.js';
 
 /**
  * DataForSEO client modelled on the official connection (api.dataforseo.com, Basic
@@ -154,15 +155,15 @@ export class DataForSeoClient {
 
   // ── Typed helpers (within our enabled scopes) ─────────────────────────────
 
-  /** Build the location field — numeric → location_code, string → location_name, else US default. */
+  /** Build the location field — numeric → location_code, string → location_name, else the fork's default market (Spain). */
   private loc(location?: string | number): Record<string, unknown> {
     if (typeof location === 'number') return { location_code: location };
     if (typeof location === 'string' && location.trim()) return { location_name: location.trim() };
-    return { location_code: 2840 }; // default United States
+    return typeof DEFAULT_LOCATION === 'number' ? { location_code: DEFAULT_LOCATION } : { location_name: DEFAULT_LOCATION }; // SEOCoral fork: default Spain (core/locale.ts)
   }
 
   /** KEYWORDS_DATA — true monthly search volume + CPC + competition (cheap). */
-  async searchVolume(keywords: string[], location?: string | number, languageCode = 'en'): Promise<DfsResponse> {
+  async searchVolume(keywords: string[], location?: string | number, languageCode = DEFAULT_LANGUAGE): Promise<DfsResponse> {
     return this.call('/v3/keywords_data/google_ads/search_volume/live', [
       { keywords, ...this.loc(location), language_code: languageCode },
     ]);
@@ -175,7 +176,7 @@ export class DataForSeoClient {
    * references; without it those SERPs come back with an empty AIO (asynchronous_ai_overview:true)
    * and citation is unknowable. Small surcharge, refunded when no async AIO is found. */
   async serpOrganic(
-    keyword: string, location?: string | number, languageCode = 'en', depth = 20,
+    keyword: string, location?: string | number, languageCode = DEFAULT_LANGUAGE, depth = 20,
     opts: { loadAsyncAiOverview?: boolean } = {},
   ): Promise<DfsResponse> {
     return this.call('/v3/serp/google/organic/live/advanced', [
@@ -191,7 +192,7 @@ export class DataForSeoClient {
    * research: title, url, channel, views, publish date, duration. `blockDepth` = how many
    * videos to collect (YouTube SERP uses block_depth, default 20, max 200). */
   async serpYoutube(
-    keyword: string, location?: string | number, languageCode = 'en', blockDepth = 20,
+    keyword: string, location?: string | number, languageCode = DEFAULT_LANGUAGE, blockDepth = 20,
   ): Promise<{
     videos: Array<{
       rank: number | null; title: string | null; url: string | null; videoId: string | null;
@@ -226,7 +227,7 @@ export class DataForSeoClient {
    * Same SERP scope + cache (DEFAULT_DFS_CACHE_DAYS). Flattens both `news_search` items and `top_stories`
    * groups into one ranked list: title, url, source, snippet, timestamp. */
   async serpNews(
-    keyword: string, location?: string | number, languageCode = 'en', depth = 20,
+    keyword: string, location?: string | number, languageCode = DEFAULT_LANGUAGE, depth = 20,
   ): Promise<{
     articles: Array<{ rank: number | null; title: string | null; url: string | null; source: string | null; snippet: string | null; timestamp: string | null; imageUrl: string | null }>;
     cached: boolean; cost: number;
@@ -254,7 +255,7 @@ export class DataForSeoClient {
    * past_30_days, past_90_days, past_12_months (default), past_5_years, 2004_present.
    * `type`: web (default), news, youtube, images, froogle. Cached for the TTL (default 20 days). */
   async googleTrends(
-    keywords: string[], location?: string | number, languageCode = 'en',
+    keywords: string[], location?: string | number, languageCode = DEFAULT_LANGUAGE,
     opts: { timeRange?: string; type?: string; categoryCode?: number; related?: boolean } = {},
   ): Promise<{
     series: Array<{ dateFrom: string | null; dateTo: string | null; values: Record<string, number | null> }>;
@@ -338,7 +339,7 @@ export class DataForSeoClient {
   async relatedTerms(
     keyword: string,
     location?: string | number,
-    languageCode = 'en',
+    languageCode = DEFAULT_LANGUAGE,
   ): Promise<{ peopleAlsoAsk: string[]; relatedSearches: string[]; cached: boolean; cost: number }> {
     const r = await this.serpOrganic(keyword, location, languageCode, 30);
     const items: any[] = r.tasks[0]?.result?.[0]?.items ?? [];
@@ -363,14 +364,14 @@ export class DataForSeoClient {
    * data DataForSEO holds for this endpoint, so the default pulls everything available (~6 years).
    * Billed per monthly item returned, so callers that only need a recent window should pass a
    * later dateFrom (see historicalDateFrom). */
-  async historicalRankOverview(target: string, location?: string | number, languageCode = 'en', languageName?: string, dateFrom = HISTORICAL_MIN_DATE_FROM): Promise<DfsResponse> {
+  async historicalRankOverview(target: string, location?: string | number, languageCode = DEFAULT_LANGUAGE, languageName?: string, dateFrom = HISTORICAL_MIN_DATE_FROM): Promise<DfsResponse> {
     return this.call('/v3/dataforseo_labs/google/historical_rank_overview/live', [
       { target, ...this.loc(location), ...(languageName ? { language_name: languageName } : { language_code: languageCode }), date_from: dateFrom },
     ]);
   }
 
   /** Labs — a domain's top ranking pages by estimated organic traffic (relevant_pages). */
-  async relevantPages(target: string, location?: string | number, languageCode = 'en', limit = 25): Promise<DfsResponse> {
+  async relevantPages(target: string, location?: string | number, languageCode = DEFAULT_LANGUAGE, limit = 25): Promise<DfsResponse> {
     return this.call('/v3/dataforseo_labs/google/relevant_pages/live', [
       {
         target,
@@ -391,7 +392,7 @@ export class DataForSeoClient {
   async rankedKeywords(
     target: string,
     location?: string | number,
-    languageCode = 'en',
+    languageCode = DEFAULT_LANGUAGE,
     limit = 50,
     orderBy = 'ranked_serp_element.serp_item.etv,desc',
     filters?: unknown[],
@@ -467,7 +468,7 @@ export class DataForSeoClient {
    * commercial / transactional) with a probability + secondary intents. Language-only
    * (no location), up to 1000 keywords per call. Cheap (~50 credits).
    */
-  async searchIntent(keywords: string[], languageCode = 'en'): Promise<DfsResponse> {
+  async searchIntent(keywords: string[], languageCode = DEFAULT_LANGUAGE): Promise<DfsResponse> {
     return this.call('/v3/dataforseo_labs/google/search_intent/live', [
       { keywords: keywords.slice(0, 1000), language_code: languageCode },
     ]);
@@ -478,7 +479,7 @@ export class DataForSeoClient {
    * Pricier (~2000 credits) and slow: Lighthouse renders the page, so allow up to 120s
    * (DataForSEO aborts at 120s). `for_mobile` defaults true (mobile-first).
    */
-  async lighthouse(url: string, forMobile = true, languageCode = 'en'): Promise<DfsResponse> {
+  async lighthouse(url: string, forMobile = true, languageCode = DEFAULT_LANGUAGE): Promise<DfsResponse> {
     return this.call(
       '/v3/on_page/lighthouse/live/json',
       [{ url, for_mobile: forMobile, language_code: languageCode, categories: ['performance', 'seo', 'best_practices', 'accessibility'] }],
@@ -487,7 +488,7 @@ export class DataForSeoClient {
   }
 
   /** Labs — competitor domains by organic keyword overlap (discovery seed for gap analysis). */
-  async competitorsDomain(target: string, location?: string | number, languageCode = 'en', limit = 20): Promise<DfsResponse> {
+  async competitorsDomain(target: string, location?: string | number, languageCode = DEFAULT_LANGUAGE, limit = 20): Promise<DfsResponse> {
     return this.call('/v3/dataforseo_labs/google/competitors_domain/live', [
       { target, ...this.loc(location), language_code: languageCode, limit: Math.min(limit, 1000), exclude_top_domains: true },
     ]);
@@ -502,7 +503,7 @@ export class DataForSeoClient {
     competitorUrls: string[],
     excludeUrls: string[],
     location?: string | number,
-    languageCode = 'en',
+    languageCode = DEFAULT_LANGUAGE,
     limit = 100,
   ): Promise<DfsResponse> {
     const pages: Record<string, string> = {};

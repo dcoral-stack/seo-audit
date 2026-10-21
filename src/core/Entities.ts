@@ -1,6 +1,7 @@
 import { AuditDatabase } from './AuditDatabase.js';
 import { WikidataClient } from './WikidataClient.js';
 import { dbPathFor } from './paths.js';
+import { DEFAULT_LANGUAGE } from './locale.js';
 
 export interface EntitiesResult { siteUrl: string; resolved: number; attempted: number; edges: number }
 
@@ -20,7 +21,7 @@ export class Entities {
     signal: AbortSignal,
   ): Promise<EntitiesResult> {
     const limit = opts.limit ?? 100;
-    const language = opts.language ?? 'en';
+    const language = opts.language ?? DEFAULT_LANGUAGE; // SEOCoral fork
     const db = new AuditDatabase(dbPathFor(this.dataDir, siteUrl));
     try {
       // Top indexable pages by internal authority (most worth resolving).

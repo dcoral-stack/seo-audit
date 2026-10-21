@@ -5,14 +5,16 @@
  * Chrome, and the result records which user agent got through — so every crawl measures how much
  * blocking actually happens. An explicit userAgent from the user disables the fallback.
  */
-export const BOT_UA = 'Mozilla/5.0 (compatible; seo-audit-console/0.1; +https://github.com/houtini-ai/seo-audit)';
+import { acceptLanguage } from './text.js';
+// SEOCoral fork: identifies the fork (based on houtini-ai/seo-audit) so site owners can see who crawled.
+export const BOT_UA = 'Mozilla/5.0 (compatible; seocoral-audit/0.1; +https://seocoral.com; based on houtini-ai/seo-audit)';
 export const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
 
 /** Headers a real Chrome navigation sends alongside its user agent; WAFs check the set, not just the UA. */
 export const CHROME_HEADERS: Record<string, string> = {
   'user-agent': CHROME_UA,
   accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-  'accept-language': 'en-GB,en;q=0.9',
+  'accept-language': acceptLanguage(), // SEOCoral fork: es-ES by default (SAC_ACCEPT_LANGUAGE)
   'upgrade-insecure-requests': '1',
   'sec-ch-ua': '"Chromium";v="141", "Google Chrome";v="141", "Not?A_Brand";v="99"',
   'sec-ch-ua-mobile': '?0',

@@ -542,8 +542,8 @@ function coverageFooter(d: any): string {
     chip(cv.inspected > 0, 'URL inspection', !cv.inspected ? 'none' : cv.inspectedIndexable == null ? `<span class="n">${fmt(cv.inspected)}</span> URLs (a sample)`
       : `<span class="n">${fmt(cv.inspectedIndexable)}</span> of <span class="n">${fmt(cv.indexablePages)}</span> indexable pages`,
       `A quota-bound sample: ${cv.inspected} URLs inspected in all, ${cv.inspectedIndexable ?? 0} of them indexable crawled pages.`),
-    chip(cv.cwvPages > 0, 'Lab CWV', cv.cwvPages ? `<span class="n">${fmt(cv.cwvPages)}</span> pages` : 'none', 'Lighthouse lab data (page_lighthouse), not field data.'),
-    chip(cv.backlinkPages > 0, 'Backlinks', cv.backlinkPages ? `<span class="n">${fmt(cv.backlinkPages)}</span> pages` : (d.apiKeys && !d.apiKeys.dataforseo ? 'no DataForSEO key' : 'none')),
+    // SEOCoral fork: Lab CWV and backlinks came from DataForSEO (removed); Keyword Planner replaces them.
+    chip(!!d.keywordDemand?.rows?.length, 'Keyword Planner', d.keywordDemand?.rows?.length ? `<span class="n">${fmt(d.keywordDemand.rows.length)}</span> keywords` : 'none', 'Google Ads Keyword Planner keywords saved for this property (Keywords tab).'),
     // Derived from the payload (cwvField), never hard-coded.
     ((c) => chip(c.on, 'Field CWV', c.value, c.title))(cwvCoverage(d)),
     chip(false, 'Server logs', 'not collected', 'Log analysis is out of scope.'),

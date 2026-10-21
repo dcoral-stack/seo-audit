@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import type { OwnPageView } from '../core/reconFetch.js';
 import type { SerpReconResult, ReconVerdict } from '../core/serpRecon.js';
 import { expectedCtr } from '../core/ctrModel.js';
+import { STOP as TEXT_STOP, words as textWords, registerTextFunctions } from '../core/text.js';
 
 /**
  * Content recon core: pick the pages worth a deep competitive look, and turn what we can
@@ -169,12 +170,14 @@ export function opportunityBasis(
 
 /** Cannibalisation at CLUSTER level, not one query at a time. Keying off a single query missed a
  * four-URL overlap that only showed up across the whole "<entity>" query family. */
-const CLUSTER_STOP = new Set(['the', 'and', 'for', 'with', 'best', 'top', 'vs', 'versus', 'review', 'reviews', 'guide', 'how', 'what', 'which', 'why', 'you', 'your', 'cheap', 'budget', 'buy', 'compare', 'comparison', '2024', '2025', '2026', '2027']);
+// SEOCoral fork: plus Spanish commercial modifiers and every function word in core/text.ts STOP.
+const CLUSTER_STOP = new Set(['the', 'and', 'for', 'with', 'best', 'top', 'vs', 'versus', 'review', 'reviews', 'guide', 'how', 'what', 'which', 'why', 'you', 'your', 'cheap', 'budget', 'buy', 'compare', 'comparison', '2024', '2025', '2026', '2027',
+  ...TEXT_STOP, 'opinion', 'opiniones', 'resena', 'resenas', 'guia', 'barato', 'barata', 'baratos', 'baratas', 'comprar', 'precio', 'precios', 'comparativa', 'comparar', 'oferta', 'ofertas', 'online', 'cerca', 'gratis']);
 
 /** The entity-ish terms of a query: the tokens a sibling page would have to share to be competing.
  * Minimum length 2 so short but load-bearing terms ("vr", "ai") survive. */
 export function queryCore(query: string): string[] {
-  return [...new Set(query.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length >= 2 && !CLUSTER_STOP.has(t)))].slice(0, 4);
+  return [...new Set(textWords(query).filter(t => t.length >= 2 && !CLUSTER_STOP.has(t)))].slice(0, 4);
 }
 
 export interface ClusterCannibalisation {
@@ -199,7 +202,8 @@ export function clusterCannibalisation(
   const core = queryCore(query);
   const none = { core, clusterQueries: 0, collidingQueries: 0, urls: [], cannibalising: false };
   if (!core.length) return none;
-  const like = core.map(() => 'query LIKE ?').join(' AND ');
+  registerTextFunctions(db);
+  const like = core.map(() => 'sac_fold(query) LIKE ?').join(' AND ');
   const terms = core.map(t => `%${t}%`);
   const win = `date > date(?, '-28 days') AND date <= ?`;
   const cte =

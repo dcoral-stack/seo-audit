@@ -8,7 +8,10 @@ import path from 'node:path';
 env.cacheDir = path.join(homedir(), '.cache', 'seo-audit-console-models');
 env.allowLocalModels = false;
 
-const MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
+// SEOCoral fork: multilingual by default (mMARCO, trained on MS MARCO translated into 14 languages
+// incl. Spanish). The upstream English model scored Spanish passages poorly. Override with
+// SAC_RERANK_MODEL (e.g. Xenova/ms-marco-MiniLM-L-6-v2 for English-only sites).
+const MODEL = (process.env.SAC_RERANK_MODEL ?? '').trim() || 'cross-encoder/mmarco-mMiniLMv2-L12-H384-v1';
 type Loaded = { tokenizer: any; model: any; device: string };
 let loading: Promise<Loaded> | null = null;
 
@@ -29,7 +32,7 @@ function load(): Promise<Loaded> {
         const device = DEVICE_ORDER[i];
         try {
           const model = await AutoModelForSequenceClassification.from_pretrained(MODEL, { device: device as 'dml' | 'cpu' | 'cuda' | 'auto', dtype: 'fp32' });
-          console.error(`[reranker] ms-marco-MiniLM loaded on ${device}`);
+          console.error(`[reranker] ${MODEL} loaded on ${device}`);
           return { tokenizer, model, device };
         } catch (e) {
           const last = i === DEVICE_ORDER.length - 1;

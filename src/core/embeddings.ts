@@ -9,7 +9,9 @@ import path from 'node:path';
 env.cacheDir = path.join(homedir(), '.cache', 'seo-audit-console-models');
 env.allowLocalModels = false;
 
-const MODEL = 'Xenova/all-MiniLM-L6-v2';
+// SEOCoral fork: multilingual by default (50+ languages incl. Spanish and Catalan; same 384 dims).
+// Override with SAC_EMBED_MODEL (e.g. Xenova/all-MiniLM-L6-v2 for English-only sites).
+const MODEL = (process.env.SAC_EMBED_MODEL ?? '').trim() || 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';
 // Same device policy as the reranker: prefer the DirectML GPU, fall back to CPU. Override with
 // SAC_RERANK_DEVICE=cpu|dml. fp32 — DirectML won't run the q8-quantised graph.
 const DEVICE_ORDER: string[] = process.env.SAC_RERANK_DEVICE ? [process.env.SAC_RERANK_DEVICE] : ['dml', 'cpu'];
@@ -23,7 +25,7 @@ function load(): Promise<any> {
         const device = DEVICE_ORDER[i];
         try {
           const extractor = await pipeline('feature-extraction', MODEL, { device: device as 'dml' | 'cpu' | 'cuda' | 'auto', dtype: 'fp32' });
-          console.error(`[embeddings] all-MiniLM-L6-v2 loaded on ${device}`);
+          console.error(`[embeddings] ${MODEL} loaded on ${device}`);
           return extractor;
         } catch (e) {
           const last = i === DEVICE_ORDER.length - 1;
