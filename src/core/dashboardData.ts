@@ -237,9 +237,12 @@ interface Totals { clicks: number; impressions: number; position: number }
 // 30: gscShape only while the GSC storage is pending or migrating (never after the migration).
 // 31: auditDeltas[].excluded and findings.byCategory[].regrouped (regrouped checks left out of the counts).
 // 32: segmentsLastDate + breakdownWindowStart (the device / country panels' empty state, the coverage chip).
-const PAYLOAD_VERSION = '32';
+const PAYLOAD_VERSION = '32-es1'; // SEOCoral fork: findings per check
 
 /** Build the dashboard payload for a property from its synced GSC history. */
+/** SEOCoral fork: findings listed per check in the dashboard / export (the rest stay in the counts and query_audit). */
+export const FINDINGS_PER_CHECK = 50;
+
 export function getDashboardData(dataDir: string, siteUrl: string): DashboardData {
   const db = new AuditDatabase(dbPathFor(dataDir, siteUrl));
   try {
@@ -1072,7 +1075,12 @@ function crawlSide(db: Database.Database, maxDate: string | null): Pick<Dashboar
       coveragePct: totalInternalPages > 0 && c.urls ? Math.min(100, Math.round((c.urls / totalInternalPages) * 1000) / 10) : null,
       clicksAtRisk: atRisk.get(c.check_id) ?? null,
     }));
-    const topRaw = db.prepare('SELECT check_id, category, severity, labels, url_key, evidence, traffic_at_risk, effort, priority, recommendation FROM findings WHERE run_id=? ORDER BY priority DESC LIMIT 50').all(lastRun.run_id) as NonNullable<DashboardData['findings']>['top'];
+    // SEOCoral fork: up to FINDINGS_PER_CHECK of EACH check (was the 50 highest overall), so every area /
+    // severity the counters show has rows to filter to, while a check repeated on thousands of pages
+    // stays bounded. Still ordered by priority.
+    const topRaw = db.prepare(`SELECT check_id, category, severity, labels, url_key, evidence, traffic_at_risk, effort, priority, recommendation FROM (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY check_id ORDER BY priority DESC, id) rn FROM findings WHERE run_id=?
+      ) WHERE rn <= ${FINDINGS_PER_CHECK} ORDER BY priority DESC, check_id, rn`).all(lastRun.run_id) as NonNullable<DashboardData['findings']>['top'];
     // Impact = priority normalised to the run's top finding (preserves magnitude), shown as a
     // 0–100 index + S/M/L/XL size instead of a clicks "forecast".
     const maxPrio = Math.max(1, ...topRaw.map(f => f.priority || 0));

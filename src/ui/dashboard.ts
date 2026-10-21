@@ -477,7 +477,7 @@ function renderFindings(fc: DashboardData['findings'], _col: ReturnType<typeof p
     });
     tableEl.innerHTML = rows.length
       ? healthBar + `<table class="grid-virtual"><thead><tr><th>Sev</th><th>Issue</th><th>URL</th><th class="num">Clicks</th><th class="num">Impr</th><th>Impact</th></tr></thead><tbody>${rows.join('')}</tbody></table>`
-      : healthBar + `<p class="muted">${check ? 'None of this check’s findings are among the 50 highest-priority findings listed here - switch to <strong>By category</strong> for every check.' : 'No findings at this severity in the top results.'}</p>`;
+      : healthBar + `<p class="muted">${check ? 'None of this check’s findings are listed here - switch to <strong>By category</strong> for every check.' : 'No findings for this severity and area.'}</p>`;
     tableEl.querySelectorAll<HTMLElement>('.fi-row').forEach(row => {
       const toggle = (): void => {
         const det = row.nextElementSibling as HTMLElement | null;
