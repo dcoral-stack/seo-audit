@@ -101,6 +101,19 @@ mkdirSync(path.dirname(out), { recursive: true });
 writeFileSync(out, JSON.stringify(creds, null, 2));
 chmodSync(out, 0o600);
 console.log(`Credenciales guardadas en ${out}`);
+// Point the Claude Desktop entry at the credentials (macOS path), keeping a backup.
+const cfgPath = path.join(homedir(), 'Library/Application Support/Claude/claude_desktop_config.json');
+let wired = false;
+if (existsSync(cfgPath)) {
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8') || '{}');
+  const entry = cfg.mcpServers?.['seocoral-audit'];
+  if (entry) {
+    writeFileSync(cfgPath + '.backup', readFileSync(cfgPath));
+    entry.env = { ...(entry.env ?? {}), GOOGLE_ADS_CREDENTIALS: out };
+    writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+    wired = true;
+  }
+}
 
 // Prove it with one real call.
 const { GoogleAdsClient, googleAdsCredentials } = await import('../dist/core/GoogleAdsClient.js');
@@ -109,23 +122,11 @@ const ads = new GoogleAdsClient(c, path.join(tmpdir(), `gads-check-${Date.now()}
 try {
   const r = await ads.historicalMetrics(['agencia seo', 'agencias seo'], 2724, 'es');
   for (const k of r.items) console.log(`  ${k.keyword}: ${k.searchVolume ?? 'sin datos'} búsquedas/mes${k.groupedUnder ? ` (agrupada con "${k.groupedUnder}")` : ''}`);
-  // Point the Claude Desktop entry at the credentials (macOS path), keeping a backup.
-  const cfgPath = path.join(homedir(), 'Library/Application Support/Claude/claude_desktop_config.json');
-  let wired = false;
-  if (existsSync(cfgPath)) {
-    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8') || '{}');
-    const entry = cfg.mcpServers?.['seocoral-audit'];
-    if (entry) {
-      writeFileSync(cfgPath + '.backup', readFileSync(cfgPath));
-      entry.env = { ...(entry.env ?? {}), GOOGLE_ADS_CREDENTIALS: out };
-      writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
-      wired = true;
-    }
-  }
   console.log(wired
-    ? '\nGoogle Ads conectado y añadido a Claude Desktop (copia de seguridad en claude_desktop_config.json.backup). Cierra Claude con Cmd + Q y vuelve a abrirlo.'
-    : `\nGoogle Ads conectado. Añade GOOGLE_ADS_CREDENTIALS=${out} al servidor seocoral-audit en la configuración de Claude Desktop y reinícialo.`);
+    ? '\nGoogle Ads funciona y está conectado a Claude Desktop (copia en claude_desktop_config.json.backup). Cierra Claude con Cmd + Q y vuelve a abrirlo.'
+    : `\nGoogle Ads funciona. Añade GOOGLE_ADS_CREDENTIALS=${out} al servidor seocoral-audit en la configuración de Claude Desktop y reinícialo.`);
 } catch (e) {
-  console.error('\nLas credenciales se guardaron, pero la prueba falló:\n  ' + (e instanceof Error ? e.message : e));
+  console.error('\nLas credenciales se guardaron' + (wired ? ' y están conectadas a Claude Desktop' : '') + ', pero la prueba falló:\n  ' + (e instanceof Error ? e.message : e));
+  console.error('Cuando esté resuelto, comprueba con: node scripts/google-ads-check.mjs (no hace falta volver a autorizar).');
   process.exit(1);
 } finally { ads.close(); }

@@ -102,7 +102,10 @@ ok(JSON.parse(calls.at(-1).init.body).siteSeed?.site === 'seocoral.com', 'ideas:
 
 // ── 5. Errors ───────────────────────────────────────────────────────────────────────────────────
 const errBody = { error: { code: 403, message: 'The caller does not have permission', details: [{ errors: [{ errorCode: { authorizationError: 'DEVELOPER_TOKEN_NOT_APPROVED' }, message: 'The developer token is only approved for use with test accounts.' }] }] } };
-ok(/Basic access/.test(explainAdsError(errBody, '')), 'test-only developer token explained');
+ok(/Test access/.test(explainAdsError(errBody, '')), 'test-only developer token explained');
+const explorerBody = { error: { details: [{ errors: [{ errorCode: { authorizationError: 'DEVELOPER_TOKEN_NOT_APPROVED' }, message: 'This method is not allowed for use with explorer access. Please apply for basic or standard access.' }] }] } };
+const ex = explainAdsError(explorerBody, '');
+ok(/Explorer access cannot use Keyword Planner/.test(ex) && !/Test access/.test(ex), 'explorer token: one hint, the right one');
 const bad = new GoogleAdsClient({ ...c, refreshToken: 'expired' }, path.join(dir, 'cache2.db'), 30, fetchImpl);
 let msg = ''; try { await bad.historicalMetrics(['x']); } catch (e) { msg = e.message; }
 ok(/invalid_grant/.test(msg) && /google-ads-auth/.test(msg), 'expired refresh token tells you to re-run the auth script');

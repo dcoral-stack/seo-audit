@@ -115,7 +115,8 @@
     "probe:regrouped-deltas": "node scripts/probe-regrouped-deltas.mjs",
     "probe:spanish": "node scripts/probe-spanish.mjs",
     "probe:google-ads": "node scripts/probe-google-ads.mjs",
-    "google-ads:auth": "node scripts/google-ads-auth.mjs"
+    "google-ads:auth": "node scripts/google-ads-auth.mjs",
+    "google-ads:check": "node scripts/google-ads-check.mjs"
   },
   "engines": {
     "node": ">=20.0.0"

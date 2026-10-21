@@ -51,7 +51,7 @@ una URL o un dominio entero, con volumen, competencia y CPC.
 
 Configuración: `node scripts/google-ads-auth.mjs <client_secret.json>`. Pide el developer token y el
 ID del MCC, abre el navegador para autorizar, guarda `credenciales/google-ads.json`, hace una
-consulta real de prueba y lo añade a la configuración de Claude Desktop.
+consulta real de prueba y lo añade a la configuración de Claude Desktop. `node scripts/google-ads-check.mjs` repite la prueba y la conexión sin volver a autorizar (por ejemplo, cuando aprueban el acceso Basic).
 
 ## Variables de entorno nuevas
 
@@ -77,7 +77,7 @@ Cualquier herramienta sigue aceptando `location` y `languageCode` por llamada.
 casos en español: acentos, stopwords, plurales, marca con tilde, canibalización con y sin acento,
 valores por defecto).
 
-`scripts/probe-google-ads.mjs`: 31 comprobaciones contra una API simulada (forma de las peticiones,
+`scripts/probe-google-ads.mjs`: 32 comprobaciones contra una API simulada (forma de las peticiones,
 parseo, variantes, lotes, caché, errores y elección de proveedor).
 
 ## Próximas fases

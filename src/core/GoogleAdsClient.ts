@@ -278,8 +278,8 @@ export function explainAdsError(json: any, text: string): string {
   const msgs = details.map((e: any) => e?.message).filter(Boolean);
   const all = [...codes, ...msgs].join(' | ') || json?.error?.message || text.slice(0, 300);
   const hints: string[] = [];
-  if (/DEVELOPER_TOKEN_NOT_APPROVED|DEVELOPER_TOKEN_PROHIBITED/.test(all)) hints.push('the developer token only has Test access: apply for Basic access in the MCC (Tools > API Center).');
-  if (/NOT_ALLOWED_FOR_EXPLORER|EXPLORER/i.test(all)) hints.push('Explorer access cannot use Keyword Planner: apply for Basic access.');
+  if (/explorer/i.test(all)) hints.push('Explorer access cannot use Keyword Planner: apply for Basic access on the Google Ads API page in Google Cloud Console; nothing else needs redoing once it is approved.');
+  else if (/DEVELOPER_TOKEN_NOT_APPROVED|DEVELOPER_TOKEN_PROHIBITED/.test(all)) hints.push('the developer token only has Test access: request Explorer and then Basic access on the Google Ads API page in Google Cloud Console.');
   if (/USER_PERMISSION_DENIED/.test(all)) hints.push('the Google user who authorised has no access to this account, or login-customer-id is not its MCC.');
   if (/CUSTOMER_NOT_ENABLED|CUSTOMER_NOT_FOUND/.test(all)) hints.push('check GOOGLE_ADS_CUSTOMER_ID (10 digits, no dashes) and that the account is active.');
   if (/SERVICE_DISABLED|has not been used in project|is disabled/.test(all)) hints.push('enable the Google Ads API in the Google Cloud project of the OAuth client.');
