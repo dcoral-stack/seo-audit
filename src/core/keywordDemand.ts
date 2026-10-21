@@ -11,6 +11,11 @@
  *   - With no GSC match, the indexable page whose title/H1/slug tokens overlap most (a suggested
  *     target, never presented as a ranking).
  * Status: top3 / page1 / striking (11-20) / weak (>20) / gap (no GSC impressions).
+ *
+ * Two origins share the table: Google Ads (keyword_ideas / keyword_volume) and Search Console
+ * (importGscKeywords: the queries the site already shows for, with Keyword Planner metrics added).
+ * A row carries both flags when both apply; a Search Console query whose words match a row that is
+ * already there just flags that row instead of adding a near-duplicate.
  */
 import type Database from 'better-sqlite3';
 import { tokens } from './text.js';
@@ -43,6 +48,10 @@ export interface DemandRow {
   peakMonth: string | null;
   groupedUnder: string | null;
   source: string;
+  /** Came from Google Ads Keyword Planner (ideas / volume). */
+  fromAds: boolean;
+  /** Imported from Search Console, or the site has GSC impressions for it. */
+  fromGsc: boolean;
   /** Page Google shows for it (GSC), or null. */
   page: string | null;
   position: number | null;
@@ -55,7 +64,7 @@ export interface DemandRow {
 
 export interface DemandPayload {
   updatedAt: string | null;
-  totals: { keywords: number; volume: number; byStatus: Record<DemandStatus, number>; capturedVolume: number };
+  totals: { keywords: number; volume: number; byStatus: Record<DemandStatus, number>; capturedVolume: number; byOrigin: { gsc: number; ads: number; both: number } };
   rows: DemandRow[];
 }
 
@@ -78,6 +87,13 @@ export function ensureKeywordTable(db: Database.Database): void {
     language TEXT,
     fetched_at TEXT DEFAULT (datetime('now'))
   )`);
+  // Origin flags (added after the first release): migrate older tables in place.
+  const cols = new Set((db.prepare(`PRAGMA table_info(keyword_planner)`).all() as Array<{ name: string }>).map(c => c.name));
+  if (!cols.has('from_ads')) {
+    db.exec(`ALTER TABLE keyword_planner ADD COLUMN from_ads INTEGER DEFAULT 0;
+             ALTER TABLE keyword_planner ADD COLUMN from_gsc INTEGER DEFAULT 0;
+             UPDATE keyword_planner SET from_ads = 1 WHERE source IN ('volume', 'ideas');`);
+  }
 }
 
 function trendOf(m: KeywordMetrics['monthly']): { trend: string | null; peak: string | null } {
@@ -93,15 +109,16 @@ function trendOf(m: KeywordMetrics['monthly']): { trend: string | null; peak: st
 /** Upsert Keyword Planner rows into a property database. Returns how many were saved. */
 export function saveKeywords(
   db: Database.Database, rows: KeywordMetrics[],
-  meta: { source: 'volume' | 'ideas'; seed?: string; location?: string | number; language?: string },
+  meta: { source: 'volume' | 'ideas' | 'gsc'; seed?: string; location?: string | number; language?: string },
 ): number {
   ensureKeywordTable(db);
-  const st = db.prepare(`INSERT INTO keyword_planner (keyword, search_volume, competition, competition_level, cpc, low_bid, high_bid, trend, peak_month, monthly_json, grouped_under, source, seed, location, language, fetched_at)
-    VALUES (@keyword, @sv, @comp, @lvl, @cpc, @low, @high, @trend, @peak, @monthly, @grouped, @source, @seed, @loc, @lang, datetime('now'))
+  const st = db.prepare(`INSERT INTO keyword_planner (keyword, search_volume, competition, competition_level, cpc, low_bid, high_bid, trend, peak_month, monthly_json, grouped_under, source, seed, location, language, from_ads, from_gsc, fetched_at)
+    VALUES (@keyword, @sv, @comp, @lvl, @cpc, @low, @high, @trend, @peak, @monthly, @grouped, @source, @seed, @loc, @lang, @fa, @fg, datetime('now'))
     ON CONFLICT(keyword) DO UPDATE SET search_volume=excluded.search_volume, competition=excluded.competition, competition_level=excluded.competition_level,
       cpc=excluded.cpc, low_bid=excluded.low_bid, high_bid=excluded.high_bid, trend=excluded.trend, peak_month=excluded.peak_month, monthly_json=excluded.monthly_json,
       grouped_under=excluded.grouped_under, source=CASE WHEN keyword_planner.source='volume' THEN 'volume' ELSE excluded.source END,
-      seed=COALESCE(excluded.seed, keyword_planner.seed), location=excluded.location, language=excluded.language, fetched_at=datetime('now')`);
+      seed=COALESCE(excluded.seed, keyword_planner.seed), location=excluded.location, language=excluded.language,
+      from_ads=MAX(keyword_planner.from_ads, excluded.from_ads), from_gsc=MAX(keyword_planner.from_gsc, excluded.from_gsc), fetched_at=datetime('now')`);
   let n = 0;
   db.transaction(() => {
     for (const r of rows) {
@@ -112,6 +129,7 @@ export function saveKeywords(
         low: r.lowTopOfPageBid, high: r.highTopOfPageBid, trend: t.trend, peak: t.peak, monthly: JSON.stringify(r.monthly ?? []),
         grouped: r.groupedUnder ?? null, source: meta.source, seed: meta.seed ?? null,
         loc: meta.location == null ? null : String(meta.location), lang: meta.language ?? null,
+        fa: meta.source === 'gsc' ? 0 : 1, fg: meta.source === 'gsc' ? 1 : 0,
       });
       n++;
     }
@@ -130,13 +148,44 @@ export function deleteKeywords(db: Database.Database, keywords?: string[]): numb
 }
 
 const sig = (s: string): string => [...new Set(tokens(s))].sort().join(' ');
+
+/**
+ * The Search Console queries worth adding: last 90 days, ranked by impressions, one per token
+ * signature (the most-shown spelling), skipping any whose words match a row already saved. Those
+ * existing rows are flagged from_gsc instead. Returns the queries that still need Keyword Planner
+ * metrics, plus how many existing rows were flagged.
+ */
+export function gscQueriesToImport(db: Database.Database, limit = 500): { queries: string[]; flagged: number; considered: number } {
+  ensureKeywordTable(db);
+  const hasSa = !!db.prepare(`SELECT 1 FROM sqlite_master WHERE name='search_analytics'`).get();
+  if (!hasSa) return { queries: [], flagged: 0, considered: 0 };
+  const src = gscTotalsSource(db);
+  const maxDate = (db.prepare(`SELECT MAX(date) d FROM ${src}`).get() as { d: string | null }).d;
+  if (!maxDate) return { queries: [], flagged: 0, considered: 0 };
+  const rows = db.prepare(`SELECT query, SUM(impressions) i FROM ${src}
+    WHERE query IS NOT NULL AND query != '' AND date > date(?, '-90 days') AND date <= ? GROUP BY query ORDER BY i DESC`).all(maxDate, maxDate) as Array<{ query: string; i: number }>;
+  const existing = new Map<string, string>();
+  for (const r of db.prepare(`SELECT keyword FROM keyword_planner`).all() as Array<{ keyword: string }>) { const g = sig(r.keyword); if (g && !existing.has(g)) existing.set(g, r.keyword); }
+  const seen = new Set<string>(); const queries: string[] = []; let flagged = 0, considered = 0;
+  const flag = db.prepare(`UPDATE keyword_planner SET from_gsc = 1 WHERE keyword = ?`);
+  for (const r of rows) {
+    const g = sig(r.query);
+    if (!g || seen.has(g)) continue;
+    seen.add(g);
+    if (++considered > limit) break;
+    const hit = existing.get(g);
+    if (hit) { flagged += flag.run(hit).changes; continue; }
+    queries.push(r.query.trim().toLowerCase());
+  }
+  return { queries, flagged, considered: Math.min(considered, limit) };
+}
 const statusFor = (pos: number | null, impressions: number): DemandStatus =>
   !impressions || pos == null ? 'gap' : pos <= 3 ? 'top3' : pos <= 10 ? 'page1' : pos <= 20 ? 'striking' : 'weak';
 
 export function keywordDemandPayload(db: Database.Database): DemandPayload | null {
   ensureKeywordTable(db);
-  const kws = db.prepare(`SELECT keyword, search_volume sv, competition comp, competition_level lvl, cpc, trend, peak_month peak, grouped_under grouped, source, fetched_at
-    FROM keyword_planner ORDER BY COALESCE(search_volume, -1) DESC, keyword`).all() as Array<{ keyword: string; sv: number | null; comp: number | null; lvl: string | null; cpc: number | null; trend: string | null; peak: string | null; grouped: string | null; source: string; fetched_at: string }>;
+  const kws = db.prepare(`SELECT keyword, search_volume sv, competition comp, competition_level lvl, cpc, trend, peak_month peak, grouped_under grouped, source, from_ads fa, from_gsc fg, fetched_at
+    FROM keyword_planner ORDER BY COALESCE(search_volume, -1) DESC, keyword`).all() as Array<{ keyword: string; sv: number | null; comp: number | null; lvl: string | null; cpc: number | null; trend: string | null; peak: string | null; grouped: string | null; source: string; fa: number; fg: number; fetched_at: string }>;
   if (!kws.length) return null;
 
   // GSC: per (query, page) over the last 90 days, bucketed by token signature.
@@ -230,6 +279,7 @@ export function keywordDemandPayload(db: Database.Database): DemandPayload | nul
     return {
       keyword: k.keyword, searchVolume: k.sv, competition: k.comp, competitionLevel: k.lvl, cpc: k.cpc,
       trend: k.trend, peakMonth: k.peak, groupedUnder: k.grouped, source: k.source,
+      fromAds: !!k.fa, fromGsc: !!k.fg || impressions > 0,
       page, position, impressions, clicks: a?.clicks ?? 0,
       suggestedPage: page ? null : suggest(k.keyword),
       status: statusFor(position, impressions),
@@ -238,11 +288,15 @@ export function keywordDemandPayload(db: Database.Database): DemandPayload | nul
 
   const byStatus: Record<DemandStatus, number> = { top3: 0, page1: 0, striking: 0, weak: 0, gap: 0 };
   let volume = 0, captured = 0;
+  const byOrigin = { gsc: 0, ads: 0, both: 0 };
   for (const r of out) {
     byStatus[r.status]++;
+    if (r.fromGsc) byOrigin.gsc++;
+    if (r.fromAds) byOrigin.ads++;
+    if (r.fromGsc && r.fromAds) byOrigin.both++;
     volume += r.searchVolume ?? 0;
     if (r.status === 'top3' || r.status === 'page1') captured += r.searchVolume ?? 0;
   }
   const updatedAt = kws.reduce((m, k) => (k.fetched_at > m ? k.fetched_at : m), '');
-  return { updatedAt: updatedAt || null, totals: { keywords: out.length, volume, byStatus, capturedVolume: captured }, rows: out };
+  return { updatedAt: updatedAt || null, totals: { keywords: out.length, volume, byStatus, capturedVolume: captured, byOrigin }, rows: out };
 }

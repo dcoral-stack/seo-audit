@@ -363,9 +363,11 @@
 
       <section class="tab-panel" data-panel="keywords" role="tabpanel">
         <div class="chart-card">
-          <h3>Demanda de búsqueda - Google Keyword Planner</h3>
-          <div class="hint">Keywords con volumen real de Google Ads guardadas para esta web, cruzadas con Search Console (últimos 90 días; plurales y tildes se cuentan juntos). <span style="color:var(--intent-success)">Verde</span> = en top 10, <span style="color:var(--intent-warning)">ámbar</span> = posiciones 11-20, <span style="color:var(--intent-danger)">rojo</span> = sin impresiones (hueco). Cuando no posiciona, se sugiere la página de la web que mejor encaja.</div>
+          <h3>Keywords - Search Console + Google Keyword Planner</h3>
+          <div class="hint">Una sola tabla con dos orígenes: <strong>Search Console</strong> (búsquedas por las que la web ya aparece en Google) y <strong>Google Ads</strong> (ideas de Keyword Planner). Búsquedas/mes, competencia, CPC y tendencia vienen de Google Ads (media de 12 meses, España). Posición, impresiones, clics y página vienen de Search Console (últimos 90 días; tildes y plurales se agrupan).</div>
+          <div class="hint kw-legend"><span style="color:var(--intent-success);font-weight:600">Top 3</span> posiciones 1-3 · <span style="color:var(--intent-success);font-weight:600">Página 1</span> posiciones 4-10 · <span style="color:var(--intent-warning);font-weight:600">Pos. 11-20</span> segunda página, a un paso de la primera · <span style="color:var(--text-muted);font-weight:600">Pos. &gt;20</span> lejos · <span style="color:var(--intent-danger);font-weight:600">Sin visibilidad</span> 0 impresiones en 90 días: Google no muestra la web para esa búsqueda. En las que no posicionan, «→ página» es la página sugerida para trabajarla y «Crear contenido» indica que no hay ninguna adecuada.</div>
           <div class="kpis" id="kwDemandKpis"></div>
+          <div class="seg" role="tablist" aria-label="Filtrar por origen" id="kwOriginFilter" style="margin-bottom:8px"></div>
           <div class="seg" role="tablist" aria-label="Filtrar por estado" id="kwDemandFilter"></div>
           <div id="kwDemandTable" class="findings-table"></div>
         </div>

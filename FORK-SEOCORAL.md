@@ -67,10 +67,17 @@ nunca se instancian, así que ninguna ruta puede llamar a esas APIs.
 (tabla `keyword_planner`). Nueva herramienta `keyword_demand` y nueva pestaña **Keywords** en el panel
 y en `export_report`: cada keyword con volumen, competencia, CPC y tendencia, cruzada con Search
 Console (últimos 90 días, tildes y plurales agrupados): página que muestra Google, posición, clics y
-estado (top 3, página 1, 11-20, >20, hueco). Para los huecos sugiere la página de la web que mejor
+estado (top 3, página 1, 11-20, >20, sin visibilidad). Para las que no tienen visibilidad sugiere la página de la web que mejor
 encaja: las palabras presentes en toda la web llevan a la home, las palabras específicas deciden la
 página de servicio, y un pequeño diccionario de sinónimos del sector (empresas = pymes = sociedades,
 gestor = gestoría…) ayuda solo a sugerir. Si ninguna encaja: "Crear contenido". Exportable a CSV.
+
+**Una sola tabla, dos orígenes.** `import_gsc_keywords` trae las búsquedas de Search Console (top 500
+de los últimos 90 días por impresiones, una por variante) y les pone volumen, competencia y CPC de
+Google Ads. Si una ya estaba guardada desde Keyword Planner, se marca con los dos orígenes en vez de
+duplicarse. En el panel hay un filtro de origen (Todas / Search Console / Google Ads) que se combina
+con el de estado, columnas Origen e Impresiones, y una leyenda de los estados. `keyword_demand`
+acepta `origin: all | gsc | ads`.
 
 ### 7. H1 y encabezados con espacios correctos
 Los constructores (Elementor, etc.) parten encabezados con `<br>` o `<span>`; el original los leía
@@ -100,7 +107,7 @@ Cualquier herramienta sigue aceptando `location` y `languageCode` por llamada.
 casos en español: acentos, stopwords, plurales, marca con tilde, canibalización con y sin acento,
 valores por defecto).
 
-`scripts/probe-keyword-demand.mjs`: 17 comprobaciones del cruce keywords × Search Console × crawl.
+`scripts/probe-keyword-demand.mjs`: 22 comprobaciones del cruce keywords × Search Console × crawl.
 
 `scripts/probe-google-ads.mjs`: 34 comprobaciones contra una API simulada (forma de las peticiones,
 parseo, variantes, lotes, caché, errores y elección de proveedor).

@@ -60,7 +60,7 @@ import { Refresh } from './core/Refresh.js';
 import type { DataForSeoClient } from './core/DataForSeoClient.js';
 import { GoogleAdsClient, googleAdsCredentials } from './core/GoogleAdsClient.js';
 import { keywordVolumes, compactMonthly } from './core/volume.js';
-import { saveKeywords, deleteKeywords, keywordDemandPayload } from './core/keywordDemand.js';
+import { saveKeywords, deleteKeywords, keywordDemandPayload, gscQueriesToImport } from './core/keywordDemand.js';
 import type { RankTracker } from './core/RankTracker.js';
 import type { Backlinks } from './core/Backlinks.js';
 import { fetchGoogleNews } from './core/googleNews.js';
@@ -133,7 +133,7 @@ ARCHETYPE CHAINS:
 
 COST: every tool is free. Keyword Planner calls are cached 30 days and count against the Google Ads API daily quota, so batch keywords (up to thousands per keyword_volume call) instead of looping. Keep replies lean: keyword tools omit the 12-month series unless includeMonthly is set.
 
-WORKFLOW per client: refresh_property → run_audit → keyword_ideas / keyword_volume with siteUrl → keyword_demand → fix_finding per top finding → export_report (includes the Keywords tab).
+WORKFLOW per client: refresh_property → run_audit → import_gsc_keywords + keyword_ideas with siteUrl → keyword_demand → fix_finding per top finding → export_report (includes the Keywords tab).
 
 Before planning a complex multi-source question, call composition_cookbook.`;
 
@@ -1276,6 +1276,35 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
   );
 
   server.registerTool(
+    'import_gsc_keywords',
+    {
+      title: 'Add the Search Console queries to the Keywords table (with Google Ads metrics)',
+      description: '[FREE, Google Ads Keyword Planner, cached 30d | Use for: the full keyword picture of a client] Takes the queries the site already shows for in Search Console (last 90 days, most impressions first, one per spelling - accents/plurals grouped), adds Keyword Planner volume, competition, CPC and trend, and saves them to the property next to the Google Ads ideas. Queries already in the table are just marked as Search Console. Many long-tail queries have no Keyword Planner volume: they stay with their position and clicks. Read the result with keyword_demand (origin filter) or the dashboard Keywords tab.',
+      inputSchema: {
+        siteUrl: z.string(),
+        limit: z.number().int().min(1).max(5000).optional().describe('Queries to import, by impressions (default 500)'),
+      },
+    },
+    async ({ siteUrl, limit }) => {
+      if (!ads) throw new Error('Google Ads not configured: set GOOGLE_ADS_CREDENTIALS (run scripts/google-ads-auth.mjs).');
+      const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
+      try {
+        const { queries, flagged, considered } = gscQueriesToImport(db.db, limit ?? 500);
+        if (!considered) return { content: [{ type: 'text', text: 'No Search Console queries in the last 90 days for this property (run sync_gsc / refresh_property first).' }] };
+        let withVolume = 0, cached = true;
+        if (queries.length) {
+          const r = await ads.historicalMetrics(queries, undefined, undefined);
+          cached = r.cached;
+          withVolume = r.items.filter(k => (k.searchVolume ?? 0) > 0).length;
+          saveKeywords(db.db, r.items, { source: 'gsc' });
+        }
+        const text = `${considered} Search Console queries: ${queries.length} added (${withVolume} with Keyword Planner volume), ${flagged} already in the table and marked as Search Console${queries.length ? (cached ? ' (cached)' : ' (live)') : ''}.`;
+        return { content: [{ type: 'text', text }], structuredContent: { considered, added: queries.length, withVolume, flagged } };
+      } finally { db.close(); }
+    },
+  );
+
+  server.registerTool(
     'keyword_demand',
     {
       title: 'Keyword demand for a property (Keyword Planner × Search Console)',
@@ -1283,11 +1312,12 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
       inputSchema: {
         siteUrl: z.string(),
         status: z.array(z.enum(['top3', 'page1', 'striking', 'weak', 'gap'])).optional(),
+        origin: z.enum(['all', 'gsc', 'ads']).optional().describe('gsc = queries the site shows for in Search Console; ads = Google Ads Keyword Planner ideas/volumes; all (default)'),
         limit: z.number().int().min(1).max(500).optional().describe('Rows returned (default 50, by volume)'),
         remove: z.array(z.string()).optional().describe('Keywords to delete from this property; ["*"] deletes all'),
       },
     },
-    async ({ siteUrl, status, limit, remove }) => {
+    async ({ siteUrl, status, origin, limit, remove }) => {
       const db = new AuditDatabase(dbPathFor(dataDir(), siteUrl));
       try {
         let removed = 0;
@@ -1295,11 +1325,11 @@ export function createServer(): { server: McpServer; run: () => Promise<void> } 
         const p = keywordDemandPayload(db.db);
         if (!p) return { content: [{ type: 'text', text: (removed ? `Removed ${removed}. ` : '') + 'No keywords saved for this property yet: run keyword_volume or keyword_ideas with siteUrl.' }] };
         const want = status?.length ? new Set(status) : null;
-        const rows = p.rows.filter(r => !want || want.has(r.status)).slice(0, limit ?? 50)
-          .map(r => ({ keyword: r.keyword, volume: r.searchVolume, cpc: r.cpc, competition: r.competitionLevel, trend: r.trend, status: r.status, page: r.page, position: r.position, clicks: r.clicks, impressions: r.impressions, suggestedPage: r.suggestedPage }));
+        const rows = p.rows.filter(r => (!want || want.has(r.status)) && (!origin || origin === 'all' || (origin === 'gsc' ? r.fromGsc : r.fromAds))).slice(0, limit ?? 50)
+          .map(r => ({ keyword: r.keyword, origin: r.fromGsc && r.fromAds ? 'both' : r.fromGsc ? 'gsc' : 'ads', volume: r.searchVolume, cpc: r.cpc, competition: r.competitionLevel, trend: r.trend, status: r.status, page: r.page, position: r.position, clicks: r.clicks, impressions: r.impressions, suggestedPage: r.suggestedPage }));
         const t = p.totals;
         return {
-          content: [{ type: 'text', text: `${removed ? `Removed ${removed}. ` : ''}${t.keywords} keywords, ${t.volume.toLocaleString('es-ES')} searches/mo; page 1 captures ${t.capturedVolume.toLocaleString('es-ES')}. top3 ${t.byStatus.top3} · page1 ${t.byStatus.page1} · striking ${t.byStatus.striking} · weak ${t.byStatus.weak} · gap ${t.byStatus.gap}.` }],
+          content: [{ type: 'text', text: `${removed ? `Removed ${removed}. ` : ''}${t.keywords} keywords, ${t.volume.toLocaleString('es-ES')} searches/mo; page 1 captures ${t.capturedVolume.toLocaleString('es-ES')}. top3 ${t.byStatus.top3} · page1 ${t.byStatus.page1} · striking ${t.byStatus.striking} · weak ${t.byStatus.weak} · gap ${t.byStatus.gap}. Origin: Search Console ${t.byOrigin.gsc}, Google Ads ${t.byOrigin.ads} (both ${t.byOrigin.both}).` }],
           structuredContent: { totals: t, updatedAt: p.updatedAt, rows } as unknown as Record<string, unknown>,
         };
       } finally { db.close(); }

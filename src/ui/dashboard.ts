@@ -19,8 +19,8 @@ export interface DashboardData {
   /** SEOCoral fork: Keyword Planner demand joined to GSC + crawl (src/core/keywordDemand.ts). */
   keywordDemand?: {
     updatedAt: string | null;
-    totals: { keywords: number; volume: number; capturedVolume: number; byStatus: Record<KwStatus, number> };
-    rows: { keyword: string; searchVolume: number | null; competition: number | null; competitionLevel: string | null; cpc: number | null; trend: string | null; peakMonth: string | null; groupedUnder: string | null; page: string | null; position: number | null; impressions: number; clicks: number; suggestedPage: string | null; status: KwStatus }[];
+    totals: { keywords: number; volume: number; capturedVolume: number; byStatus: Record<KwStatus, number>; byOrigin?: { gsc: number; ads: number; both: number } };
+    rows: { keyword: string; fromAds?: boolean; fromGsc?: boolean; searchVolume: number | null; competition: number | null; competitionLevel: string | null; cpc: number | null; trend: string | null; peakMonth: string | null; groupedUnder: string | null; page: string | null; position: number | null; impressions: number; clicks: number; suggestedPage: string | null; status: KwStatus }[];
   } | null;
   freshness?: { sources: { kind: string; state: string; at: string | null; detail: string; error?: string | null }[]; crawlRuns: unknown[]; shownCrawl?: { crawlId: string; status: string; at: string | null; partial: boolean } };
   empty?: boolean;
@@ -1409,8 +1409,8 @@ function buildExportBar(data: DashboardData): void {
   }
   if (data.keywordDemand?.rows.length) {
     mk('Keywords (Planner) CSV', () => downloadCsv('keywords-planner.csv', [
-      ['keyword', 'busquedas_mes', 'competencia', 'cpc_eur', 'tendencia', 'estado', 'posicion', 'clics_90d', 'impresiones_90d', 'pagina', 'pagina_sugerida'],
-      ...data.keywordDemand!.rows.map(r => [r.keyword, r.searchVolume ?? '', r.competitionLevel ?? '', r.cpc ?? '', r.trend ?? '', r.status, r.position ?? '', r.clicks, r.impressions, r.page ?? '', r.suggestedPage ?? '']),
+      ['keyword', 'origen', 'busquedas_mes', 'competencia', 'cpc_eur', 'tendencia', 'estado', 'posicion', 'impresiones_90d', 'clics_90d', 'pagina', 'pagina_sugerida'],
+      ...data.keywordDemand!.rows.map(r => { const g = kwOriginOf(r); return [r.keyword, g.gsc && g.ads ? 'ambos' : g.gsc ? 'search_console' : 'google_ads', r.searchVolume ?? '', r.competitionLevel ?? '', r.cpc ?? '', r.trend ?? '', r.status === 'gap' ? 'sin_visibilidad' : r.status, r.position ?? '', r.impressions, r.clicks, r.page ?? '', r.suggestedPage ?? '']; }),
     ]));
   }
   if (data.keywordMovement?.length) {
@@ -1460,51 +1460,62 @@ const KW_STATUS: Record<KwStatus, { label: string; color: string }> = {
   page1: { label: 'Página 1', color: 'var(--intent-success)' },
   striking: { label: 'Pos. 11-20', color: 'var(--intent-warning)' },
   weak: { label: 'Pos. >20', color: 'var(--text-muted)' },
-  gap: { label: 'Hueco', color: 'var(--intent-danger)' },
+  gap: { label: 'Sin visibilidad', color: 'var(--intent-danger)' },
 };
 const KW_TREND: Record<string, string> = { rising: '↗ subiendo', falling: '↘ bajando', flat: '→ estable' };
 const eur = (v: number | null): string => (v == null ? '–' : `${v.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`);
 const es = (v: number | null | undefined): string => (v == null ? '–' : Number(v).toLocaleString('es-ES'));
 let kwFilter: KwStatus | 'all' = 'all';
+let kwOrigin: 'all' | 'gsc' | 'ads' = 'all';
+const kwOriginOf = (r: { fromAds?: boolean; fromGsc?: boolean; impressions: number }): { gsc: boolean; ads: boolean } =>
+  ({ gsc: r.fromGsc ?? r.impressions > 0, ads: r.fromAds ?? true });
 
 function renderKeywordDemand(data: DashboardData): void {
   const kpis = document.getElementById('kwDemandKpis');
   const table = document.getElementById('kwDemandTable');
   const filter = document.getElementById('kwDemandFilter');
-  if (!kpis || !table || !filter) return;
+  const ofilter = document.getElementById('kwOriginFilter');
+  if (!kpis || !table || !filter || !ofilter) return;
   const kd = data.keywordDemand;
   if (!kd || !kd.rows.length) {
-    kpis.innerHTML = ''; filter.innerHTML = '';
-    table.innerHTML = `<div class="empty-state">Aún no hay keywords guardadas para esta web. Pide en el chat, por ejemplo: <em>“ideas de keywords para ${esc(data.siteUrl)}”</em> o <em>“volumen de estas keywords para ${esc(data.siteUrl)}”</em>, y vuelve a abrir el panel.</div>`;
+    kpis.innerHTML = ''; filter.innerHTML = ''; ofilter.innerHTML = '';
+    table.innerHTML = `<div class="empty-state">Aún no hay keywords para esta web. Pide en el chat, por ejemplo: <em>“importa las keywords de Search Console de ${esc(data.siteUrl)}”</em> o <em>“ideas de keywords para ${esc(data.siteUrl)} y guárdalas”</em>, y vuelve a abrir el panel.</div>`;
     return;
   }
   const t = kd.totals;
   const share = t.volume ? Math.round((t.capturedVolume / t.volume) * 100) : 0;
   const card = (label: string, value: string, sub: string): string => `<div class="metric-card"><div class="label">${label}</div><div class="value">${value}</div><div class="metric-sub">${sub}</div></div>`;
   kpis.innerHTML =
-    card('Keywords', es(t.keywords), kd.updatedAt ? `actualizado ${esc(kd.updatedAt.slice(0, 10))}` : '') +
+    card('Keywords', es(t.keywords), t.byOrigin ? `${es(t.byOrigin.gsc)} Search Console · ${es(t.byOrigin.ads)} Google Ads` : (kd.updatedAt ? `actualizado ${esc(kd.updatedAt.slice(0, 10))}` : '')) +
     card('Demanda total', es(t.volume), 'búsquedas / mes') +
     card('Captada en página 1', `${share}%`, `${es(t.capturedVolume)} búsq./mes`) +
-    card('Huecos', es(t.byStatus.gap), 'sin impresiones en GSC');
+    card('Sin visibilidad', es(t.byStatus.gap), '0 impresiones en 90 días');
+  const byOrigin = (o: typeof kwOrigin) => kd.rows.filter(r => { const g = kwOriginOf(r); return o === 'all' || (o === 'gsc' ? g.gsc : g.ads); });
+  const originRows = byOrigin(kwOrigin);
+  const oLabels: Record<typeof kwOrigin, string> = { all: 'Todas', gsc: 'Search Console', ads: 'Google Ads' };
+  ofilter.innerHTML = (['all', 'gsc', 'ads'] as const).map(o => `<button class="seg-btn${kwOrigin === o ? ' active' : ''}" data-kwo="${o}" role="tab">${oLabels[o]} (${byOrigin(o).length})</button>`).join('');
+  ofilter.querySelectorAll<HTMLButtonElement>('[data-kwo]').forEach(b => { b.onclick = () => { kwOrigin = b.dataset.kwo as typeof kwOrigin; renderKeywordDemand(data); }; });
   const opts: Array<KwStatus | 'all'> = ['all', 'top3', 'page1', 'striking', 'weak', 'gap'];
   filter.innerHTML = opts.map(o => {
-    const n = o === 'all' ? t.keywords : t.byStatus[o];
-    return `<button class="seg-btn${kwFilter === o ? ' active' : ''}" data-kw="${o}" role="tab">${o === 'all' ? 'Todas' : KW_STATUS[o].label} (${n})</button>`;
+    const n = o === 'all' ? originRows.length : originRows.filter(r => r.status === o).length;
+    return `<button class="seg-btn${kwFilter === o ? ' active' : ''}" data-kw="${o}" role="tab">${o === 'all' ? 'Todos los estados' : KW_STATUS[o].label} (${n})</button>`;
   }).join('');
   filter.querySelectorAll<HTMLButtonElement>('[data-kw]').forEach(b => { b.onclick = () => { kwFilter = b.dataset.kw as KwStatus | 'all'; renderKeywordDemand(data); }; });
-  const rows = kd.rows.filter(r => kwFilter === 'all' || r.status === kwFilter).map(r => {
+  const rows = originRows.filter(r => kwFilter === 'all' || r.status === kwFilter).map(r => {
     const st = KW_STATUS[r.status];
+    const g = kwOriginOf(r);
+    const origin = g.gsc && g.ads ? 'Ambos' : g.gsc ? 'Search Console' : 'Google Ads';
     const pageCell = r.page
       ? `<td class="url" title="${esc(r.page)}">${esc(shortPath(r.page, 46))}</td>`
       : r.suggestedPage
-        ? `<td class="url" title="Sugerida: ${esc(r.suggestedPage)}" style="color:var(--text-muted)">→ ${esc(shortPath(r.suggestedPage, 44))}</td>`
+        ? `<td class="url" title="Página sugerida: ${esc(r.suggestedPage)}" style="color:var(--text-muted)">→ ${esc(shortPath(r.suggestedPage, 44))}</td>`
         : `<td style="color:var(--intent-danger)">Crear contenido</td>`;
     const kwCell = esc(r.keyword) + (r.groupedUnder ? ` <span class="metric-sub" title="Google agrupa esta variante con «${esc(r.groupedUnder)}»">≈ ${esc(r.groupedUnder)}</span>` : '');
-    return `<tr><td>${kwCell}</td><td class="num">${es(r.searchVolume)}</td><td>${esc(r.competitionLevel === 'HIGH' ? 'Alta' : r.competitionLevel === 'MEDIUM' ? 'Media' : r.competitionLevel === 'LOW' ? 'Baja' : '–')}</td><td class="num">${eur(r.cpc)}</td><td>${esc(r.trend ? KW_TREND[r.trend] ?? r.trend : '–')}</td><td><span style="color:${st.color};font-weight:600">${st.label}</span></td><td class="num">${r.position == null ? '–' : r.position.toLocaleString('es-ES')}</td><td class="num">${es(r.clicks)}</td>${pageCell}</tr>`;
+    return `<tr><td>${kwCell}</td><td>${origin}</td><td class="num">${es(r.searchVolume)}</td><td>${esc(r.competitionLevel === 'HIGH' ? 'Alta' : r.competitionLevel === 'MEDIUM' ? 'Media' : r.competitionLevel === 'LOW' ? 'Baja' : '–')}</td><td class="num">${eur(r.cpc)}</td><td>${esc(r.trend ? KW_TREND[r.trend] ?? r.trend : '–')}</td><td><span style="color:${st.color};font-weight:600">${st.label}</span></td><td class="num">${r.position == null ? '–' : r.position.toLocaleString('es-ES')}</td><td class="num">${es(r.impressions)}</td><td class="num">${es(r.clicks)}</td>${pageCell}</tr>`;
   });
   table.innerHTML = rows.length
-    ? tableHtml(['Keyword', 'Búsq./mes', 'Competencia', 'CPC', 'Tendencia', 'Estado', 'Posición', 'Clics 90d', 'Página'], rows)
-    : `<div class="empty-state">Ninguna keyword en este estado.</div>`;
+    ? tableHtml(['Keyword', 'Origen', 'Búsq./mes', 'Competencia', 'CPC', 'Tendencia', 'Estado', 'Posición', 'Impr. 90d', 'Clics 90d', 'Página'], rows)
+    : `<div class="empty-state">Ninguna keyword con este origen y estado.</div>`;
   attachSort(table);
 }
 

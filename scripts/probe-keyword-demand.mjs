@@ -7,7 +7,7 @@ import path from 'node:path';
 import { rmSync } from 'node:fs';
 import { AuditDatabase } from '../dist/core/AuditDatabase.js';
 import { dbPathFor } from '../dist/core/paths.js';
-import { saveKeywords, deleteKeywords, keywordDemandPayload } from '../dist/core/keywordDemand.js';
+import { saveKeywords, deleteKeywords, keywordDemandPayload, gscQueriesToImport } from '../dist/core/keywordDemand.js';
 import { getDashboardData } from '../dist/core/dashboardData.js';
 
 let pass = 0, fail = 0;
@@ -77,6 +77,23 @@ saveKeywords(db, [{ keyword: 'gestoria laboral madrid', searchVolume: 140, compe
 saveKeywords(db, [{ keyword: 'gestoria laboral madrid', searchVolume: 140, competition: null, competitionLevel: null, cpc: null, lowTopOfPageBid: null, highTopOfPageBid: null, monthly: [] }], { source: 'ideas' });
 const l2 = keywordDemandPayload(db).rows.find(r => r.keyword === 'gestoria laboral madrid');
 ok(l2.searchVolume === 140 && l2.source === 'volume', 'upsert updates the volume and keeps the explicit-volume source');
+
+// Origin flags: everything so far came from Keyword Planner; rows with GSC impressions also count as Search Console.
+const o1 = keywordDemandPayload(db);
+ok(o1.rows.every(r => r.fromAds) && row('gestoría madrid').fromGsc === true && o1.rows.find(r => r.keyword === 'gestoria laboral madrid').fromGsc === false, 'ads rows flagged fromAds; GSC impressions mark fromGsc');
+// Import GSC queries: one per signature; existing Planner rows are flagged, not duplicated.
+const imp = gscQueriesToImport(db, 500);
+ok(imp.queries.length === 0 && imp.flagged >= 2, `GSC import: all 4 queries already covered by Planner rows (new ${imp.queries.length}, flagged ${imp.flagged})`);
+ins.run('2026-09-10', 'abogado laboral madrid', home, home, 0, 5, 45);
+const imp2 = gscQueriesToImport(db, 500);
+ok(imp2.queries.length === 1 && imp2.queries[0] === 'abogado laboral madrid', `new GSC query returned for import (${imp2.queries.join(', ')})`);
+saveKeywords(db, [{ keyword: 'abogado laboral madrid', searchVolume: 260, competition: null, competitionLevel: null, cpc: null, lowTopOfPageBid: null, highTopOfPageBid: null, monthly: [] }], { source: 'gsc' });
+const ab = keywordDemandPayload(db).rows.find(r => r.keyword === 'abogado laboral madrid');
+ok(ab.fromGsc && !ab.fromAds && ab.status === 'weak', `GSC-only keyword: fromGsc, not fromAds, ${ab.status}`);
+saveKeywords(db, [{ keyword: 'abogado laboral madrid', searchVolume: 260, competition: null, competitionLevel: null, cpc: null, lowTopOfPageBid: null, highTopOfPageBid: null, monthly: [] }], { source: 'ideas' });
+const bo = keywordDemandPayload(db).totals.byOrigin;
+ok(keywordDemandPayload(db).rows.find(r => r.keyword === 'abogado laboral madrid').fromAds && bo.both >= 1, `flags accumulate (byOrigin ${JSON.stringify(bo)})`);
+deleteKeywords(db, ['abogado laboral madrid']);
 
 ok(deleteKeywords(db, ['GESTORIA LABORAL MADRID']) === 1 && keywordDemandPayload(db).totals.keywords === 6, 'delete one keyword (case-insensitive)');
 adb.close();
